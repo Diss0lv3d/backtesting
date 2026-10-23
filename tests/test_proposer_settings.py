@@ -62,25 +62,62 @@ def test_an_unknown_timeframe_refuses():
         load(_cfg(timeframes=["1h", "3m"]))
 
 
-@pytest.mark.parametrize("argv", [["lab", "exam"], ["lab", "withdraw", "x"], ["lab", "judge", "x", "--tf", "1h"],
-                                  ["lab", "verdict-refresh", "x"], ["git", "checkout", "main"], ["sh", "-c", "x"],
-                                  [], ["git"]])
+LAB = proc.lab_argv()[0]
+
+
+@pytest.mark.parametrize("argv", [
+    ["lab", "exam"], ["lab", "withdraw", "x"], ["lab", "judge", "x", "--tf", "1h"],
+    ["lab", "verdict-refresh", "x"], ["git", "checkout", "main"], ["sh", "-c", "x"], [], ["git"],
+    [LAB, "exam"], [LAB, "withdraw", "x"], [LAB, "judge", "x", "--tf", "1h"],
+    [LAB, "verdict-refresh", "x"],
+    ["lab", "judge", "x", "--tf", "1h", "--proposer"],                        # bare lab goes through PATH
+    ["lab", "preflight", "f.py", "--tf", "1h"],
+    [LAB, "judge", "x", "--symbols", "--proposer", "--tf", "1h"],
+    [LAB, "judge", "x", "--tf", "--proposer"],
+    [LAB, "judge", "--tf", "1h", "--", "--proposer"],
+    [LAB, "judge", "x", "--tf", "1h", "--config", "--proposer"],
+    [LAB, "judge", "x", "--tf", "1h", "--proposer", "--workers", "64"],
+    [LAB, "judge", "x", "--tf", "1h", "--proposer", "--config"],
+    [LAB, "judge", "x", "--tf", "1h", "--proposer", "--config", "c.yaml", "--workers", "64"],
+    [LAB, "judge", "-x", "--tf", "1h", "--proposer"],
+    [LAB, "judge", "", "--tf", "1h", "--proposer"],
+    [LAB, "preflight", "f.py", "--tf", "1h", "--workers", "64"],
+    [LAB, "preflight", "f.py", "--tf", "1h", "--proposer"],
+    [LAB, "preflight", "--tf", "1h", "--", "f.py"],
+])
 def test_proc_refuses_any_other_command(argv):
     with pytest.raises(ValueError):
         proc.allowed(argv, "claude")
 
 
-@pytest.mark.parametrize("argv", [["lab", "judge", "x", "--tf", "1h", "--proposer"], ["lab", "preflight", "f.py", "--tf", "1h"],
-                                  ["claude", "-p"], ["git", "rev-parse", "HEAD"], ["git", "status", "--short"]])
+@pytest.mark.parametrize("argv", [
+    [LAB, "judge", "x", "--tf", "1h", "--proposer"], [LAB, "preflight", "f.py", "--tf", "1h"],
+    [LAB, "judge", "x", "--tf", "1h", "--proposer", "--config", "c/lab.yaml"],
+    [LAB, "preflight", "f.py", "--tf", "1h", "--config", "c/lab.yaml"],
+    ["claude", "-p"], ["git", "rev-parse", "HEAD"], ["git", "status", "--short"]])
 def test_proc_allows_the_listed_commands(argv):
     proc.allowed(argv, "claude")
 
 
 def test_lab_argv_uses_the_venv_entry_point():
     assert proc.lab_argv("judge", "x")[0] == str(Path(sys.executable).with_name("lab"))
-    proc.allowed(proc.lab_argv("preflight", "f.py"), "claude")
+    proc.allowed(proc.lab_argv("preflight", "f.py", "--tf", "1h"), "claude")
 
 
 def test_run_refuses_before_starting_anything():
     with pytest.raises(ValueError):
         proc.run(["sh", "-c", "touch /nonexistent/x"], claude_bin="claude")
+
+
+@pytest.mark.parametrize("kw", [{"executable": "/bin/sh"}, {"shell": True}, {"preexec_fn": lambda: None},
+                                {"stdout": None, "close_fds": False}])
+def test_run_refuses_popen_keywords_that_bypass_the_allowlist(kw):
+    with pytest.raises(ValueError):
+        proc.run(["git", "status"], claude_bin="claude", **kw)
+
+
+def test_run_starts_an_allowed_command_with_allowed_keywords():
+    import subprocess
+    p = proc.run(["git", "rev-parse", "--git-dir"], claude_bin="claude", stdout=subprocess.PIPE, text=True,
+                 cwd=REPO)
+    assert p.communicate()[0].strip() and p.returncode == 0
