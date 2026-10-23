@@ -7,11 +7,13 @@ that is absent makes the test that needs it unable to pass, not pass by default.
 
 from __future__ import annotations
 
+import math
+
 RANK = {"promoted": 4, "close call": 3, "signal before costs": 2, "no signal": 1, "broken": 0}
 
 
 def _num(x) -> bool:
-    return isinstance(x, (int, float)) and not isinstance(x, bool)
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
 def pile(verdict: dict | None) -> str:

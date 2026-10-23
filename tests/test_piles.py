@@ -34,6 +34,14 @@ def verdict(*, net=-1.26, p95=-0.19, trades=3385, floor=64, gross=-0.9, gross_p9
     (verdict(before=False), "no signal"),
     (verdict(floor=None, trades=1), "no signal"),
     (verdict(decision="promote", reasons=["lookahead: x"]), "broken"),
+] + [
+    (verdict(**{k: bad}), "no signal")
+    for bad in (float("inf"), float("-inf"), float("nan"))
+    for k in ("net", "p95", "gross", "gross_p95")
+] + [
+    (verdict(net=0.5, p95=0.2, **{"gross": bad}), "close call") for bad in (float("inf"), float("nan"))
+] + [
+    (verdict(gross=0.5, gross_p95=-0.3, net=bad), "signal before costs") for bad in (float("inf"), float("nan"))
 ])
 def test_pile(v, expected):
     assert pile(v) == expected
@@ -84,3 +92,18 @@ def test_champion():
     assert champion([prop(1, a), prop(2, b), prop(3, broken)])["seq"] == 2
     assert champion([prop(1, verdict(gross=0.5, gross_p95=0), dup=None), prop(2, a)])["seq"] == 2
     assert champion([prop(1, b, dup=9)]) is None
+
+
+def test_champion_nan_net_sharpe_sorts_last_in_any_order():
+    nan = verdict(net=float("nan"), p95=-5.0)
+    nan["diagnostics"]["gates"]["net_sharpe"] = float("nan")
+    good, other = verdict(gross=0.5, gross_p95=0), verdict(gross=0.6, gross_p95=0)
+    good["diagnostics"]["gates"]["net_sharpe"] = -0.5
+    other["diagnostics"]["gates"]["net_sharpe"] = -0.2
+    nan_p = lambda: prop(1, {**verdict(gross=0.7, gross_p95=0), "diagnostics": nan["diagnostics"] | {
+        "before_costs": {"sharpe": 0.7, "random_p95": 0}}})
+    ps = [nan_p(), prop(2, good), prop(3, other)]
+    for order in (ps, ps[::-1], [ps[1], ps[0], ps[2]]):
+        assert champion(order)["seq"] == 3
+    assert champion([ps[0], ps[1]])["seq"] == 2
+    assert champion([ps[1], ps[0]])["seq"] == 2
