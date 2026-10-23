@@ -205,10 +205,15 @@ def _check_value(tp, v, path, timeframes, name, errors):
             errors.append(f"{path}: more than {SOURCE_MAX_BYTES} bytes")
         return v
     if tp is float:
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        try:  # an int past ~1e308 overflows float(), and isfinite() on it
+            ok = not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+            out = float(v) if ok else None
+        except OverflowError:
+            ok = False
+        if not ok:
             errors.append(f"{path}: must be a finite number")
             return None
-        return float(v)
+        return out
     if tp is int:
         if isinstance(v, bool) or not isinstance(v, int):
             errors.append(f"{path}: must be an integer")
@@ -233,7 +238,7 @@ def _check_object(cls, obj, path, timeframes, errors):
     for f in fields(cls):
         inner, optional = _unwrap(hints[f.name])
         p = f"{path}.{f.name}" if path else f.name
-        if f.name not in obj or (optional and obj[f.name] is None):
+        if f.name not in obj:
             if not optional and f.default is MISSING:
                 errors.append(f"{p}: required")
                 bad = True
@@ -252,7 +257,7 @@ def parse(obj: dict, timeframes) -> Proposal:
     prop = _check_object(Proposal, obj, "", timeframes, errors)
     kind = obj.get("kind") if isinstance(obj, dict) else None
     block = BLOCK_FOR_KIND.get(kind) if isinstance(kind, str) else None
-    if block and isinstance(obj, dict) and obj.get(block) is None:
+    if block and isinstance(obj, dict) and block not in obj:
         errors.append(f"{block}: required when kind is {kind}")
     if errors or prop is None:
         raise ContractError(errors)

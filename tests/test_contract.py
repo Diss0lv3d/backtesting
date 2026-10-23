@@ -91,3 +91,66 @@ def test_parse_rechecks_types_unknown_keys_and_limits():
         parse(good(refines={"idea_id": "3", "change": "c"}), TFS)
     with pytest.raises(ContractError):
         parse([], TFS)
+
+
+def test_a_huge_int_is_a_contract_error_not_an_overflow():
+    with pytest.raises(ContractError) as e:
+        parse(good(idea={**CARD, "trades_per_coin_per_year": 10**400}), TFS)
+    assert any("trades_per_coin_per_year" in m for m in e.value.errors)
+
+
+def test_an_explicit_null_block_is_refused():
+    with pytest.raises(ContractError):
+        parse(good(ports=None), TFS)
+
+
+def _case(**over):
+    base = {"kind": "new", "timeframe": "1h", "hypothesis": "h", "source": "s", "idea": CARD}
+    out = {**base, **over}
+    return {k: v for k, v in out.items() if v is not ...}
+
+
+# Known, accepted disagreements, left out of the table: integral floats like 3.0 for integer fields (the
+# schema accepts them, parse refuses), and the source limit (bytes in parse, characters in the schema).
+AGREEMENT = [
+    _case(),
+    _case(kind="refinement", idea=..., refines={"idea_id": 1, "change": "c"}),
+    _case(kind="port", idea=..., ports={"idea_id": 1, "why": "y"}),
+    _case(kind="refinement", idea=...),
+    _case(idea=...),
+    _case(ports=None),
+    _case(ports={"idea_id": 1, "why": "y"}),
+    _case(hypothesis="x" * 200),
+    _case(hypothesis="x" * 201),
+    _case(hypothesis="a\nb"),
+    _case(hypothesis=""),
+    _case(source=""),
+    _case(timeframe="5m"),
+    _case(kind="other"),
+    _case(extra=1),
+    _case(idea={**CARD, "extra": 1}),
+    _case(idea={**CARD, "trades_per_coin_per_year": True}),
+    _case(idea={**CARD, "trades_per_coin_per_year": "12"}),
+    _case(idea={**CARD, "trades_per_coin_per_year": 12.5}),
+    _case(idea={**CARD, "columns": "close"}),
+    _case(idea={**CARD, "columns": [""]}),
+    _case(idea={**CARD, "title": ""}),
+    _case(kind="refinement", idea=..., refines={"idea_id": True, "change": "c"}),
+    {"kind": "new", "timeframe": "5m", "hypothesis": "a\nb", "source": "x"},
+]
+
+
+@pytest.mark.parametrize("obj", AGREEMENT)
+def test_parse_accepts_exactly_what_the_schema_accepts(obj):
+    jsonschema = pytest.importorskip("jsonschema")
+    try:
+        jsonschema.validate(obj, schema(TFS))
+        by_schema = True
+    except jsonschema.ValidationError:
+        by_schema = False
+    try:
+        parse(obj, TFS)
+        by_parse = True
+    except ContractError:
+        by_parse = False
+    assert by_parse == by_schema, obj
