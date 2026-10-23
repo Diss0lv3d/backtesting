@@ -8,6 +8,7 @@ purpose: the loop fails closed rather than run on a record it could not write. T
 
 from __future__ import annotations
 
+import threading
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -123,6 +124,15 @@ class Record:
         (self.state_dir / "transcripts").mkdir(exist_ok=True)
         self.engine = sa.create_engine(f"sqlite:///{self.state_dir / 'record.db'}", future=True)
         md.create_all(self.engine)
+        # High-water mark of reserved sequence numbers: above every recorded proposal and every transcript
+        # already on disk, so a number handed out once is never handed out again, even after a crash.
+        self._lock = threading.Lock()
+        with self.engine.connect() as c:
+            top = c.execute(sa.select(sa.func.max(proposals.c.seq))).scalar() or 0
+        for f in (self.state_dir / "transcripts").glob("*.jsonl"):
+            if f.stem.isdigit():
+                top = max(top, int(f.stem))
+        self._seq = top
 
     # -- helpers
     def _insert(self, table: sa.Table, values: dict) -> int:
@@ -182,11 +192,17 @@ class Record:
 
     # -- proposals
     def next_seq(self) -> int:
-        with self.engine.connect() as c:
-            return (c.execute(sa.select(sa.func.max(proposals.c.seq))).scalar() or 0) + 1
+        """Reserve the next number: two calls never return the same one, used or not."""
+        with self._lock:
+            self._seq += 1
+            return self._seq
 
     def add_proposal(self, **f) -> int:
-        f.setdefault("seq", self.next_seq())
+        if f.get("seq") is None:
+            f["seq"] = self.next_seq()
+        else:
+            with self._lock:
+                self._seq = max(self._seq, f["seq"])
         f.setdefault("created_at", _now())
         return self._insert(proposals, f)
 

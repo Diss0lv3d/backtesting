@@ -52,6 +52,7 @@ def test_duplicate_title_refused_whatever_case(rec, dup):
 def test_proposal_round_trip_ordered(rec):
     i = rec.add_idea("A", {}, "seed", "1h")
     assert rec.next_seq() == 1
+    rec._seq = 0   # give the number back for the fixed expectations below
     s1 = rec.add_proposal(idea_id=i, plugin="p1", state="staged", preflight={"ok": True}, source="x")
     s2 = rec.add_proposal(idea_id=i, plugin="p2", state="staged")
     assert (s1, s2) == (1, 2) and rec.next_seq() == 3
@@ -108,3 +109,30 @@ def test_transcript_path(rec, tmp_path):
 def test_persists_across_instances(tmp_path):
     Record(tmp_path).add_idea("A", {}, "seed", "1h")
     assert len(Record(tmp_path).ideas()) == 1
+
+
+def test_next_seq_reserves(rec):
+    a, b = rec.next_seq(), rec.next_seq()
+    assert a != b and b == a + 1
+
+
+def test_abandoned_seq_is_never_reused(rec, tmp_path):
+    seq = rec.next_seq()
+    rec.transcript_path(seq).write_text("{}\n")      # written, then the proposal dropped before add_proposal
+    assert rec.next_seq() == seq + 1
+    fresh = Record(tmp_path / "state")
+    assert fresh.next_seq() == seq + 1   # only the transcript-bearing number is pinned across sessions
+
+
+def test_fresh_record_starts_above_recorded_proposals(tmp_path):
+    r = Record(tmp_path)
+    r.add_proposal(plugin="p", state="staged")
+    assert Record(tmp_path).next_seq() == 2
+
+
+def test_add_proposal_uses_reserved_seq(rec):
+    seq = rec.next_seq()
+    rec.next_seq()
+    assert rec.add_proposal(seq=seq, plugin="p", state="staged") == seq
+    assert [p["seq"] for p in rec.proposals()] == [seq]
+    assert rec.next_seq() == seq + 2
