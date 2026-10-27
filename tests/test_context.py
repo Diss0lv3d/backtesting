@@ -111,7 +111,7 @@ def test_lessons_open_with_the_label_and_drop_lesson_six_and_section_references(
     text = LESSONS.read_text()
     assert text.splitlines()[0] == OPENING
     for gone in ("1.52", "0.59", "section", "The unit that matters is R", "In dollars, fees were",
-                 "Section 5 says why", "the same exits"):
+                 "Section 5 says why", "the same exits", "constraint 5", "plan's"):
         assert gone.casefold() not in text.casefold(), gone
     for kept in ("| donchian_atr_wide | 4h |", "1. **Costs per timeframe.**", "2. **Profit came from the exit",
                  "3. **Fading a stretched price", "4. **Regime behaviour.**", "5. **In-sample overfitting.**",

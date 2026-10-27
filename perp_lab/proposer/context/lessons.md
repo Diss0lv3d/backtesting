@@ -1,8 +1,8 @@
 Human notes from the first six trials: OOS 2022-07 to 2026-07, 8 coins, flat 2 bp slippage. Today's lab: 17 coins from 2020, per-coin slippage.
 
-The numbers come from the walk-forward table in the plan's constraint 5 (OOS 2022-07 to
-2026-07, 8 symbols, 10,000 USDT per symbol book). Net = gross − fees − funding. Gross already
-includes slippage, because slippage is in the fill prices; fees are exchange fees only.
+The numbers come from walk-forward runs (OOS 2022-07 to 2026-07, 8 symbols, 10,000 USDT per
+symbol book). Net = gross − fees − funding. Gross already includes slippage, because slippage is
+in the fill prices; fees are exchange fees only.
 
 | plugin | tf | trades | gross | fees | funding | net | fees per trade | fees vs gross | OOS (IS) Sharpe | vs random |
 |---|---|---|---|---|---|---|---|---|---|---|
