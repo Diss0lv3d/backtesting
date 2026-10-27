@@ -91,15 +91,17 @@ BAR_COLUMNS = """\
 | funding_charge | funding rate settled inside this bar, 0 if none | fraction of notional |
 | funding_last | the last funding rate settled by the bar's close | fraction of notional per settlement |
 | funding_interval_h | hours between settlements for funding_last | hours |
-| oi | open interest known at the bar's close | coins |
-| oi_value | open interest known at the bar's close | USDT |
+| oi | open interest; NaN on every real bar today (see below) | coins |
+| oi_value | open interest; NaN on every real bar today (see below) | USDT |
 | slippage | not available to plugins: real bars carry it, but the checks' synthetic bars don't, so a plugin that reads it fails the lookahead check | none |
 | regime | the coin's 4h regime label (below) | text |
 | regime_adx | the 4h ADX behind the label | ADX points |
 
 `regime` is trending, ranging, high_vol, transition, or unknown during warm-up, from the coin's 4h bars; a 4h
 label is known only once its 4h bar closes. A value is NaN where nothing is known yet (before a coin's first
-funding settlement or open-interest snapshot, or during an indicator's warm-up)."""
+funding settlement, or during an indicator's warm-up). `oi` and `oi_value` are NaN on every real bar today: the
+lab stores no open-interest history, so a plugin must not depend on them. The checks' synthetic bars fill them,
+so a plugin that needs them passes preflight and then trades nothing on real bars."""
 
 
 def _api() -> str:

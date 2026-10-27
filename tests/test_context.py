@@ -92,6 +92,15 @@ def test_slippage_is_an_engine_cost_and_no_column_a_plugin_may_read(cfg):
     assert "slippage" not in with_moving_columns(synthetic_bars(n=50, seed=1)).columns
 
 
+def test_open_interest_is_nan_on_every_real_bar(cfg):
+    """Fixed text (Ruling R23): the proposer may not read data/, and no open-interest history is stored."""
+    text = context.static_context(cfg, load(cfg))
+    for column in ("oi", "oi_value"):
+        assert "NaN on every real bar" in _row(text, column), column
+    assert "a plugin must not depend on them" in text
+    assert "open-interest snapshot" not in text          # it never becomes known later
+
+
 def test_over_the_cap_is_refused(cfg, monkeypatch):
     monkeypatch.setattr(context, "STATIC_MAX_BYTES", 1_000)
     with pytest.raises(ValueError, match="1000"):
