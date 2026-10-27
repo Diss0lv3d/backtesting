@@ -77,6 +77,21 @@ def test_the_oos_span_matches_the_walk_forward_folds(cfg, start):
                                      (folds[-1]["test_end"] - folds[0]["test_start"]).days)
 
 
+def _row(text: str, column: str) -> str:
+    return next(line for line in text.splitlines() if line.startswith(f"| {column} |"))
+
+
+def test_slippage_is_an_engine_cost_and_no_column_a_plugin_may_read(cfg):
+    text = context.static_context(cfg, load(cfg))
+    assert "not available to plugins" in _row(text, "slippage")
+    costs = text[text.index("## The cost model"):text.index("## The universe and spans")]
+    assert "the engine charges it" in costs and "slippage` column" not in costs
+    # Why: the bars of the lookahead check and of preflight have no slippage column (Ruling R24). When they
+    # get one, this fails, and the bar table may offer the column again.
+    from perp_lab.validate.causality import synthetic_bars, with_moving_columns
+    assert "slippage" not in with_moving_columns(synthetic_bars(n=50, seed=1)).columns
+
+
 def test_over_the_cap_is_refused(cfg, monkeypatch):
     monkeypatch.setattr(context, "STATIC_MAX_BYTES", 1_000)
     with pytest.raises(ValueError, match="1000"):

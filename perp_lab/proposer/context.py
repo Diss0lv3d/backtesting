@@ -93,7 +93,7 @@ BAR_COLUMNS = """\
 | funding_interval_h | hours between settlements for funding_last | hours |
 | oi | open interest known at the bar's close | coins |
 | oi_value | open interest known at the bar's close | USDT |
-| slippage | what a taker fill on this bar pays (see the cost model) | fraction of price |
+| slippage | not available to plugins: real bars carry it, but the checks' synthetic bars don't, so a plugin that reads it fails the lookahead check | none |
 | regime | the coin's 4h regime label (below) | text |
 | regime_adx | the 4h ADX behind the label | ADX points |
 
@@ -133,10 +133,11 @@ def _costs(cfg) -> str:
     return "\n\n".join(["## The cost model", "\n".join([
         f"- Fees: taker {_bp(c['taker'])} bp of notional per fill (entries and exits at the open, stops), maker "
         f"{_bp(c['maker'])} bp (targets).",
-        f"- Slippage, per coin and bar, on every taker fill: min({m['max_bps']:g}, {c['slippage_bps']:g} + "
-        f"{m['spread_bps_at_100m']:g} × (ADV / 100M USDT)^−{m['alpha']:g}) bp, where ADV is the coin's mean daily "
-        f"USDT volume over the {m['adv_days']} UTC days before the bar's day ({m['max_bps']:g} bp when it is "
-        "unknown). The bar's `slippage` column holds it as a fraction. A target fill and a liquidation pay none.",
+        f"- Slippage, a cost the engine charges on every taker fill, per coin and bar: min({m['max_bps']:g}, "
+        f"{c['slippage_bps']:g} + {m['spread_bps_at_100m']:g} × (ADV / 100M USDT)^−{m['alpha']:g}) bp, where ADV "
+        f"is the coin's mean daily USDT volume over the {m['adv_days']} UTC days before the bar's day "
+        f"({m['max_bps']:g} bp when it is unknown). A target fill and a liquidation pay none. Only the engine "
+        "charges it: a plugin can't read it (see the bar table).",
         "- Funding, from the real settled rates: at each settlement a long pays rate × notional and a short "
         "receives it (a negative rate reverses that). A bar's settlements are charged at its open to the position "
         "held into that open: an exit filled at that open pays, an entry filled there does not.",
@@ -271,7 +272,8 @@ def _piles(cfg, pc: ProposerConfig) -> str:
             "(each plugin at its defaults) with every judged plugin. A near-copy (overlap ≥ "
             f"{om}) of a closed idea's plugin is refused. A near-copy of an open idea's plugin is refused unless it "
             "is a refinement or a port of that idea. A mirror (the same overlap with one side flipped) of any "
-            "judged plugin is refused. The synthetic bars' taker, open-interest and volume columns are random walks.",
+            "judged plugin is refused. The synthetic bars' taker, open-interest and volume columns are random "
+            "walks, and they have no `slippage` column.",
             f"- A refused reply comes back with the errors. A proposal gets {pc.fixups_per_proposal} fix-ups; then it "
             "is dropped, with no trial.",
         ]),
