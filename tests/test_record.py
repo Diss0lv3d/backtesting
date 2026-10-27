@@ -64,6 +64,18 @@ def test_proposal_round_trip_ordered(rec):
         rec.add_proposal(plugin="p1", state="staged")
 
 
+def test_a_run_is_unique_by_plugin_and_timeframe(rec):
+    # a seed plugin runs under two ideas at two timeframes: an idea and its port
+    a, b = rec.add_idea("Donchian 4h", {}, "seed", "4h"), rec.add_idea("Donchian 1h", {}, "seed", "1h")
+    rec.add_proposal(idea_id=a, plugin="donchian_atr", timeframe="4h", state="judged")
+    rec.add_proposal(idea_id=b, plugin="donchian_atr", timeframe="1h", state="judged")
+    assert {(x["plugin"], x["timeframe"], x["idea_id"]) for x in rec.proposals()} == {
+        ("donchian_atr", "4h", a), ("donchian_atr", "1h", b)}
+    with pytest.raises(Exception):
+        rec.add_proposal(idea_id=b, plugin="donchian_atr", timeframe="4h", state="judged")
+    assert len(rec.proposals()) == 2
+
+
 def test_call_round_trip(rec):
     sid = rec.start_session()
     rec.add_call(session_id=sid, seq=1, tokens_in=1, tokens_out=2, cost_usd=0.5, outcome="ok")

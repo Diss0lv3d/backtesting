@@ -53,8 +53,8 @@ def rec(tmp_path):
     return Record(tmp_path / "state")
 
 
-def judged(rec, idea, plugin, verdict=None, **f):
-    rec.add_proposal(idea_id=idea, plugin=plugin, kind="new", timeframe="1h", state="judged", judge_exit=0,
+def judged(rec, idea, plugin, verdict=None, tf="1h", **f):
+    rec.add_proposal(idea_id=idea, plugin=plugin, kind="new", timeframe=tf, state="judged", judge_exit=0,
                      verdict=verdict, **f)
 
 
@@ -235,8 +235,9 @@ def test_check_source_grid_limit_is_inclusive():
 
 # -- overlap
 def report(*entries, ok=True, skipped=None):
-    return {"ok": ok, "overlap": [{"strategy": s, "timeframe": "1h", "overlap": o, "mirror": 0.0, "judged": True}
-                                  for s, o in entries], "skipped": skipped or {}}
+    """Entries are (strategy, overlap) at 1h, or (strategy, overlap, timeframe)."""
+    return {"ok": ok, "overlap": [{"strategy": s, "timeframe": tf[0] if tf else "1h", "overlap": o, "mirror": 0.0,
+                                   "judged": True} for s, o, *tf in entries], "skipped": skipped or {}}
 
 
 @pytest.fixture
@@ -297,6 +298,23 @@ def test_a_port_is_exempt_from_the_exhausted_idea_it_ports_and_no_other(rec):
         check_overlap_rules(own, prop(), None, rec, PC)
     with pytest.raises(Rejected, match=f"near-copy of closed idea #{y} \\(Exhausted two\\)"):
         check_overlap_rules(report(("y_plug", 0.5)), port(x), rec.idea(x), rec, PC)
+
+
+def test_a_plugin_under_two_ideas_at_two_timeframes_is_attributed_by_its_run(rec):
+    # the planned seed: donchian_atr is the open 4h idea's plugin, and at 1h its dead port's
+    d4 = rec.add_idea("Donchian 4h", {}, "seed", "4h")
+    d1 = rec.add_idea("Donchian 1h", {}, "seed", "1h", port_of=d4, status="dead")
+    judged(rec, d4, "donchian_atr", SBC, tf="4h")
+    judged(rec, d1, "donchian_atr", tf="1h")
+    at4, at1 = report(("donchian_atr", 0.9, "4h")), report(("donchian_atr", 0.9, "1h"))
+    check_overlap_rules(at4, refine(d4, "4h"), rec.idea(d4), rec, PC)
+    with pytest.raises(Rejected, match=f"near-copy of closed idea #{d1} \\(Donchian 1h\\)"):
+        check_overlap_rules(at1, refine(d4, "4h"), rec.idea(d4), rec, PC)
+    with pytest.raises(Rejected, match=f"refinement \\(or a port\\) of idea #{d4} \\(Donchian 4h\\)"):
+        check_overlap_rules(at4, prop(), None, rec, PC)
+    with pytest.raises(Rejected, match=f"near-copy of closed idea #{d1} \\(Donchian 1h\\)"):
+        check_overlap_rules(at1, prop(), None, rec, PC)
+    check_overlap_rules(report(("donchian_atr", 0.9, "15m")), prop(), None, rec, PC)   # a run it doesn't know
 
 
 def test_unknown_plugin_ignored(world):

@@ -73,7 +73,7 @@ proposals = sa.Table(
     sa.Column("session_id", sa.Integer, sa.ForeignKey("sessions.id")),
     sa.Column("idea_id", sa.Integer, sa.ForeignKey("ideas.id"), index=True),
     sa.Column("kind", sa.String(16)),
-    sa.Column("plugin", sa.String(128), unique=True),
+    sa.Column("plugin", sa.String(128)),
     sa.Column("timeframe", sa.String(8)),
     sa.Column("hash", sa.String(64)),
     sa.Column("source", sa.Text),
@@ -88,6 +88,10 @@ proposals = sa.Table(
     sa.Column("tokens_in", sa.Integer),
     sa.Column("tokens_out", sa.Integer),
     sa.Column("created_at", UTCDateTime, nullable=False),
+    # Ideas own runs, not plugin names: a seed plugin runs at two timeframes under two ideas (an idea and its
+    # port), so a run (plugin, timeframe) is unique. A missing timeframe counts as one value, never as many.
+    sa.Index("ux_proposals_plugin_tf", sa.column("plugin"), sa.func.coalesce(sa.column("timeframe"), ""),
+             unique=True),
 )
 
 calls = sa.Table(

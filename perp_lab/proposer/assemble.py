@@ -180,12 +180,13 @@ def check_overlap_rules(report: dict, p: Proposal, target: dict | None, record: 
     if "overlap" in (report.get("skipped") or {}):
         raise Rejected("preflight did not measure overlap; the near-copy check was not made")
     exempt = target["id"] if target is not None and p.kind in ("refinement", "port") else None
-    owner = {x["plugin"]: x["idea_id"] for x in record.proposals() if x.get("plugin")}
+    # Ideas own runs, not plugin names: a seed plugin can run under one idea at 4h and under its port at 1h.
+    owner = {(x["plugin"], x["timeframe"]): x["idea_id"] for x in record.proposals() if x.get("plugin")}
     ideas = {i["id"]: i for i in record.ideas()}
     for e in report.get("overlap") or []:
         if e["overlap"] < pc.overlap_max:
             continue
-        idea = ideas.get(owner.get(e["strategy"]))
+        idea = ideas.get(owner.get((e["strategy"], e["timeframe"])))
         if idea is None or idea["id"] == exempt:
             continue
         if idea["status"] != "open":
