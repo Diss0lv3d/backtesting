@@ -285,6 +285,20 @@ def test_exemption_is_only_for_the_own_idea(world):
         check_overlap_rules(report(("open_plug", 0.9)), p, t, rec, PC)
 
 
+def test_a_port_is_exempt_from_the_exhausted_idea_it_ports_and_no_other(rec):
+    # exhausted counts as closed, so this is where the exemption decides the outcome
+    x = rec.add_idea("Exhausted one", {}, "seed", "1h", status="exhausted")
+    y = rec.add_idea("Exhausted two", {}, "seed", "1h", status="exhausted")
+    judged(rec, x, "x_plug", SBC)
+    judged(rec, y, "y_plug", SBC)
+    own = report(("x_plug", 0.5))
+    check_overlap_rules(own, port(x), rec.idea(x), rec, PC)
+    with pytest.raises(Rejected, match=f"near-copy of closed idea #{x} \\(Exhausted one\\)"):
+        check_overlap_rules(own, prop(), None, rec, PC)
+    with pytest.raises(Rejected, match=f"near-copy of closed idea #{y} \\(Exhausted two\\)"):
+        check_overlap_rules(report(("y_plug", 0.5)), port(x), rec.idea(x), rec, PC)
+
+
 def test_unknown_plugin_ignored(world):
     rec, o, c = world
     check_overlap_rules(report(("human_plug", 0.99)), prop(), None, rec, PC)
