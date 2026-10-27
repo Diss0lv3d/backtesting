@@ -190,6 +190,24 @@ def test_assemble_docstring_first_line_is_hypothesis_replaced_or_inserted():
         assert parse_meta(out.encode(), "px0001_a").hypothesis.split("\n")[0] == "Hyp line"
 
 
+@pytest.mark.parametrize("doc", ['"""old"""; X = 1', '"""über"""  ;  X = 1; Y = 2',
+                                 '"""old\nstill old"""; X = 1'])
+def test_assemble_keeps_code_sharing_the_old_docstrings_line(doc):
+    src = doc + "\n" + SRC.split("\n", 1)[1]
+    for out in (assemble(prop(source=src), "n", None), assemble(replace(refine(1), source=src), "n", "champ")):
+        tree = ast.parse(out)
+        assert ast.get_docstring(tree) == "Hyp line" and b"old" not in out and "über".encode() not in out
+        assert "X" in {t.id for n in tree.body if isinstance(n, ast.Assign) for t in n.targets}
+    assert parse_meta(out, "n").parent == "champ"
+
+
+def test_assemble_parent_follows_a_future_import_on_the_old_docstrings_line():
+    src = '"""old"""; from __future__ import annotations\n' + SRC.split("\n", 1)[1]
+    out = assemble(replace(refine(1), source=src), "n", "champ")
+    compile(out, "n", "exec")
+    assert b"\nfrom __future__ import annotations\nPARENT = " in out and parse_meta(out, "n").parent == "champ"
+
+
 def test_assemble_hypothesis_with_quotes():
     h = 'says """x""" and ends with a quote"'
     out = assemble(replace(refine(1), hypothesis=h), "px0001_a", None).decode()

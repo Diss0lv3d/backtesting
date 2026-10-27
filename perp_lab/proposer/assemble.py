@@ -115,20 +115,21 @@ def assemble(p: Proposal, name: str, parent: str | None) -> bytes:
         and isinstance(tree.body[0].value, ast.Constant) and isinstance(tree.body[0].value.value, str) else None
     new_doc = _docstring(p.hypothesis.replace("\r\n", "\n").replace("\r", "\n"))
     if doc is not None:
-        head, rest = lines[: doc.lineno - 1], lines[doc.end_lineno:]
-        body = tree.body[1:]
+        head, rest, first = lines[: doc.lineno - 1], lines[doc.end_lineno:], doc.end_lineno + 1
+        # Code sharing the old docstring's last line (`"""old"""; X = 1`) keeps a line of its own.
+        # end_col_offset counts UTF-8 bytes.
+        tail = lines[doc.end_lineno - 1].encode()[doc.end_col_offset:].decode().strip(" \t")
+        tail = tail.removeprefix(";").strip(" \t")
+        if tail:
+            rest, first = [tail, *rest], doc.end_lineno
     else:
-        head, rest = [], lines
-        body = tree.body
+        head, rest, first = [], lines, 1                    # rest[0] is source line `first`
     out = "\n".join(head + [new_doc.rstrip("\n")]) + "\n"
     if parent is not None and p.kind == "refinement":
         # `from __future__` imports must come before any other statement, PARENT included.
-        fut = [n for n in body if isinstance(n, ast.ImportFrom) and n.module == "__future__"]
-        if fut:
-            cut = fut[-1].end_lineno - (doc.end_lineno if doc else 0)
-            out += "\n".join(rest[:cut]) + "\n" + f'PARENT = "{parent}"\n' + "\n".join(rest[cut:])
-        else:
-            out += f'PARENT = "{parent}"\n' + "\n".join(rest)
+        fut = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "__future__"]
+        cut = fut[-1].end_lineno - first + 1 if fut else 0
+        out += "\n".join(rest[:cut] + [f'PARENT = "{parent}"'] + rest[cut:])
     else:
         out += "\n".join(rest)
     if not out.endswith("\n"):
