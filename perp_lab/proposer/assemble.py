@@ -169,6 +169,10 @@ def check_source(text: bytes, name: str, tf: str, pc: ProposerConfig) -> None:
         for m in mods:
             if not _allowed(m):
                 raise Rejected(f"import of {m!r} is not allowed; allowed: {', '.join(ALLOWED_IMPORTS)}")
+    for k, v in meta.grid.items():
+        if not isinstance(v, list) or not v:
+            raise Rejected(f"grid[{k!r}] must be a non-empty list of the values to try, such as [3, 5]; "
+                           f"it is {type(v).__name__} {v!r:.40}")
     combos = math.prod(len(v) for v in meta.grid.values())
     if combos > pc.max_grid_combos:
         raise Rejected(f"the grid has {combos} combinations; the limit is {pc.max_grid_combos}")

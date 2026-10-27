@@ -227,6 +227,12 @@ def test_check_source_refusals(src, match):
         chk(src)
 
 
+@pytest.mark.parametrize("value", ["5", "[]", '"abc"', "(3, 5)", "{3, 5}", "None"])
+def test_check_source_refuses_a_grid_value_that_is_not_a_non_empty_list(value):
+    with pytest.raises(Rejected, match=r"grid\['n'\] must be a non-empty list"):
+        chk(SRC.replace('{"n": [3, 5]}', '{"n": ' + value + "}"))
+
+
 def test_check_source_grid_limit_is_inclusive():
     chk(SRC.replace('{"n": [3, 5]}', '{"n": [1, 2, 3, 4], "m": [1, 2, 3, 4]}'))
     with pytest.raises(Rejected, match="17 combinations"):
