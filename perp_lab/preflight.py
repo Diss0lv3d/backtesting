@@ -12,7 +12,8 @@ Three checks, each run whenever the plugin can run, so one report names every de
    asked timeframe, against every other plugin in strategies/ at each timeframe it declares. A mirror
    of a judged plugin is refused: its OOS result would be close to minus one already seen. Near-copies
    are only reported, since which of them are refused depends on ideas, and the orchestrator applies
-   those rules.
+   those rules. So every near-copy is listed, however many there are: the orchestrator reads the
+   listing as complete.
 Only metadata that can't be read stops the rest: without it the plugin can't run. A check that could
 not be made is named under `skipped`, with the reason, so an empty list always means "checked, nothing
 found". A skip fails preflight, as a failed check does: the plugin failing on the synthetic market, or
@@ -48,7 +49,7 @@ from perp_lab.validate.synthetic_market import MARKET_VERSION, NoMarket, market
 log = logging.getLogger(__name__)
 
 LIST_FLOOR = 0.1      # an entry is listed when its overlap or its mirror overlap reaches this
-LIST_TOP = 10         # and only the closest this many
+LIST_TOP = 10         # and only the closest this many, plus every near-copy (overlap >= proposer.overlap_max)
 _NAMES = ["symbol", "hour"]
 
 
@@ -163,7 +164,8 @@ def _overlap(cfg, src: PluginSource, tf: str, report: dict) -> None:
                            if e["judged"] and e["mirror"] >= cfg["proposer"]["overlap_max"]]
     listed = [e for e in entries if max(e["overlap"], e["mirror"]) >= LIST_FLOOR]
     listed.sort(key=lambda e: (-max(e["overlap"], e["mirror"]), e["strategy"], e["timeframe"]))
-    report["overlap"] = listed[:LIST_TOP]
+    near = cfg["proposer"]["overlap_max"]
+    report["overlap"] = [e for k, e in enumerate(listed) if k < LIST_TOP or e["overlap"] >= near]
 
 
 def preflight(cfg, path: Path, tf: str) -> dict:
