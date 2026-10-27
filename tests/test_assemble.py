@@ -367,9 +367,10 @@ def test_unknown_plugin_ignored(world):
     check_overlap_rules(report(("human_plug", 0.99)), prop(), None, rec, PC)
 
 
-def test_unmeasured_or_failed_report_is_never_a_pass(world):
+def test_unmeasured_or_failed_report_is_never_a_pass_and_not_the_models_fault(world):
     rec, o, c = world
-    with pytest.raises(Rejected, match="not measured|did not measure"):
+    with pytest.raises(ValueError, match="did not measure"):
         check_overlap_rules(report(skipped={"overlap": "boom"}, ok=True), prop(), None, rec, PC)
-    with pytest.raises(Rejected):
+    with pytest.raises(ValueError, match="passing preflight"):
         check_overlap_rules(report(ok=False), prop(), None, rec, PC)
+    assert not issubclass(Rejected, ValueError)

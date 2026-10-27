@@ -1,7 +1,8 @@
 """The idea rules, plugin assembly and source checks, all in code (ADR 0006).
 
-Every check raises `Rejected(message)`; the message goes back to the model as a fix-up. The model
-never writes PARENT: the orchestrator inserts the champion for a refinement.
+Every check of the model's work raises `Rejected(message)`; the message goes back to the model as a
+fix-up. The orchestrator's own mistakes (overlap rules asked of a report that failed) are ValueErrors,
+never fix-ups. The model never writes PARENT: the orchestrator inserts the champion for a refinement.
 """
 
 from __future__ import annotations
@@ -166,10 +167,11 @@ def check_source(text: bytes, name: str, tf: str, pc: ProposerConfig) -> None:
 
 
 def check_overlap_rules(report: dict, p: Proposal, target: dict | None, record: Record, pc: ProposerConfig) -> None:
+    # The orchestrator's own mistakes, not the model's: a ValueError, never a fix-up.
     if not report.get("ok"):
-        raise Rejected("the overlap rules apply only to a passing preflight report")
+        raise ValueError("the overlap rules apply only to a passing preflight report")
     if "overlap" in (report.get("skipped") or {}):
-        raise Rejected("preflight did not measure overlap; the near-copy check was not made")
+        raise ValueError("preflight did not measure overlap; the near-copy check was not made")
     exempt = target["id"] if target is not None and p.kind in ("refinement", "port") else None
     # Ideas own runs, not plugin names: a seed plugin can run under one idea at 4h and under its port at 1h.
     owner = {(x["plugin"], x["timeframe"]): x["idea_id"] for x in record.proposals() if x.get("plugin")}
