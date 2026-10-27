@@ -84,6 +84,10 @@ def plugin_name(seq: int, title: str) -> str:
     return f"px{seq:04d}_{slug}"[:MAX_NAME].rstrip("_")
 
 
+def _normalise(text: str) -> str:
+    return text.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _parse(source: str) -> ast.Module:
     try:
         return ast.parse(source)
@@ -107,14 +111,10 @@ def _targets(node: ast.AST):
 
 
 def check_model_source(source: str) -> None:
-    for node in ast.walk(_parse(source)):
+    for node in ast.walk(_parse(_normalise(source))):         # read as assemble reads it
         for t in _targets(node):
             if any(isinstance(n, ast.Name) and n.id == "PARENT" for n in ast.walk(t)):
                 raise Rejected("the source assigns PARENT; the platform sets PARENT, remove that line")
-
-
-def _normalise(text: str) -> str:
-    return text.removeprefix("﻿").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _docstring(h: str) -> str:

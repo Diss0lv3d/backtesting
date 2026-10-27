@@ -156,6 +156,13 @@ def test_parent_assignment_refused_comment_and_string_fine():
     check_model_source(SRC + '# PARENT = "x"\nS.note = "PARENT"\n"""PARENT = 1"""\n')
 
 
+def test_model_source_is_read_as_assemble_reads_it_bom_and_crlf():
+    for src in ("﻿" + SRC, "﻿" + SRC.replace("\n", "\r\n")):
+        check_model_source(src)
+        with pytest.raises(Rejected, match="PARENT"):
+            check_model_source(src + 'PARENT = "x"\r\n')
+
+
 def test_unparseable_source_is_rejected():
     with pytest.raises(Rejected, match="parse"):
         check_model_source("def (:")
