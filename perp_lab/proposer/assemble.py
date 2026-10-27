@@ -191,5 +191,6 @@ def check_overlap_rules(report: dict, p: Proposal, target: dict | None, record: 
             continue
         if idea["status"] != "open":
             raise Rejected(f"near-copy of closed idea #{idea['id']} ({idea['title']})")
-        if p.kind == "new":
-            raise Rejected(f"propose it as a refinement (or a port) of idea #{idea['id']} ({idea['title']})")
+        # Another open idea's mechanism belongs in that idea, whatever this proposal's kind: one mechanism stays
+        # one family with one holdout read.
+        raise Rejected(f"propose it as a refinement (or a port) of idea #{idea['id']} ({idea['title']})")

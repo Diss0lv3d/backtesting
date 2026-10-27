@@ -262,7 +262,7 @@ def test_closed_near_copy_refused_for_every_kind(world):
             check_overlap_rules(r, p, t, rec, PC)
 
 
-def test_open_near_copy_as_new_is_redirected_but_refinement_and_port_may(world):
+def test_open_near_copy_as_new_is_redirected_but_its_own_refinement_and_port_may(world):
     rec, o, c = world
     r = report(("open_plug", 0.9))
     with pytest.raises(Rejected, match=f"propose it as a refinement \\(or a port\\) of idea #{o} \\(Open one\\)"):
@@ -279,11 +279,19 @@ def test_exemption_is_only_for_the_own_idea(world):
     p2 = rec.add_idea("Other open", {}, "seed", "1h")
     judged(rec, p2, "other_plug")
     for p in (refine(p2), port(p2)):
-        t = rec.idea(p2)
         with pytest.raises(Rejected, match="closed idea"):
-            check_overlap_rules(report(("closed_plug", 0.9)), p, t, rec, PC)
-        # only a new idea is redirected from an open idea's plugin
-        check_overlap_rules(report(("open_plug", 0.9)), p, t, rec, PC)
+            check_overlap_rules(report(("closed_plug", 0.9)), p, rec.idea(p2), rec, PC)
+
+
+def test_a_refinement_or_port_near_copying_another_open_idea_is_redirected_there(world):
+    rec, o, c = world
+    other = rec.add_idea("Other open", {}, "seed", "1h")
+    judged(rec, other, "other_plug", SBC)
+    redirect = f"propose it as a refinement \\(or a port\\) of idea #{o} \\(Open one\\)"
+    for p in (refine(other), port(other)):
+        with pytest.raises(Rejected, match=redirect):
+            check_overlap_rules(report(("open_plug", 0.9)), p, rec.idea(other), rec, PC)
+        check_overlap_rules(report(("other_plug", 0.9)), p, rec.idea(other), rec, PC)     # its own idea
 
 
 def test_a_port_is_exempt_from_the_exhausted_idea_it_ports_and_no_other(rec):
