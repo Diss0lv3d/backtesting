@@ -225,10 +225,10 @@ def test_assemble_parent_only_for_refinement_with_champion():
 
 def test_assemble_keeps_future_import_legal():
     src = '"""d"""\nfrom __future__ import annotations\n' + SRC.split("\n", 1)[1]
-    out = assemble(refine(1), "n", "px0002_champ")
-    compile(out, "n", "exec")
-    compile(assemble(refine(1), "n", "p", ) if False else assemble(replace(refine(1), source=src), "n", "p"),
-            "n", "exec")
+    for s in (src, src.split("\n", 1)[1]):                    # with and without a docstring of its own
+        out = assemble(replace(refine(1), source=s), "n", "px0002_champ")
+        compile(out, "n", "exec")
+        assert parse_meta(out, "n").parent == "px0002_champ"
 
 
 # -- check_source
