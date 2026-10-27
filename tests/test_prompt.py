@@ -6,11 +6,13 @@ import json
 import re
 from datetime import datetime, timezone
 
+import pandas as pd
 import pytest
 
 from perp_lab.dsr import sharpe_bar
 from perp_lab.proposer import prompt
 from perp_lab.proposer.record import Record
+from tests.test_store import cfg  # noqa: F401  (a temp config and store)
 
 SENTINEL = "SENTINEL_TIME_2026-10-21T03:04:05"
 RUN_ID = "20291021-030405-abcdef"
@@ -70,6 +72,50 @@ def test_a_refreshed_verdict_shows_the_refreshed_numbers_and_the_old_decision_on
     for gone in ("oos_metrics", "dsr", "sr0", "beats_parent_frac", "reasons"):
         assert gone not in out, gone
     assert "-0.46" not in json.dumps(out)        # the old judgement's OOS Sharpe, in its metrics and reasons
+
+
+# public_verdict passes `diagnostics` and `walkforward.metrics` through whole, so their keys are pinned here
+# from what the judge writes. A key the judge adds later (one that might carry a time) fails this test first and
+# forces a review of what reaches the model.
+DIAGNOSTICS_BLOCKS = {
+    "gates": {"net_sharpe", "random_mean", "random_p95", "pctile", "long_share", "oos_trades", "min_oos_trades"},
+    "before_costs": {"sharpe", "random_mean", "random_p95", "pctile"},
+    "per_trade_bp": {"gross", "fees", "slippage", "funding", "net"},
+    "sides": {"long", "short", "long_share", "long_gross_bp", "long_net_bp", "short_gross_bp", "short_net_bp"},
+    "exits": {"share", "mean_bars_held"},
+    "breadth": {"coins", "coins_net_pos", "folds", "folds_net_pos", "top_coin_share", "top_fold_share"},
+    "is_vs_oos": {"is_sharpe", "oos_sharpe"},
+    "overlap": {"position", "mirror", "correlation"},
+}
+DIAGNOSTICS_KEYS = {"data", "regimes", "selection", *DIAGNOSTICS_BLOCKS}
+EXIT_REASONS = {"stop", "target", "signal", "liq", "eow"}          # the engine's close_pos reasons
+OOS_METRICS_KEYS = {"sharpe", "sortino", "max_dd", "total_return", "cagr", "days", "exposure", "trades", "win_rate",
+                    "profit_factor", "avg_r", "avg_bars_held", "liquidations", "fees", "funding"}
+
+
+def test_the_blocks_passed_through_whole_have_exactly_the_keys_the_judge_writes(cfg):
+    from perp_lab.engine.metrics import summarize
+    from perp_lab.judge.diagnostics import diagnostics
+    from perp_lab.validate.regime import REGIMES
+    from tests.test_diagnostics import DAYS, recorded_run, trades
+
+    earlier = [{"strategy": "s0", "timeframe": "1h", "run_dir": str(recorded_run(cfg, "r0", trades()))}]
+    d = diagnostics(cfg, recorded_run(cfg, "r1", trades()), data="judged", earlier=earlier)
+    t = trades().assign(r_multiple=0.5)
+    m = summarize(pd.Series(0.001, index=DAYS), t, 0.2)      # the walk-forward's OOS metrics (oos_summary)
+    out = prompt.public_verdict({"decision": "kill", "diagnostics": d, "walkforward": {"run_id": RUN_ID,
+                                                                                      "metrics": m}})
+    assert out["diagnostics"] == d and out["oos_metrics"] == m
+    assert set(d) == DIAGNOSTICS_KEYS
+    for block, keys in DIAGNOSTICS_BLOCKS.items():
+        assert set(d[block]) == keys, block
+    assert d["regimes"] and set(d["regimes"]) <= set(REGIMES)
+    assert all(set(v) == {"trades", "gross_bp"} for v in d["regimes"].values())
+    assert d["exits"]["share"] and set(d["exits"]["share"]) <= EXIT_REASONS
+    assert d["selection"] and all(isinstance(v, int) for v in d["selection"].values())
+    entries = [e for lst in d["overlap"].values() for e in lst]
+    assert entries and all(set(e) == {"strategy", "timeframe", "value"} for e in entries)
+    assert set(m) == OOS_METRICS_KEYS
 
 
 CARD_A = {"title": "Flow fade", "mechanism": "forced flow reverts", "signal": "fade the hour",
