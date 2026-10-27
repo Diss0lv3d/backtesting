@@ -150,10 +150,16 @@ def test_plugin_name():
 # -- PARENT in the model's source
 def test_parent_assignment_refused_comment_and_string_fine():
     for bad in ('PARENT = "x"\n', 'PARENT: str = "x"\n', 'a = PARENT = "x"\n', 'PARENT += "x"\n',
-                'if 1:\n    PARENT = "x"\n', 'class K:\n    PARENT = 1\n', '(PARENT := 1)\n'):
+                'if 1:\n    PARENT = "x"\n', 'class K:\n    PARENT = 1\n', '(PARENT := 1)\n',
+                'PARENT, b = 1, 2\n', '*PARENT, = [1]\n', 'for PARENT in []:\n    pass\n',
+                'with open("f") as PARENT:\n    pass\n', 'del PARENT\n'):
         with pytest.raises(Rejected, match="PARENT"):
             check_model_source(SRC + bad)
     check_model_source(SRC + '# PARENT = "x"\nS.note = "PARENT"\n"""PARENT = 1"""\n')
+
+
+def test_reading_parent_is_not_assigning_it():
+    check_model_source(SRC + 'd = {}\nd[PARENT] = 1\nPARENT.x = 1\nx = PARENT\n')
 
 
 def test_model_source_is_read_as_assemble_reads_it_bom_and_crlf():

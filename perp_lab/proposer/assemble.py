@@ -95,26 +95,12 @@ def _parse(source: str) -> ast.Module:
         raise Rejected(f"the source does not parse: {e}") from e
 
 
-def _targets(node: ast.AST):
-    if isinstance(node, ast.Assign):
-        yield from node.targets
-    elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-        yield node.target
-    elif isinstance(node, ast.NamedExpr):
-        yield node.target
-    elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-        yield node.target
-    elif isinstance(node, (ast.With, ast.AsyncWith)):
-        for item in node.items:
-            if item.optional_vars is not None:
-                yield item.optional_vars
-
-
 def check_model_source(source: str) -> None:
-    for node in ast.walk(_parse(_normalise(source))):         # read as assemble reads it
-        for t in _targets(node):
-            if any(isinstance(n, ast.Name) and n.id == "PARENT" for n in ast.walk(t)):
-                raise Rejected("the source assigns PARENT; the platform sets PARENT, remove that line")
+    # Every binding of the name (=, :=, +=, for, with, del, unpacking) is a Name in a Store or Del context;
+    # `d[PARENT] = 1` and `PARENT.x = 1` only read it.
+    for n in ast.walk(_parse(_normalise(source))):            # read as assemble reads it
+        if isinstance(n, ast.Name) and n.id == "PARENT" and isinstance(n.ctx, (ast.Store, ast.Del)):
+            raise Rejected("the source assigns PARENT; the platform sets PARENT, remove that line")
 
 
 def _docstring(h: str) -> str:
