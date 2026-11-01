@@ -127,3 +127,10 @@ def test_try_next_needs_an_idea_some_proposal_could_work_on(rec):
     with pytest.raises(ValueError, match=f"idea #{dead} is dead; only an open idea"):
         human.flag_next(rec, PC, dead)
     assert rec.next_up()["id"] == lce
+
+
+@pytest.mark.parametrize("title", ["Basis\nsqueeze", "Basis\r\nsqueeze", "Basis squeeze"])
+def test_a_title_must_be_one_line(rec, title):
+    """The record's closed-idea entry and the open idea's heading are one line each (prompt.render_record)."""
+    assert human.check(rec, PC, entry(title=title)) == ["title: must be one line"]
+    assert human.check(rec, PC, entry(title="  Basis squeeze \n")) == []          # an edge is trimmed, not refused

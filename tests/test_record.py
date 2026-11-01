@@ -302,3 +302,13 @@ def test_an_excluded_idea_loses_its_flag_and_stays_excluded_when_settled(rec):
     assert rec.next_up() is None
     loop.settle(rec, SimpleNamespace(proposals_per_idea=4))
     assert rec.idea(i)["status"] == "excluded"
+
+
+@pytest.mark.parametrize("reason", ["sign flip\nof B", "sign flip\rof B", "sign flip of B"])
+def test_an_exclusion_reason_must_be_one_line(rec, reason):
+    i = rec.add_idea("A", {}, "seed", "1h")
+    with pytest.raises(ValueError, match="must be one line"):
+        rec.exclude_idea(i, reason)
+    assert rec.idea(i)["status"] == "open"
+    rec.exclude_idea(i, "  sign flip of B \n")
+    assert rec.idea(i)["excluded_reason"] == "sign flip of B"

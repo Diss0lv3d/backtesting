@@ -45,13 +45,15 @@ def _parse(record: Record, pc, entry) -> tuple[dict | None, str | None, list[str
         card = parse_card(raw)
     except ContractError as e:
         card, errors = None, list(e.errors)
+    title = raw.get("title")
+    if isinstance(title, str) and len(title.splitlines()) > 1:      # the prompt's heading and closed entry are one
+        errors.append("title: must be one line")                     # line each (prompt.render_record)
     cols = raw.get("columns")
     bad = [c for c in cols if isinstance(c, str) and c and c not in PLUGIN_COLUMNS] \
         if isinstance(cols, (list, tuple)) else []
     if bad:
         errors.append(f"columns: {', '.join(map(repr, bad))} {'is' if len(bad) == 1 else 'are'} not among the bar "
                       f"columns a plugin may read: {', '.join(PLUGIN_COLUMNS)}")
-    title = raw.get("title")
     if isinstance(title, str) and title.casefold() in {i["title"].strip().casefold() for i in record.ideas()}:
         errors.append(f"title: an idea titled {title!r} is already in the record")
     tf = entry.get("timeframe")

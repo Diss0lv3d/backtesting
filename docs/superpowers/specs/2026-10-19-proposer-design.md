@@ -1000,8 +1000,8 @@ proposer from the Ideas page and from `lab idea`, with structured cards and butt
   refinement is a root, with no `PARENT`) or ports it. The `duplicate` status stays the model's
   own, so a human idea, like a seeded one, is never filed as one.
 - **Its card is checked in code** by the rules a model's new idea meets: the contract's card
-  checks (`contract.parse_card`, the ones `parse` gives a new idea's card), a title no idea in the
-  record has, whatever the case, and a timeframe from `proposer.timeframes`. Its columns must be
+  checks (`contract.parse_card`, the ones `parse` gives a new idea's card), a one-line title no idea
+  in the record has, whatever the case, and a timeframe from `proposer.timeframes`. Its columns must be
   bar columns a plugin may read: the static context's bar table, but `slippage`
   (`context.PLUGIN_COLUMNS`). Every error comes back at once, as a list of strings. The page's
   form is built from the `IdeaCard` fields.
@@ -1009,7 +1009,8 @@ proposer from the Ideas page and from `lab idea`, with structured cards and butt
   is refused until the record holds a seeded one. The refusal says to run `lab propose --trials 0`.
 - **Exclude.** The human closes an open, exhausted or dead idea for good, with a reason: status
   `excluded` and `excluded_reason`, as candidate E is seeded. Never a passed, failed, duplicate or
-  excluded one. The model reads the reason on the idea's closed line.
+  excluded one. The model reads the reason on the idea's closed entry, which is one line, so the
+  reason must be one line too, as a human card's title must.
 - **Try next.** `ideas.next_up` holds when the human asked for an idea to be tried next. One idea
   holds it at most, and setting it clears it from any other. Only an open idea some proposal could
   work on now takes it: a refinement at its own timeframe, or a port under the port rules

@@ -260,6 +260,8 @@ class Record:
         reason = (reason or "").strip()
         if not reason:
             raise ValueError("an exclusion needs a reason")
+        if len(reason.splitlines()) > 1:             # the idea's closed entry in the prompt is one line
+            raise ValueError("an exclusion reason must be one line")
         with self.engine.begin() as c:              # the write first, as in flag_next
             if c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.status.in_(EXCLUDABLE))
                          .values(status="excluded", excluded_reason=reason, next_up=None)).rowcount:

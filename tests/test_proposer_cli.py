@@ -223,3 +223,11 @@ def test_idea_next_refuses_an_idea_no_proposal_could_work_on(tmp_path):
     r = _idea_cmd(tmp_path, "next", str(lce))
     assert r.exit_code == 2 and f"no proposal can work on idea #{lce} (LCE) now" in r.output.replace("\n", " ")
     assert rec.next_up() is None
+
+
+def test_idea_add_and_exclude_refuse_a_line_break(tmp_path):
+    rec = _seeded(tmp_path)
+    r = _idea_cmd(tmp_path, "add", _file(tmp_path, title="Basis\nsqueeze"))
+    assert r.exit_code == 2 and "title: must be one line" in r.output and len(rec.ideas()) == 1
+    r = _idea_cmd(tmp_path, "exclude", "1", "--reason", "sign flip\nof B")
+    assert r.exit_code == 2 and "must be one line" in r.output and rec.idea(1)["status"] == "open"
