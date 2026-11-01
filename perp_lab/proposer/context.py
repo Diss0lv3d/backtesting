@@ -250,7 +250,8 @@ def _piles(cfg, pc: ProposerConfig) -> str:
         "An idea's status:",
         "\n".join([
             "- open: a new idea; one with only broken attempts; or one whose best pile is signal before costs, close "
-            f"call or promoted, with judged plugins left ({per} per idea). Only open ideas take refinements.",
+            f"call or promoted, with judged plugins left ({per} per idea). Only open ideas take refinements, and "
+            f"an open idea at a timeframe other than {', '.join(pc.timeframes)} (a human trial) takes ports only.",
             "- dead: its best pile is no signal. One faithful test that showed no signal before costs ends an idea.",
             f"- exhausted: it used its {per} judged plugins. It keeps its best pile and gets no more trials.",
             "- passed or failed: its family's holdout read was spent on an exam with that outcome.",

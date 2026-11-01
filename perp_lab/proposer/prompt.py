@@ -110,10 +110,15 @@ def _proposal(p: dict) -> list[str]:
     return lines
 
 
-def _open_idea(idea: dict, props: list[dict]) -> str:
-    best = _best(props)
-    facts = [f"timeframe {idea.get('timeframe')}", f"status {idea['status']}", f"best pile {best or 'none yet'}",
-             f"judged plugins {len(_judged(props))}"]
+def _open_idea(idea: dict, props: list[dict], timeframes) -> str:
+    best, tf = _best(props), idea.get("timeframe")
+    # A refinement keeps its idea's timeframe, so an idea at one no plugin may trade (a human trial at 5m) takes
+    # ports only, and no refinement gets its champion as PARENT (M-1).
+    ports_only = tf not in timeframes
+    status = f"status {idea['status']}"
+    if ports_only:
+        status += f", ports only: its timeframe {tf} is not one a plugin may trade"
+    facts = [f"timeframe {tf}", status, f"best pile {best or 'none yet'}", f"judged plugins {len(_judged(props))}"]
     if idea.get("port_of") is not None:
         facts.append(f"port of #{idea['port_of']}")
     out = [f"### #{idea['id']} {idea['title']}", "; ".join(facts), "Card:", card_text(idea.get("card") or {})]
@@ -122,18 +127,20 @@ def _open_idea(idea: dict, props: list[dict]) -> str:
         out += _proposal(p)
     champ = piles.champion(props)
     if champ is not None:
-        out.append("Champion, the PARENT a refinement of this idea gets: "
-                   f"{champ.get('plugin')}@{champ.get('timeframe')}")
+        name = f"{champ.get('plugin')}@{champ.get('timeframe')}"
+        out.append(f"Its best plugin (a port of this idea is a root, with no PARENT): {name}" if ports_only
+                   else f"Champion, the PARENT a refinement of this idea gets: {name}")
         out.append(fence(champ["source"], "python") if champ.get("source") else "(its source is not in the record)")
     return "\n".join(out)
 
 
-def render_record(record: Record, current_n: int) -> str:
+def render_record(record: Record, current_n: int, timeframes) -> str:
+    """The record for the prompt; `timeframes` is proposer.timeframes, the ones a plugin may trade."""
     opened, closed = [], []
     for idea in record.ideas():
         props = [p for p in record.proposals(idea["id"]) if p.get("state") in SHOWN_STATES]
         if idea["status"] == "open":
-            opened.append(_open_idea(idea, props))
+            opened.append(_open_idea(idea, props, tuple(timeframes)))
         else:
             best = _best(props)
             label = best or ("untested" if not _judged(props) else "unknown")

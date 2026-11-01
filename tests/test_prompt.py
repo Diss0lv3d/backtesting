@@ -118,6 +118,7 @@ def test_the_blocks_passed_through_whole_have_exactly_the_keys_the_judge_writes(
     assert set(m) == OOS_METRICS_KEYS
 
 
+TFS = ("15m", "1h", "4h")                 # proposer.timeframes
 CARD_A = {"title": "Flow fade", "mechanism": "forced flow reverts", "signal": "fade the hour",
           "note": "from the research note of 2026-10-18"}
 CARD_B = {"title": "Donchian", "mechanism": "trends persist"}
@@ -148,7 +149,7 @@ def rec(tmp_path):
 
 
 def test_render_record_carries_no_time_and_no_run_id(rec):
-    text = prompt.render_record(rec, 9)
+    text = prompt.render_record(rec, 9, TFS)
     for planted in (SENTINEL, RUN_ID, "report.md", "2029", "03:04:05", "05:06:07", "claude-x-1", "abcdef"):
         assert planted not in text, planted
     outside = text
@@ -159,7 +160,7 @@ def test_render_record_carries_no_time_and_no_run_id(rec):
 
 
 def test_an_open_idea_is_shown_in_full(rec):
-    text = prompt.render_record(rec, 9)
+    text = prompt.render_record(rec, 9, TFS)
     assert "#1 Flow fade" in text and "close call" in text
     for seq, plugin in ((1, "flow_a"), (2, "flow_b"), (3, "flow_c")):
         assert f"seq {seq}" in text and plugin in text
@@ -170,15 +171,30 @@ def test_an_open_idea_is_shown_in_full(rec):
     assert SOURCE in text                                # the champion's source: flow_a, its best plugin
 
 
+def test_an_open_idea_at_a_timeframe_no_plugin_may_trade_takes_ports_only(rec):
+    """M-1: LCE (5m, a human trial) is open, but a refinement keeps its idea's timeframe and 5m is not one of
+    proposer.timeframes, so it takes ports only, and no refinement can get its champion as PARENT."""
+    lce = rec.add_idea("LCE", {"title": "LCE"}, "seed", "5m")
+    rec.add_proposal(seq=6, idea_id=lce, kind="new", plugin="lce_atr", timeframe="5m", source=SOURCE,
+                     state="judged", judge_exit=0, verdict=verdict(gross=0.67, gross_p95=0.49))
+    text = prompt.render_record(rec, 9, TFS)
+    block = text.split(f"### #{lce} LCE\n")[1].split("\n## ")[0]
+    assert "status open, ports only: its timeframe 5m is not one a plugin may trade" in block
+    assert "Champion" not in block and "refinement" not in block
+    assert "lce_atr@5m" in block and SOURCE in block           # its best plugin, for a port to start from
+    assert "status open; " in text and "Champion, the PARENT a refinement of this idea gets: flow_a@1h" in text
+
+
 def test_a_closed_idea_gets_one_line(rec):
-    lines = prompt.render_record(rec, 9).splitlines()
+    lines = prompt.render_record(rec, 9, TFS).splitlines()
     assert "#2 Donchian: dead, no signal (gross Sharpe -0.90 against the gross random p95 0.10)" in lines
     assert "#3 Sign flip of A: excluded, untested (it is A's sign flip)" in lines
     assert "trends persist" not in "\n".join(lines)      # a closed idea's card is not shown
 
 
 def test_it_ends_with_n_and_the_bar(rec):
-    assert prompt.render_record(rec, 9).rstrip().splitlines()[-1] == f"N is now 9; the bar is {sharpe_bar(9):.2f}"
+    last = prompt.render_record(rec, 9, TFS).rstrip().splitlines()[-1]
+    assert last == f"N is now 9; the bar is {sharpe_bar(9):.2f}"
 
 
 def test_the_instruction_asks_for_one_proposal():

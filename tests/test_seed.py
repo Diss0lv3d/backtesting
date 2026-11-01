@@ -269,7 +269,7 @@ def test_a_missing_plugin_refuses_and_seeds_nothing_so_the_next_start_seeds(lab)
 def test_the_seeded_record_renders(lab):
     as_today(lab)
     ideas = do_seed(lab)
-    text = render_record(lab.rec, 9)
+    text = render_record(lab.rec, 9, settings.load(lab.cfg).timeframes)
     assert f"### #{ideas['Donchian breakout']['id']} Donchian breakout" in text
     assert f"#{ideas[E]['id']} {E}: excluded, untested ({E_REASON})" in text
 
