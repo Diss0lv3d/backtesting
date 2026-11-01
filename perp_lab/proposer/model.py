@@ -52,9 +52,10 @@ TOOLS = ["StructuredOutput"]  # the --json-schema mechanism; --tools "" removes 
 CONFINED = {"CLAUDE_CODE_EVAL_CONFINED": "1"}  # a web call's env: no preapproved hosts (undocumented; R-RF3)
 WEB_TOOLS = ["StructuredOutput", "WebFetch"]  # a call with web domains: in any order, nothing else
 ASSISTANT_BLOCKS = ("text", "thinking", "redacted_thinking", "tool_use")  # in a web call; any other is a breach
-# An allowed domain: two labels or more, nothing else. re.A, as in NETLOC: with re.I alone, [a-z] also matches
-# four non-ASCII letters (U+0130, U+0131, U+017F, U+212A).
-DOMAIN = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", re.I | re.A)
+# An allowed domain: two labels or more, none starting or ending with a hyphen, the last alphabetic (so no IP
+# address), nothing else. re.A, as in NETLOC: with re.I alone, [a-z] also matches four non-ASCII letters (U+0130,
+# U+0131, U+017F, U+212A).
+DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]+", re.I | re.A)
 # A URL every parser reads alike: printable ASCII without space or backslash (a WHATWG parser, the CLI's, reads
 # `\` as `/`, so `https://evil.com\@arxiv.org` is evil.com to it and arxiv.org to urlsplit), and a netloc that is a
 # bare letters-digits-hyphens host with an optional port: no userinfo, percent escapes, IP literals or Unicode.
@@ -114,7 +115,7 @@ def argv(pc, system: str, schema: dict, *, web_domains: tuple[str, ...] = ()) ->
         bad = [d for d in web_domains if not (isinstance(d, str) and DOMAIN.fullmatch(d))]
         if bad:  # a rule is the CLI's syntax: a domain that isn't a plain hostname could widen it
             raise ModelConfigError(f"not a hostname for the web allowlist: {bad[0]!r}")
-        tools = ["WebFetch", "--allowedTools", *(f"WebFetch(domain:{d})" for d in web_domains),
+        tools = ["WebFetch", "--allowedTools", *(f"WebFetch(domain:{d.lower()})" for d in web_domains),
                  "--setting-sources", ""]
     return [pc.claude_bin, "-p", "--model", pc.model, "--effort", pc.effort, "--tools", *tools,
             "--strict-mcp-config", "--safe-mode", "--disable-slash-commands", "--no-session-persistence",

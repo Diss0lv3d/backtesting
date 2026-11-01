@@ -440,6 +440,12 @@ def test_a_web_argv_has_webfetch_and_one_allow_rule_per_domain_before_the_next_f
         json.dumps(SCHEMA), "--output-format", "stream-json", "--verbose", "--include-hook-events"]
 
 
+def test_the_allow_rules_are_lowercased(pc):
+    a = model.argv(pc, "s", SCHEMA, web_domains=("ArXiv.ORG", "x-1.API.Crossref.org"))
+    assert a[a.index("--allowedTools") + 1:a.index("--setting-sources")] == [
+        "WebFetch(domain:arxiv.org)", "WebFetch(domain:x-1.api.crossref.org)"]
+
+
 def test_no_web_domains_is_todays_tool_less_argv(pc):
     a = model.argv(pc, "s", SCHEMA, web_domains=())
     assert a == model.argv(pc, "s", SCHEMA)
@@ -449,7 +455,8 @@ def test_no_web_domains_is_todays_tool_less_argv(pc):
 
 @pytest.mark.parametrize("domain", ["", "org", "arxiv.org) Bash(", "arxiv.org,evil.com", "arxiv.org evil.com",
                                     "*.arxiv.org", "https://arxiv.org", "arxiv.org/abs", "аrxiv.org",
-                                    "arx\u0131v.org", "\u212aaggle.com", None])
+                                    "arx\u0131v.org", "\u212aaggle.com", None, "10.0.0.1", "arxiv.123", "arxiv.o-g",
+                                    "-arxiv.org", "arxiv-.org", "arxiv.-.org", "--.org", "arxiv..org", "arxiv.org."])
 def test_a_web_domain_that_is_not_a_hostname_is_refused_before_any_process(fake, pc, transcript, domain):
     fake.scenario(OK)
     with pytest.raises(model.ModelConfigError, match="not a hostname"):
