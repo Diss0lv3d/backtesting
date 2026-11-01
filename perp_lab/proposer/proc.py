@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 PIPE = subprocess.PIPE  # re-exported so callers needn't import subprocess (the boundary test bans it)
+TimeoutExpired = subprocess.TimeoutExpired  # likewise, for Popen.wait / communicate with a timeout
 POPEN_KW = frozenset({"stdin", "stdout", "stderr", "cwd", "env", "text", "start_new_session"})
 
 

@@ -1,0 +1,323 @@
+from __future__ import annotations
+
+import dataclasses
+import json
+import os
+import re
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from perp_lab.config import load_config
+from perp_lab.proposer import model
+from perp_lab.proposer.settings import load
+from tests.conftest import REPO
+
+# The real stream, CLI 2.1.316 (the build's one real model call): ui_invalidate, init, assistant, user,
+# rate_limit_event, result.
+FIXTURE = REPO / "tests/fixtures/claude_stream_ok.jsonl"
+OK = FIXTURE.read_text().splitlines()
+UI, INIT, ASSISTANT, USER, RATE, RESULT = range(6)
+SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+TOKEN = re.compile(r"sk-ant-|Bearer ")
+QUICK_S = 10  # every scenario that should be cut short pauses 30 s first
+
+
+def _msg(i: int) -> dict:
+    return json.loads(OK[i])
+
+
+def _line(i: int, drop: tuple[str, ...] = (), **over) -> str:
+    m = {k: v for k, v in _msg(i).items() if k not in drop}
+    return json.dumps({**m, **over})
+
+
+def _rate(**info) -> str:
+    m = _msg(RATE)
+    return json.dumps({**m, "rate_limit_info": {**m["rate_limit_info"], **info}})
+
+
+def _gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # succeeds on a live process or an unreaped zombie
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def _dead_soon(pid: int, within_s: float = 5) -> bool:
+    """An orphan is reaped by init, not by us: a zombie counts as dead."""
+    end = time.monotonic() + within_s
+    while time.monotonic() < end:
+        try:
+            if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z":
+                return True
+        except FileNotFoundError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+class Fake:
+    def __init__(self, bindir: Path):
+        self.dir = bindir
+
+    def scenario(self, lines, exit: int = 0, version: str | None = None, child: int | None = None) -> None:
+        s = {"lines": list(lines), "exit": exit}
+        if version is not None:
+            s["version"] = version
+        if child is not None:
+            s["child"] = child
+        (self.dir / "scenario.json").write_text(json.dumps(s))
+
+    @property
+    def seen(self) -> dict:
+        return json.loads((self.dir / "seen.json").read_text())
+
+
+@pytest.fixture
+def fake(tmp_path, monkeypatch):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    body = (REPO / "tests/fake_claude.py").read_text().split("\n", 1)[1]
+    exe = bindir / "claude"
+    exe.write_text(f"#!{sys.executable}\n{body}")  # the venv's python: the CLI's PATH may not reach one
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PERP_LAB_TEST_OTHER", "must not reach the CLI")
+    return Fake(bindir)
+
+
+@pytest.fixture
+def pc():
+    return dataclasses.replace(load(load_config(REPO / "config/lab.yaml")), claude_bin="claude", call_timeout_s=30)
+
+
+@pytest.fixture
+def transcript(tmp_path):
+    return tmp_path / "transcripts" / "t.jsonl"
+
+
+def test_the_argv_is_the_specs_command_line(pc):
+    assert model.argv(pc, "the static context", SCHEMA) == [
+        "claude", "-p", "--model", "claude-opus-5-5", "--effort", "high", "--tools", "", "--strict-mcp-config",
+        "--safe-mode", "--disable-slash-commands", "--no-session-persistence", "--permission-prompts", "none",
+        "--system-prompt", "the static context", "--json-schema", json.dumps(SCHEMA), "--output-format",
+        "stream-json", "--verbose", "--include-hook-events"]
+
+
+def test_the_cli_runs_in_an_empty_temp_dir_outside_the_repo_with_only_home_and_path(fake, pc, transcript):
+    fake.scenario(OK)
+    model.call(pc, "the static context", "the record", SCHEMA, transcript)
+    seen = fake.seen
+    assert seen["argv"][1:] == model.argv(pc, "the static context", SCHEMA)[1:]
+    assert seen["stdin"] == "the record"
+    cwd = Path(seen["cwd"])
+    assert seen["cwd_files"] == []
+    assert cwd.name.startswith("perp-lab-proposer-") and not cwd.is_relative_to(REPO.resolve())
+    assert not cwd.exists()
+    assert seen["env"] == {"HOME": os.environ["HOME"], "PATH": os.environ["PATH"]}
+
+
+def test_the_ok_fixture_parses_to_its_structured_output_and_usage(fake, pc, transcript):
+    fake.scenario(OK)
+    reply = model.call(pc, "s", "u", SCHEMA, transcript)
+    assert reply == model.Reply(proposal={"ok": True}, usage=_msg(RESULT)["usage"], cost_usd=0.020392)
+
+
+def test_the_transcript_holds_every_line_and_no_token(fake, pc, transcript):
+    fake.scenario(OK)
+    model.call(pc, "s", "u", SCHEMA, transcript)
+    assert transcript.read_bytes() == FIXTURE.read_bytes()
+    model.call(pc, "s", "u", SCHEMA, transcript)
+    assert transcript.read_bytes() == FIXTURE.read_bytes() * 2
+    assert not TOKEN.search(FIXTURE.read_text())
+    assert not TOKEN.search(transcript.read_text())
+
+
+def test_a_large_stdin_is_fed_whole(fake, pc, transcript):
+    fake.scenario(OK)
+    user = "record line\n" * 200_000  # 2.4 MB, far past a pipe's buffer
+    model.call(pc, "s", user, SCHEMA, transcript)
+    assert fake.seen["stdin"] == user
+
+
+@pytest.mark.parametrize("init", [
+    _line(INIT, model="claude-sonnet-5-5"),
+    _line(INIT, model="opus"),
+    _line(INIT, drop=("model",)),
+    _line(INIT, tools=["StructuredOutput", "Bash"]),
+    _line(INIT, tools=[]),
+    _line(INIT, drop=("tools",)),
+    _line(INIT, mcp_servers=[{"name": "x", "status": "connected"}]),
+    _line(INIT, skills=["x"]),
+    _line(INIT, slash_commands=["/x"]),
+], ids=["other-model", "alias", "no-model", "extra-tool", "no-tool", "no-tools-key", "mcp", "skill", "slash"])
+def test_a_failed_init_check_kills_the_call_before_any_result(fake, pc, transcript, init):
+    fake.scenario([OK[UI], init, 30, *OK[ASSISTANT:]])
+    start = time.monotonic()
+    with pytest.raises(model.ModelConfigError):
+        model.call(pc, "s", "u", SCHEMA, transcript)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+    assert transcript.read_text().splitlines() == [OK[UI], init]
+    assert not Path(fake.seen["cwd"]).exists()
+
+
+def test_init_lists_that_are_absent_pass(fake, pc, transcript):
+    fake.scenario([OK[UI], _line(INIT, drop=("mcp_servers", "skills", "slash_commands")), *OK[ASSISTANT:]])
+    assert model.call(pc, "s", "u", SCHEMA, transcript).proposal == {"ok": True}
+
+
+@pytest.mark.parametrize("hook", [
+    json.dumps({"type": "system", "subtype": "hook_started", "hook_name": "SessionStart"}),
+    json.dumps({"type": "system", "subtype": "hook_response", "hook_name": "Stop"}),
+    json.dumps({"type": "hook_event"}),
+], ids=["hook_started", "hook_response", "hook-type"])
+def test_a_later_hook_event_kills_the_call(fake, pc, transcript, hook):
+    fake.scenario([OK[UI], OK[INIT], hook, 30, *OK[ASSISTANT:]])
+    start = time.monotonic()
+    with pytest.raises(model.ModelConfigError):
+        model.call(pc, "s", "u", SCHEMA, transcript)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+def test_a_hook_event_before_init_kills_the_call(fake, pc, transcript):
+    fake.scenario([OK[UI], json.dumps({"type": "system", "subtype": "hook_started"}), 30, *OK[INIT:]])
+    with pytest.raises(model.ModelConfigError):
+        model.call(pc, "s", "u", SCHEMA, transcript)
+    assert _gone(fake.seen["pid"])
+
+
+def test_a_rejected_rate_limit_raises_usage_limit_with_its_reset(fake, pc, transcript):
+    fake.scenario([*OK[:RATE], _rate(status="rejected", resetsAt=1793539200), 30, OK[RESULT]])
+    start = time.monotonic()
+    with pytest.raises(model.UsageLimit) as e:
+        model.call(pc, "s", "u", SCHEMA, transcript)
+    assert e.value.resets_at == datetime(2026, 11, 1, 13, 20, tzinfo=timezone.utc)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+def test_a_rejected_rate_limit_without_a_reset_gives_none(fake, pc, transcript):
+    m = _msg(RATE)
+    info = {k: v for k, v in m["rate_limit_info"].items() if k != "resetsAt"}
+    fake.scenario([*OK[:RATE], json.dumps({**m, "rate_limit_info": {**info, "status": "rejected"}}), OK[RESULT]])
+    with pytest.raises(model.UsageLimit) as e:
+        model.call(pc, "s", "u", SCHEMA, transcript)
+    assert e.value.resets_at is None
+
+
+def test_the_overage_status_is_not_the_limit(fake, pc, transcript):
+    assert _msg(RATE)["rate_limit_info"]["overageStatus"] == "rejected"  # the real fixture, status "allowed"
+    fake.scenario([*OK[:RATE], _rate(overageStatus="rejected"), OK[RESULT]])
+    assert model.call(pc, "s", "u", SCHEMA, transcript).proposal == {"ok": True}
+
+
+@pytest.mark.parametrize("lines,exit", [
+    (["not json", *OK], 0),
+    ([OK[UI], OK[INIT], "not json", 30, *OK[ASSISTANT:]], 0),
+    ([OK[UI], OK[INIT], "[1, 2]", *OK[ASSISTANT:]], 0),
+    ([], 0),
+    ([OK[UI]], 0),
+    ([OK[ASSISTANT], *OK], 0),
+    (OK[:RESULT], 0),
+    (OK, 1),
+    ([*OK[:RESULT], _line(RESULT, is_error=True, subtype="error_during_execution")], 0),
+    ([*OK[:RESULT], _line(RESULT, drop=("structured_output",))], 0),
+    ([*OK[:RESULT], _line(RESULT, structured_output="ok")], 0),
+], ids=["non-json-first", "non-json-later", "not-an-object", "empty", "eof-before-init", "assistant-before-init",
+        "eof-without-result", "non-zero-exit", "is-error", "no-structured-output", "structured-output-not-object"])
+def test_a_broken_stream_raises_model_call_error(fake, pc, transcript, lines, exit):
+    fake.scenario(lines, exit=exit)
+    start = time.monotonic()
+    with pytest.raises(model.ModelCallError):
+        model.call(pc, "s", "u", SCHEMA, transcript)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+def test_a_cli_silent_mid_stream_times_out(fake, pc, transcript):
+    fake.scenario([OK[UI], OK[INIT], 30, *OK[ASSISTANT:]])
+    start = time.monotonic()
+    with pytest.raises(model.ModelCallError, match="timed out"):
+        model.call(dataclasses.replace(pc, call_timeout_s=1), "s", "u", SCHEMA, transcript)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+    assert not Path(fake.seen["cwd"]).exists()
+    assert transcript.read_text().splitlines() == OK[:ASSISTANT]
+
+
+def test_the_kill_takes_the_processes_the_cli_started(fake, pc, transcript):
+    fake.scenario([OK[UI], OK[INIT], 30, *OK[ASSISTANT:]], child=30)
+    with pytest.raises(model.ModelCallError, match="timed out"):
+        model.call(dataclasses.replace(pc, call_timeout_s=1), "s", "u", SCHEMA, transcript)
+    assert _gone(fake.seen["pid"])
+    assert _dead_soon(int((fake.dir / "child.pid").read_text()))
+
+
+def test_five_failures_raise_after_four_backoffs(fake, pc, transcript):
+    fake.scenario(["not json"])
+    sleeps = []
+    with pytest.raises(model.ModelCallError):
+        model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append)
+    assert sleeps == [30, 60, 120, 240]
+    assert transcript.read_text().splitlines() == ["not json"] * 5
+
+
+def test_a_retry_that_succeeds_returns_its_reply(pc, transcript, monkeypatch):
+    reply = model.Reply(proposal={"ok": True}, usage={}, cost_usd=None)
+    outcomes = [model.ModelCallError("x"), model.ModelCallError("y"), reply]
+
+    def call(*a):
+        out = outcomes.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+    monkeypatch.setattr(model, "call", call)
+    sleeps = []
+    assert model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append) is reply
+    assert sleeps == [30, 60]
+
+
+@pytest.mark.parametrize("lines,error", [
+    ([*OK[:RATE], _rate(status="rejected"), OK[RESULT]], model.UsageLimit),
+    ([OK[UI], _line(INIT, model="claude-sonnet-5-5"), *OK[ASSISTANT:]], model.ModelConfigError),
+], ids=["usage-limit", "model-config"])
+def test_usage_limit_and_model_config_pass_straight_through(fake, pc, transcript, lines, error):
+    fake.scenario(lines)
+    sleeps = []
+    with pytest.raises(error):
+        model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append)
+    assert sleeps == []
+
+
+def test_cli_version(fake, pc):
+    fake.scenario([], version="2.1.316 (Claude Code)")
+    assert model.cli_version(pc) == "2.1.316 (Claude Code)"
+
+
+def test_cli_version_failure_is_a_model_call_error(fake, pc):
+    fake.scenario([], exit=1)
+    with pytest.raises(model.ModelCallError):
+        model.cli_version(pc)
+
+
+def test_the_probe_asks_for_ok_and_passes_the_init_check(fake, pc, transcript):
+    fake.scenario(OK)
+    assert model.probe(pc, transcript) is None
+    seen = fake.seen
+    assert seen["stdin"] == "Reply with ok true."
+    assert json.loads(seen["argv"][seen["argv"].index("--json-schema") + 1]) == SCHEMA
+
+
+def test_the_probe_fails_on_a_bad_init(fake, pc, transcript):
+    fake.scenario([OK[UI], _line(INIT, tools=["StructuredOutput", "Bash"]), *OK[ASSISTANT:]])
+    with pytest.raises(model.ModelConfigError):
+        model.probe(pc, transcript)
