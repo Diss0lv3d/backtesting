@@ -6,8 +6,9 @@ import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+import sqlalchemy as sa
 
-from perp_lab.proposer.record import Record
+from perp_lab.proposer.record import Record, stops
 
 UTC = timezone.utc
 
@@ -386,3 +387,58 @@ def test_last_research_can_be_limited_to_some_outcomes(rec):
     assert rec.last_research()["id"] == cut
     assert rec.last_research(among=("ok", "invalid"))["id"] == ran
     assert rec.last_research(among=("ok", "capped")) is None
+
+
+# -- the human's stop list (referee-and-human-stops spec)
+def test_the_humans_stop_list_holds_the_items_in_force_by_id(rec):
+    assert rec.stops() == []
+    a = rec.add_stop("  Round-number stop cascades  ")
+    b = rec.add_stop("High-volume return premia")
+    assert [(s["id"], s["text"]) for s in rec.stops()] == [(a, "Round-number stop cascades"),
+                                                          (b, "High-volume return premia")]
+    assert rec.stops()[0]["created_at"].tzinfo is not None and rec.stops()[0]["removed_at"] is None
+    rec.remove_stop(a)
+    assert [s["id"] for s in rec.stops()] == [b]
+    with rec.engine.connect() as c:                  # a removed item keeps its row, with the time it went
+        gone = c.execute(sa.select(stops).where(stops.c.id == a)).mappings().one()
+    assert gone["text"] == "Round-number stop cascades" and gone["removed_at"] is not None
+    assert [s["id"] for s in Record(rec.state_dir).stops()] == [b]
+
+
+@pytest.mark.parametrize("text, why", [
+    ("", "needs text"), (" \t ", "needs text"), (None, "needs text"),
+    ("Round-number\nstop cascades", "must be one line"), ("Round-number\rstop cascades", "must be one line"),
+    ("Round-number stop cascades", "must be one line"),
+    ("x" * 201, "at most 200 characters, got 201")])
+def test_a_stop_item_is_one_line_of_at_most_200_characters(rec, text, why):
+    with pytest.raises(ValueError, match=why):
+        rec.add_stop(text)
+    assert rec.stops() == []
+    assert rec.add_stop(" " + "x" * 200 + " \n") == 1              # the limit counts the stripped text
+    assert rec.stops()[0]["text"] == "x" * 200
+
+
+def test_only_an_item_in_force_can_be_removed(rec):
+    a = rec.add_stop("Round-number stop cascades")
+    with pytest.raises(ValueError, match="there is no stop #9"):
+        rec.remove_stop(9)
+    rec.remove_stop(a)
+    first = Record(rec.state_dir)._get(stops, stops.c.id, a)["removed_at"]
+    with pytest.raises(ValueError, match=f"stop #{a} was already removed"):
+        rec.remove_stop(a)
+    assert Record(rec.state_dir)._get(stops, stops.c.id, a)["removed_at"] == first     # its time stays
+
+
+def test_an_old_record_gets_the_stops_table_and_keeps_its_ideas(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    c = sqlite3.connect(state / "record.db")
+    c.execute(OLD_IDEAS)
+    c.execute("INSERT INTO ideas (title, origin, status, created_at) VALUES ('Old', 'seed', 'open', "
+              "'2026-11-01 00:00:00')")
+    c.commit()
+    c.close()
+    rec = Record(state)
+    assert rec.idea(1)["title"] == "Old" and rec.stops() == []
+    rec.add_stop("Round-number stop cascades")
+    assert [s["text"] for s in Record(state).stops()] == ["Round-number stop cascades"]

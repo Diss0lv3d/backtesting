@@ -263,3 +263,55 @@ def test_idea_add_with_a_list_adds_none_when_any_card_fails(tmp_path):
     assert r.exit_code == 2
     assert "card #2 (Second): timeframe: must be one of ['15m', '1h', '4h'], got '5m'" in r.output
     assert "added idea" not in r.output and len(rec.ideas()) == 1
+
+
+# -- the human's stop list (referee-and-human-stops spec)
+def _stop_cmd(tmp_path, *args):
+    return runner.invoke(app, ["stop", *args, "--config", _config(tmp_path)])
+
+
+def test_stop_add_warns_and_adds_an_item_to_an_unseeded_record_too(tmp_path):
+    rec = Record(tmp_path / "proposer")                              # a stop item doesn't keep the seed out
+    r = _stop_cmd(tmp_path, "add", "Round-number stop cascades")
+    assert r.exit_code == 0, r.output
+    assert human.WARNING in r.output.replace("\n", " ") and "added stop #1" in r.output
+    assert [(s["id"], s["text"]) for s in rec.stops()] == [(1, "Round-number stop cascades")]
+    assert rec.ideas() == []
+
+
+@pytest.mark.parametrize("text, why", [(" ", "needs text"), ("Round-number\nstop cascades", "must be one line"),
+                                       ("x" * 201, "at most 200 characters")])
+def test_stop_add_refuses_an_empty_multi_line_or_long_item(tmp_path, text, why):
+    rec = _seeded(tmp_path)
+    r = _stop_cmd(tmp_path, "add", text)
+    assert r.exit_code == 2 and "refused:" in r.output and why in r.output, r.output
+    assert "added stop" not in r.output and rec.stops() == []
+
+
+def test_stop_remove_takes_an_item_out_of_force_once(tmp_path):
+    rec = _seeded(tmp_path)
+    a, b = rec.add_stop("Round-number stop cascades"), rec.add_stop("High-volume return premia")
+    r = _stop_cmd(tmp_path, "remove", str(a))
+    assert r.exit_code == 0 and f"removed stop #{a}" in r.output and [s["id"] for s in rec.stops()] == [b]
+    r = _stop_cmd(tmp_path, "remove", str(a))
+    assert r.exit_code == 2 and f"refused: stop #{a} was already removed" in r.output
+    r = _stop_cmd(tmp_path, "remove", "9")
+    assert r.exit_code == 2 and "refused: there is no stop #9" in r.output and [s["id"] for s in rec.stops()] == [b]
+
+
+def test_stop_list_prints_the_items_in_force_by_id(tmp_path):
+    rec = _seeded(tmp_path)
+    r = _stop_cmd(tmp_path, "list")
+    assert r.exit_code == 0 and r.output == "no stop items\n"
+    a, b = rec.add_stop("Round-number stop cascades"), rec.add_stop("High-volume return premia")
+    c = rec.add_stop("Exit-only changes")
+    rec.remove_stop(b)
+    r = _stop_cmd(tmp_path, "list")
+    assert r.exit_code == 0 and r.output == f"#{a} Round-number stop cascades\n#{c} Exit-only changes\n"
+
+
+def test_stop_commands_on_a_missing_record_exit_2_and_create_nothing(tmp_path):
+    for args in (["add", "Round-number stop cascades"], ["remove", "1"], ["list"]):
+        r = _stop_cmd(tmp_path, *args)
+        assert r.exit_code == 2 and "refused: no proposer record yet" in r.output, (args, r.output)
+    assert not (tmp_path / "proposer").exists()

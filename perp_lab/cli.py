@@ -531,6 +531,49 @@ def idea_next(idea: Optional[int] = typer.Argument(None, help="the idea's id"),
     typer.echo(f"idea #{idea} is next up")
 
 
+stop_app = typer.Typer(add_completion=False, no_args_is_help=True,
+                       help="Your stop list: directions every proposal and research prompt rules out.")
+app.add_typer(stop_app, name="stop")
+
+
+@stop_app.command("add")
+def stop_add(text: str = typer.Argument(..., help="one line, at most 200 characters: a direction to rule out"),
+             config: Optional[str] = CfgOpt):
+    """Rule a direction out: the builder and the research step read it in every prompt until you remove it, and
+    only you change the list."""
+    from perp_lab.proposer import human
+    typer.secho(human.WARNING, fg="yellow")
+    rec, _ = _proposer_record(config, "no proposer record yet")
+    try:
+        i = rec.add_stop(text)
+    except ValueError as e:
+        _refuse(str(e))
+    typer.echo(f"added stop #{i}")
+
+
+@stop_app.command("remove")
+def stop_remove(stop: int = typer.Argument(..., help="the item's id, as `lab stop list` shows it"),
+                config: Optional[str] = CfgOpt):
+    """Take a direction off the stop list: the next prompt no longer carries it."""
+    rec, _ = _proposer_record(config, "no proposer record yet")
+    try:
+        rec.remove_stop(stop)
+    except ValueError as e:
+        _refuse(str(e))
+    typer.echo(f"removed stop #{stop}")
+
+
+@stop_app.command("list")
+def stop_list(config: Optional[str] = CfgOpt):
+    """Print the stop list in force, by id."""
+    rec, _ = _proposer_record(config, "no proposer record yet")
+    items = rec.stops()
+    if not items:
+        typer.echo("no stop items")
+    for s in items:
+        typer.echo(f"#{s['id']} {s['text']}")
+
+
 @app.command()
 def dashboard(port: int = 8501,
               address: str = typer.Option("localhost", help="bind address; 0.0.0.0 exposes the dashboard "

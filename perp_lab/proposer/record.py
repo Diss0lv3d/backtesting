@@ -148,6 +148,17 @@ research = sa.Table(
     sa.Column("outcome", sa.String(64)),                # ok | capped | invalid | error: <code>
 )
 
+# The human's stop list (referee-and-human-stops spec): directions the human rules out, in every proposal and
+# research prompt, until the human removes them. Only the text reaches a prompt; a removed item keeps its row.
+STOP_MAX_CHARS = 200
+stops = sa.Table(
+    "stops", md,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("text", sa.String(STOP_MAX_CHARS), nullable=False),
+    sa.Column("created_at", UTCDateTime, nullable=False),
+    sa.Column("removed_at", UTCDateTime),               # null while in force
+)
+
 
 # Columns added after a table first shipped: create_all never adds a column to an existing table, and the user's
 # record.db predates these.
@@ -404,6 +415,34 @@ class Record:
             ideas.c.origin == "research", ideas.c.status == "open", ~judged)
         with self.engine.connect() as c:
             return int(c.execute(q).scalar())
+
+    # -- the human's stop list
+    def add_stop(self, text: str) -> int:
+        """Rule a direction out, by the human: one line (each item is one line of the prompt), at most
+        STOP_MAX_CHARS once stripped."""
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("a stop item needs text")
+        if len(text.splitlines()) > 1:
+            raise ValueError("a stop item must be one line")
+        if len(text) > STOP_MAX_CHARS:
+            raise ValueError(f"a stop item must be at most {STOP_MAX_CHARS} characters, got {len(text)}")
+        return self._insert(stops, {"text": text, "created_at": _now()})
+
+    def remove_stop(self, id: int) -> None:
+        """Take an item in force out of force, by the human."""
+        with self.engine.begin() as c:              # the write first, as in flag_next
+            if c.execute(sa.update(stops).where(stops.c.id == id, stops.c.removed_at.is_(None))
+                         .values(removed_at=_now())).rowcount:
+                return
+            known = c.execute(sa.select(stops.c.id).where(stops.c.id == id)).first() is not None
+        raise ValueError(f"stop #{id} was already removed" if known else f"there is no stop #{id}")
+
+    def stops(self) -> list[dict]:
+        """The items in force, by id."""
+        q = sa.select(stops).where(stops.c.removed_at.is_(None)).order_by(stops.c.id)
+        with self.engine.connect() as c:
+            return [dict(r) for r in c.execute(q).mappings()]
 
     # -- judge calls
     def add_judge_call(self, **f) -> None:
