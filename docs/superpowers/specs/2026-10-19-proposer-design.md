@@ -1037,3 +1037,9 @@ proposer from the Ideas page and from `lab idea`, with structured cards and butt
 - **Writes.** The page and `lab idea` write only `record.db`, never `perp_lab/`, `config/` or
   `strategies/`, so a running session's harness pin holds. The session reads the record each
   round, so a new idea, an exclusion or a flag reaches the model at its next round.
+
+## Research rounds (2026-11-01)
+
+The unattended session gains an occasional research round: one extra tool-less call that adds idea cards (origin
+`research`), keeps a stop list the proposal prompt shows, and writes a summary for the human. It changes nothing
+else here; its design, limits and config are in `docs/superpowers/specs/2026-11-01-research-round-design.md`.
