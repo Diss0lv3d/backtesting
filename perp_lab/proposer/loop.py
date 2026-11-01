@@ -690,6 +690,7 @@ class _Session:
         elif code == 2:
             self._close(t, "broken", "broken: refused by the judge (exit 2)", broken_reason="refused", pile="broken",
                         **done)
+            self._answered(t)
             self._infra(True)
         else:
             self._close(t, "broken", f"broken: judge exit {code}", broken_reason="judge_error", pile="broken", **done)
@@ -718,19 +719,20 @@ class _Session:
         if _budget_spent(verdict):
             outcome += "; the global holdout budget is spent"
         self._close(t, "judged", outcome, verdict=verdict, pile=pile, duplicate_of=dup, **done)
+        self._answered(t)
 
     def _close(self, t: _Prop, state: str, outcome: str, **f) -> None:
         """The proposal's final record, its idea settled, and its digest line."""
         self.record.update_proposal(t.seq, state=state, **f)
         t.closed = True
-        if f.get("judge_exit") is not None:
-            self._answered(t)
         settle(self.record, self.pc)
         self.digest.line(t.seq, t.name, t.tf, t.kind, t.title, ("recovered: " if t.recovered else "") + outcome)
 
     def _answered(self, t: _Prop) -> None:
-        """A judged proposal, whatever its outcome, answers the human's "try next" for the idea it worked on: its
-        own, and for a port the idea it ports. A dropped one doesn't: the request stands."""
+        """A filed verdict, whatever its pile, or the judge's refusal answers the human's "try next" for the idea
+        the proposal worked on: its own, and for a port the idea it ports. A judge that reached no result (exit 1
+        after its retries, exit 0 with no verdict file, killed by a second signal) doesn't, nor does a proposal
+        dropped before its judge: the request stands."""
         if t.idea_id is None:
             return
         self.record.clear_next(t.idea_id)

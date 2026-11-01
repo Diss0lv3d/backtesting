@@ -1148,3 +1148,25 @@ def test_a_flag_no_proposal_could_answer_any_more_is_cleared_not_asked_for(lab):
     assert run(lab, trials=1) == "trials"
     assert ASK.format(lce) not in lab.fake.calls[0].user
     assert lab.rec.next_up() is None and idea(lab, "LCE")["status"] == "open"
+
+
+@pytest.mark.parametrize("outcome", ["judge_error", "no_verdict", "interrupted"])
+def test_a_judge_that_reached_no_result_leaves_the_flag(lab, monkeypatch, outcome):
+    """Only a filed verdict or the judge's refusal answers the human: not three exits of 1, an exit 0 with no
+    verdict file, or a judge a second signal killed."""
+    i = lab.rec.add_idea("Mine", card("Mine"), "human", "1h")
+    lab.rec.flag_next(i)
+    lab.fake.replies = [refine(i)]
+    if outcome == "judge_error":
+        lab.fake.judge_exits = [1, 1, 1]
+    elif outcome == "no_verdict":
+        monkeypatch.setattr(loop.seed, "read_verdict", lambda path: None)
+    else:
+        def twice(fake):
+            signal.raise_signal(signal.SIGINT)
+            signal.raise_signal(signal.SIGTERM)
+        lab.fake.on_judge = twice
+    run(lab, trials=1)
+    (p,) = props(lab)
+    assert (p["broken_reason"], p["judge_exit"] is not None) == (outcome, True)
+    assert lab.rec.next_up()["id"] == i

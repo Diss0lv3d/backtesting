@@ -510,7 +510,7 @@ def idea_next(idea: Optional[int] = typer.Argument(None, help="the idea's id"),
               config: Optional[str] = CfgOpt):
     """Ask that the builder's next proposal work on an open idea that a proposal could work on now (one idea at a
     time), or --clear the request. It is a request: the idea rules don't change. It stands until a proposal on the
-    idea is judged or it closes."""
+    idea gets a verdict or the judge's refusal, or the idea closes."""
     if clear == (idea is not None):
         _refuse("name an idea's id, or pass --clear")
     from perp_lab.proposer import human
