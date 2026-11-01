@@ -432,6 +432,28 @@ def test_research_notes_show_what_each_added_idea_builds_on(populated):
     assert not [c for c in notes.caption if "unreadable" in c.value]
 
 
+def _notes_head(at) -> str:
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    return notes.markdown[0].value
+
+
+def test_a_round_the_running_session_has_under_way_shows_as_under_way(populated):
+    """The loop writes a round's row first, as interrupted, and its outcome at its end: while the session that
+    owns it runs, the round is under way (a call, or a usage-limit wait, can take hours)."""
+    import fcntl
+    r = _record(populated)
+    older = r.start_session(model="m")                   # never ended: it died mid-round
+    r.add_research(session_id=older, trials_used=4, added=[], outcome="error: interrupted")
+    now = r.start_session(model="m")                     # the session running now, with no round yet
+    lock = populated.path.parent / "no_proposer_state" / "session.lock"
+    with open(lock, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert _notes_head(_ideas_at()).endswith("· error: interrupted · at 4 trials")   # an earlier session's
+        r.add_research(session_id=now, trials_used=5, added=[], outcome="error: interrupted")
+        assert _notes_head(_ideas_at()).endswith("· under way · at 5 trials")
+    assert _notes_head(_ideas_at()).endswith("· error: interrupted · at 5 trials")      # stopped: cut short
+
+
 def test_with_research_off_the_research_notes_say_no_stop_list_is_in_force(populated):
     raw = yaml.safe_load(populated.path.read_text())
     raw["proposer"]["research_every"] = 0

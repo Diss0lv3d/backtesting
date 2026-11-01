@@ -64,9 +64,9 @@ def sleeping_until(state: Path, sid: int | None, now: datetime | None = None) ->
     return until if until > (now or datetime.now(timezone.utc)) else None
 
 
-def session_state(record: Record, state: Path) -> str:
+def session_state(record: Record, state: Path, running: bool) -> str:
     sid = record.last_session_id()
-    if session_running(state):
+    if running:
         until = sleeping_until(state, sid)
         return f"sleeping until {until:%Y-%m-%d %H:%M} UTC" if until else "running"
     if sid is None:
@@ -229,9 +229,14 @@ def _lines(x) -> list[str]:
     return [str(v) for v in x] if isinstance(x, list) else []
 
 
-def _research_body(record: Record, pc, row: dict) -> None:
+def _research_body(record: Record, pc, row: dict, running: bool) -> None:
     ok = row.get("outcome") in ("ok", "capped")      # only a valid note's list reaches the builder
-    st.markdown(f"**{row['at']:%Y-%m-%d %H:%M} UTC** · {row['outcome']} · at {row['trials_used']} trials")
+    outcome = row["outcome"]
+    # The loop writes a round's row first, as interrupted, and its outcome at the round's end: the running
+    # session's own round is under way (a call, or a usage-limit wait, can take hours).
+    if outcome == "error: interrupted" and running and row.get("session_id") == record.last_session_id():
+        outcome = "under way"
+    st.markdown(f"**{row['at']:%Y-%m-%d %H:%M} UTC** · {outcome} · at {row['trials_used']} trials")
     note = row.get("reply") if ok else (record.last_ok_research() or {}).get("reply")
     note = note if isinstance(note, dict) else {}
     if ok and isinstance(note.get("summary"), str) and note["summary"]:
@@ -257,7 +262,7 @@ def _research_body(record: Record, pc, row: dict) -> None:
             st.markdown(f"- #{i} {title}" + (f" · builds on: {on}" if on else ""))
 
 
-def _research_notes(record: Record, pc) -> None:
+def _research_notes(record: Record, pc, running: bool) -> None:
     """The latest research round (spec: research-round-design, Where the human sees it); absent before the first.
     A refused round keeps the model's raw reply, so nothing in it is trusted to have a shape."""
     row = record.last_research()
@@ -265,7 +270,7 @@ def _research_notes(record: Record, pc) -> None:
         return
     with st.expander("Research notes"):
         try:
-            _research_body(record, pc, row)
+            _research_body(record, pc, row, running)
         except Exception:                                # noqa: BLE001 - a bad note must not take the page down
             st.caption("Research notes unreadable")
 
@@ -296,9 +301,10 @@ def page_ideas(cfg) -> None:
     c[0].metric("Proposer trials", f"{record.trials_used()} / {pc.trials_total}")
     c[1].metric("N store-wide", n)
     c[1].caption(f"bar at N: Sharpe {dsr.sharpe_bar(max(n, 1)):.2f}")
-    c[2].metric("Session", session_state(record, state))
+    running = session_running(state)               # one probe: the header and the research notes agree
+    c[2].metric("Session", session_state(record, state, running))
     c[3].metric("Tokens today", f"{tin:,} in / {tout:,} out")
-    _research_notes(record, pc)
+    _research_notes(record, pc, running)
     _add_form(record, pc)
 
     ideas = record.ideas()
