@@ -497,3 +497,56 @@ def test_research_notes_show_the_stop_list_in_force_not_a_refused_rounds(populat
     text = " ".join(m.value for m in notes.markdown)
     assert "invalid" in text and "in force line" in text and "in force" in text.lower()
     assert "refused line" not in text and "bad" not in text
+
+
+# ---------------------------------------------------------------- the human's stop list on the Ideas page
+
+def _stop_buttons(at, label):
+    return [b for b in at.button if b.label == label]
+
+
+def test_the_stop_list_adds_an_item_and_shows_it_with_the_warning(populated):
+    from perp_lab.proposer import human
+    r = _record(populated)                       # unseeded: a stop item adds no idea, so it needs no seed
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert any(e.label == "Your stop list" for e in at.expander)
+    assert human.WARNING in [w.value for w in at.warning]
+    at.text_input(key="new_stop").input("  no funding-sign flips  ")
+    _stop_buttons(at, "Add")[0].click().run()
+    assert not at.exception, [e.message for e in at.exception]
+    assert [s["text"] for s in r.stops()] == ["no funding-sign flips"]
+    assert "#1 no funding-sign flips" in [m.value for m in at.markdown]
+    assert "Stop #1 added" in [t.value for t in at.toast]
+    assert at.text_input(key="new_stop").value == ""
+
+
+def test_the_stop_list_refuses_what_the_record_refuses_and_adds_nothing(populated):
+    r = _record(populated)
+    at = _ideas_at()
+    at.text_input(key="new_stop").input("x" * 201)
+    _stop_buttons(at, "Add")[0].click().run()
+    assert any("at most 200 characters" in c.value for c in at.caption)
+    at.text_input(key="new_stop").input("   ")
+    _stop_buttons(at, "Add")[0].click().run()
+    assert "a stop item needs text" in [c.value for c in at.caption]
+    assert r.stops() == [] and not at.exception
+
+
+def test_the_stop_list_removes_an_item_and_reports_a_stale_one(populated):
+    r = _record(populated)
+    a, b = r.add_stop("first"), r.add_stop("second")
+    at = _ideas_at()
+    assert {"#1 first", "#2 second"} <= {m.value for m in at.markdown}
+    r.remove_stop(b)                             # removed elsewhere (the CLI) while the page is open
+    _stop_buttons(at, "Remove")[1].click().run()
+    assert f"stop #{b} was already removed" in [c.value for c in at.caption]
+    _stop_buttons(at, "Remove")[0].click().run()
+    assert r.stops() == [] and "Stop #1 removed" in [t.value for t in at.toast]
+    assert not at.exception
+
+
+def test_the_stop_list_is_absent_without_a_record_and_creates_nothing(populated):
+    at = _ideas_at()
+    assert not any(e.label == "Your stop list" for e in at.expander)
+    assert not (populated.path.parent / "no_proposer_state").exists()

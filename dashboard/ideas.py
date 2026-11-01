@@ -178,6 +178,48 @@ def _add_form(record: Record | None, pc) -> None:
             st.success(added)
 
 
+def _stop_done(done: str) -> None:
+    st.session_state["ideas_toast"] = done
+
+
+def _stop_add(record: Record) -> None:
+    try:
+        i = record.add_stop(st.session_state["new_stop"])
+    except ValueError as e:
+        st.session_state["stop_error"] = str(e)
+        return
+    _stop_done(f"Stop #{i} added")
+    st.session_state["new_stop"] = ""                     # a blank box for the next one
+
+
+def _stop_remove(record: Record, i: int) -> None:
+    try:
+        record.remove_stop(i)
+    except ValueError as e:
+        st.session_state["stop_error"] = str(e)
+        return
+    _stop_done(f"Stop #{i} removed")
+
+
+def _stop_list(record: Record) -> None:
+    """The human's stop list (spec: referee-and-human-stops, "The human's stop list"). Unlike an idea, an item needs no
+    seed: it adds nothing the seed check could miss."""
+    with st.expander("Your stop list"):
+        st.warning(human.WARNING)
+        stops = record.stops()
+        if not stops:
+            st.caption("Nothing ruled out yet.")
+        for s in stops:
+            c = st.columns([8, 1])
+            c[0].markdown(f"#{s['id']} {s['text']}")
+            c[1].button("Remove", key=f"remove_stop_{s['id']}", on_click=_stop_remove,
+                        args=(record, s["id"]))
+        st.text_input("Rule out a direction (one line)", key="new_stop")
+        st.button("Add", key="add_stop", on_click=_stop_add, args=(record,))
+        if err := st.session_state.pop("stop_error", None):
+            st.caption(err)
+
+
 def _act(i: int, done: str, change, *args) -> None:
     try:
         change(*args)
@@ -305,6 +347,7 @@ def page_ideas(cfg) -> None:
     c[2].metric("Session", session_state(record, state, running))
     c[3].metric("Tokens today", f"{tin:,} in / {tout:,} out")
     _research_notes(record, pc, running)
+    _stop_list(record)
     _add_form(record, pc)
 
     ideas = record.ideas()
