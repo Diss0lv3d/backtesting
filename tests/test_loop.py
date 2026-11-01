@@ -203,6 +203,12 @@ def digest(lab):
     return path.read_text()
 
 
+def slept(lab) -> float:
+    """The total the loop slept: every wait is cut into chunks of at most 300 s (R44)."""
+    assert all(0 < x <= loop.SLEEP_CHUNK_S for x in lab.fake.sleeps), lab.fake.sleeps
+    return sum(lab.fake.sleeps)
+
+
 def closed_idea(lab, title="Old fade", plugin="old_plugin", tf="1h", pile="no signal"):
     i = lab.rec.add_idea(title, card(title), "proposer", tf)
     lab.rec.add_proposal(idea_id=i, plugin=plugin, timeframe=tf, kind="new", state="judged", judge_exit=0,
@@ -280,7 +286,7 @@ def test_a_refinement_names_its_ideas_champion_as_parent(lab):
 def test_the_daily_quota_sleeps_until_the_next_midnight_utc(lab):
     pc = replace(lab.pc, trials_per_day=2)
     assert run(lab, pc, trials=3) == "trials"
-    assert lab.fake.sleeps == [TO_MIDNIGHT]
+    assert slept(lab) == TO_MIDNIGHT
     assert [p["judged_at"] for p in props(lab)] == [T0, T0, T0 + timedelta(seconds=TO_MIDNIGHT)]
     assert lab.rec.judge_calls_on(T0.date()) == 2
     assert "paused: the day's 2 judge calls are used; until 2026-11-03 00:00 UTC" in digest(lab)
@@ -290,7 +296,7 @@ def test_judge_exits_0_1_and_2_each_count_toward_the_days_quota(lab):
     pc = replace(lab.pc, trials_per_day=3)
     lab.fake.judge_exits = [0, 1, 2, 0]
     assert run(lab, pc, trials=3) == "trials"
-    assert lab.rec.judge_calls_on(T0.date()) == 3 and lab.fake.sleeps == [TO_MIDNIGHT]
+    assert lab.rec.judge_calls_on(T0.date()) == 3 and slept(lab) == TO_MIDNIGHT
     assert [(p["state"], p["judge_exit"], p["broken_reason"]) for p in props(lab)] == [
         ("judged", 0, None), ("broken", 1, "judge_error"), ("broken", 2, "refused"), ("judged", 0, None)]
     assert lab.rec.trials_used() == 3                    # a refusal is no trial
@@ -299,7 +305,7 @@ def test_judge_exits_0_1_and_2_each_count_toward_the_days_quota(lab):
 @pytest.mark.parametrize("cap", [{"max_input_tokens_per_day": 2000}, {"max_output_tokens_per_day": 15}])
 def test_a_daily_token_cap_sleeps_until_the_next_midnight_utc(lab, cap):
     assert run(lab, replace(lab.pc, **cap), trials=3) == "trials"
-    assert lab.fake.sleeps == [TO_MIDNIGHT] and len(lab.fake.calls) == 3
+    assert slept(lab) == TO_MIDNIGHT and len(lab.fake.calls) == 3
     assert "token cap" in digest(lab)
 
 
@@ -328,12 +334,12 @@ def test_days_elapsed_stop_the_session(lab):
 def test_the_quota_day_is_the_utc_day_whatever_the_clocks_zone(lab):
     lab.fake.clock = datetime(2026, 11, 3, 1, 0, tzinfo=timezone(timedelta(hours=2)))   # 23:00 UTC on the 2nd
     assert run(lab, replace(lab.pc, trials_per_day=1), trials=2) == "trials"
-    assert lab.fake.sleeps == [3600.0]
+    assert slept(lab) == 3600.0
 
 
 def test_a_quota_sleep_ends_at_the_session_deadline(lab):
     assert run(lab, replace(lab.pc, trials_per_day=1), days=0.25) == "days"
-    assert lab.fake.sleeps == [6 * 3600.0] and len(lab.fake.judges) == 1
+    assert slept(lab) == 6 * 3600.0 and len(lab.fake.judges) == 1
 
 
 # -- stops
@@ -551,11 +557,11 @@ def test_a_signal_during_a_quota_sleep_stops(lab):
 
 
 # -- usage limits
-@pytest.mark.parametrize("resets, slept", [(T0 + timedelta(hours=2), 7200.0), (None, 3600.0)])
-def test_a_usage_limit_sleeps_until_its_reset_then_repeats_the_same_call(lab, resets, slept):
+@pytest.mark.parametrize("resets, secs", [(T0 + timedelta(hours=2), 7200.0), (None, 3600.0)])
+def test_a_usage_limit_sleeps_until_its_reset_then_repeats_the_same_call(lab, resets, secs):
     lab.fake.replies = [UsageLimit(resets), new("A")]
     assert run(lab, trials=1) == "trials"
-    assert lab.fake.sleeps == [slept]
+    assert slept(lab) == secs
     c = lab.fake.calls
     assert len(c) == 2 and c[0].user == c[1].user
     assert [p["state"] for p in props(lab)] == ["judged"]
@@ -565,9 +571,34 @@ def test_a_usage_limit_sleeps_until_its_reset_then_repeats_the_same_call(lab, re
 def test_a_usage_limit_wait_ends_at_the_session_deadline(lab):
     lab.fake.replies = [UsageLimit(T0 + timedelta(hours=10)), new("A")]
     assert run(lab, days=0.25) == "days"
-    assert lab.fake.sleeps == [6 * 3600.0] and len(lab.fake.calls) == 1
+    assert slept(lab) == 6 * 3600.0 and len(lab.fake.calls) == 1
     assert [(p["state"], p["broken_reason"]) for p in props(lab)] == [("dropped", "days")]
     assert "until 2026-11-02 16:00 UTC" in digest(lab)
+
+
+# -- waits end on the wall clock
+@pytest.mark.parametrize("wait", ["usage limit", "quota", "deadline"])
+def test_a_suspend_during_a_wait_ends_it_at_the_next_chunk(lab, wait):
+    """R44: time.sleep runs on CLOCK_MONOTONIC, which stops while a laptop is suspended, so one long sleep would
+    overshoot by the time spent suspended. The wall clock is read again after each chunk of at most 300 s: an 8 h
+    suspend during the first chunk ends a shorter wait at once."""
+    def suspend(fake):
+        if len(fake.sleeps) == 1:
+            fake.clock += timedelta(hours=8)
+    lab.fake.on_sleep = suspend
+    if wait == "usage limit":                                  # resets in 2 h
+        lab.fake.replies = [UsageLimit(T0 + timedelta(hours=2)), new("A")]
+        assert run(lab, trials=1) == "trials"
+        assert len(lab.fake.calls) == 2
+    elif wait == "quota":                                      # 1 h to midnight
+        lab.fake.clock = datetime(2026, 11, 2, 23, 0, tzinfo=UTC)
+        assert run(lab, replace(lab.pc, trials_per_day=1), trials=2) == "trials"
+    else:                                                      # resets in 10 h, but the session ends in 6 h
+        lab.fake.replies = [UsageLimit(T0 + timedelta(hours=10)), new("A")]
+        assert run(lab, days=0.25) == "days"
+    assert lab.fake.sleeps == [loop.SLEEP_CHUNK_S] == [300]
+    if wait != "deadline":
+        assert props(lab)[-1]["judged_at"] == lab.fake.clock
 
 
 # -- the day changes

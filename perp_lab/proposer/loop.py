@@ -46,6 +46,7 @@ INFRA_MAX = 3              # judge or preflight exits of 1 in a row
 STUCK_MAX = 5              # proposals in a row dropped after their fix-ups
 USAGE_BACKOFF_S = 3600     # a usage limit that gives no reset time
 USAGE_MIN_S = 60           # a reset time already past must not turn the retry into a busy loop
+SLEEP_CHUNK_S = 300        # a wait re-reads the wall clock this often: a suspend doesn't advance time.sleep (R44)
 PROGRESS = ("promoted", "close call", "signal before costs")
 STOPS = ("trials_total", "days", "trials", "infra_errors", "stuck", "model_call", "model_config",
          "harness_changed", "signal", "budget_spent")
@@ -392,10 +393,11 @@ class _Session:
         return None
 
     def _sleep_until(self, until: datetime) -> None:
-        seconds = (until - self.deps.now()).total_seconds()
-        if seconds > 0:
+        """Sleep until a wall-clock time, in chunks: time.sleep's clock stops while the machine is suspended, so
+        one long sleep would overshoot by the time spent suspended (R44). A signal ends the wait at once."""
+        while (seconds := (until - self.deps.now()).total_seconds()) > 0:
             with self.sig.waiting():
-                self.deps.sleep(seconds)
+                self.deps.sleep(min(seconds, SLEEP_CHUNK_S))
 
     # -- one round
     def _round(self) -> None:
