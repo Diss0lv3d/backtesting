@@ -254,6 +254,19 @@ def test_session_state_probes_the_lock_and_reads_the_last_pause(tmp_path):
     assert ideas.sleeping_until(tmp_path, 1, now) is None
 
 
+def test_sleeping_until_ignores_a_summary_line_and_an_impossible_date(tmp_path):
+    from datetime import datetime, timezone
+
+    from dashboard import ideas
+    now = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    (tmp_path / "sessions").mkdir()
+    f = tmp_path / "sessions" / "1.md"
+    f.write_text("- 11:00 · research: 1 idea added\n  paused: x; until 2030-01-01 00:00 UTC\n")
+    assert ideas.sleeping_until(tmp_path, 1, now) is None    # model-written summary, indented
+    f.write_text("- 11:00 · paused: usage limit; until 2026-02-30 10:00 UTC\n")
+    assert ideas.sleeping_until(tmp_path, 1, now) is None
+
+
 # ---------------------------------------------------------------- the human's ideas on the Ideas page
 
 def _seeded(cfg):
@@ -377,3 +390,110 @@ def test_try_next_is_offered_only_for_an_idea_a_proposal_could_work_on(populated
     assert f"try_next_{untested}" not in keys and f"try_next_{portable}" in keys
     assert any(c.value.startswith(f"Try next: no proposal can work on idea #{untested} (LCE untested) now")
                for c in at.caption)
+
+
+def _research_row(r, ids, **over):
+    sid = r.start_session(model="m")
+    reply = {"ideas": [], "stop": ["fading wicks on 5m", "plain momentum"], "summary": "Funding ideas look thin."}
+    return r.add_research(session_id=sid, trials_used=5, reply=reply, added=ids, tokens_in=10, tokens_out=5,
+                          outcome="ok", **over)
+
+
+def test_ideas_page_shows_research_ideas_tagged_and_the_latest_research_notes(populated):
+    r = _record(populated)
+    i = r.add_idea("basis squeeze", {"mechanism": "m"}, "research", "4h")
+    _research_row(r, [i])
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert any(c.value == f"idea {i} · research · 4h · open" for c in at.caption)
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    text = " ".join(m.value for m in notes.markdown)
+    assert "ok" in text and "5 trials" in text and "UTC" in text
+    assert "Funding ideas look thin." in text
+    assert "fading wicks on 5m" in text and "plain momentum" in text
+    assert f"#{i} basis squeeze" in text
+
+
+def test_research_notes_show_what_each_added_idea_builds_on(populated):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    j = r.add_idea("Carry unwind", {"mechanism": "m"}, "research", "4h")
+    reply = {"ideas": [None, {"title": 7, "builds_on": 8}, {"title": " Basis squeeze ", "builds_on": "the dead fades"},
+                       {"title": "Carry unwind", "builds_on": ["not", "a line"]}],
+             "stop": [], "summary": "s"}
+    r.add_research(session_id=r.start_session(model="m"), trials_used=5, reply=reply, added=[i, j], tokens_in=1,
+                   tokens_out=1, outcome="ok")
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    lines = [m.value for m in notes.markdown]
+    assert f"- #{i} Basis squeeze · builds on: the dead fades" in lines
+    assert f"- #{j} Carry unwind" in lines                    # a builds_on that is no line shows nothing
+    assert not [c for c in notes.caption if "unreadable" in c.value]
+
+
+def _notes_head(at) -> str:
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    return notes.markdown[0].value
+
+
+def test_a_round_the_running_session_has_under_way_shows_as_under_way(populated):
+    """The loop writes a round's row first, as interrupted, and its outcome at its end: while the session that
+    owns it runs, the round is under way (a call, or a usage-limit wait, can take hours)."""
+    import fcntl
+    r = _record(populated)
+    older = r.start_session(model="m")                   # never ended: it died mid-round
+    r.add_research(session_id=older, trials_used=4, added=[], outcome="error: interrupted")
+    now = r.start_session(model="m")                     # the session running now, with no round yet
+    lock = populated.path.parent / "no_proposer_state" / "session.lock"
+    with open(lock, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert _notes_head(_ideas_at()).endswith("· error: interrupted · at 4 trials")   # an earlier session's
+        r.add_research(session_id=now, trials_used=5, added=[], outcome="error: interrupted")
+        assert _notes_head(_ideas_at()).endswith("· under way · at 5 trials")
+    assert _notes_head(_ideas_at()).endswith("· error: interrupted · at 5 trials")      # stopped: cut short
+
+
+def test_with_research_off_the_research_notes_say_no_stop_list_is_in_force(populated):
+    raw = yaml.safe_load(populated.path.read_text())
+    raw["proposer"]["research_every"] = 0
+    populated.path.write_text(yaml.safe_dump(raw))
+    _research_row(_record(populated), [])
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    text = " ".join(m.value for m in notes.markdown)
+    assert "research is off: no stop list is in force" in text.lower()
+    assert "fading wicks on 5m" not in text and "plain momentum" not in text
+    assert "Funding ideas look thin." in text                  # the round's summary is still the human's to read
+
+
+def test_ideas_page_has_no_research_notes_without_a_research_row(populated):
+    _record(populated)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert not [e for e in at.expander if e.label == "Research notes"]
+
+
+@pytest.mark.parametrize("reply,added", [({"stop": 5}, []), ({"stop": "abc"}, []), ("x", []), (None, "x"),
+                                         ({"stop": ["a"], "summary": 3}, [None, "y", True])])
+def test_ideas_page_survives_a_malformed_research_row(populated, reply, added):
+    r = _record(populated)
+    r.add_research(trials_used=5, reply=reply, added=added, tokens_in=1, tokens_out=1, outcome="invalid")
+    r.add_research(trials_used=6, reply=reply, added=added, tokens_in=1, tokens_out=1, outcome="ok")
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert [e for e in at.expander if e.label == "Research notes"]
+
+
+def test_research_notes_show_the_stop_list_in_force_not_a_refused_rounds(populated):
+    r = _record(populated)
+    r.add_research(trials_used=5, reply={"stop": ["in force line"], "summary": "good"}, added=[], tokens_in=1,
+                   tokens_out=1, outcome="ok")
+    r.add_research(trials_used=10, reply={"stop": ["refused line"], "summary": "bad"}, added=[], tokens_in=1,
+                   tokens_out=1, outcome="invalid")
+    at = _ideas_at()
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    text = " ".join(m.value for m in notes.markdown)
+    assert "invalid" in text and "in force line" in text and "in force" in text.lower()
+    assert "refused line" not in text and "bad" not in text

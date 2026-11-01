@@ -5,6 +5,9 @@ ideas' cards, the proposals' order and whitelisted verdict fields only: never a 
 hash or preflight report, and never a run id or report path, since a run id encodes a time. Proposals are
 numbered in order and nothing is dated. A verdict whose diagnostics come from a refresh on today's data keeps
 only the old judgement's decision, so the model never sees two different OOS Sharpes for one plugin.
+
+A research round (research-round spec) gets the same record with a fixed instruction of its own. Of what it
+returns, only the stop list ever reaches a later prompt (stop_section): never its time, summary or ideas' reasons.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import math
 import re
 
 from perp_lab.dsr import sharpe_bar
-from perp_lab.proposer import piles
+from perp_lab.proposer import contract, piles
 from perp_lab.proposer.context import fence
 from perp_lab.proposer.record import Record
 
@@ -181,7 +184,8 @@ def instruction(next_up: dict | None = None) -> str:
     return INSTRUCTION
 
 
-def fixup(user: str, rejected: dict, errors: list[str]) -> str:
+def fixup(user: str, rejected: dict, errors: list[str], what: str = "proposal") -> str:
+    """The round's prompt, the refused reply and its errors; `what` names the reply asked for again."""
     errs = "\n".join("- " + str(e).replace("\n", "\n  ") for e in errors)
     return "\n\n".join([
         user.rstrip("\n"),
@@ -190,5 +194,69 @@ def fixup(user: str, rejected: dict, errors: list[str]) -> str:
         fence(json.dumps(rejected, indent=1, ensure_ascii=False), "json"),
         "The errors:",
         errs,
-        "Return a corrected proposal: one JSON object, as the reply contract describes.",
+        f"Return a corrected {what}: one JSON object, as the reply contract describes.",
     ]) + "\n"
+
+
+STOP_HEADING = "Directions the research step recommends avoiding:"
+# The research step advises; the human decides. A proposal's instruction (below the list) may carry the human's ask.
+HUMAN_FIRST = "When the human asks for an idea below, that request comes before this list."
+
+
+def stop_section(stop: list[str], *, human_first: bool = False) -> str:
+    """The stop list in force (the latest valid research round's), for every later proposal and research round;
+    "" when it has none. `human_first`, in a proposal's prompt, adds that the human's request comes first."""
+    if not stop:
+        return ""
+    # one line each, whatever the row holds: an item must not start a markdown line of its own
+    lines = [STOP_HEADING, *(f"- {' '.join(str(s).split())}" for s in stop)]
+    return "\n".join([*lines, *(["", HUMAN_FIRST] if human_first else [])]) + "\n"
+
+
+RESEARCH_INSTRUCTION = """\
+## This round: research
+
+This round is a research round, not a proposal: no plugin, and no trial. Read what the record has taught: the \
+piles, the diagnostics of every judged proposal, and what closed each idea. Then write new idea cards that build \
+on those lessons rather than repeat them. Each card needs a mechanism: who pays, and why it persists. Your cards \
+join the record as open ideas that later rounds can propose plugins for.
+
+Redundant, and so not wanted: a near-copy of any judged plugin's mechanism; a sign flip of a closed idea; a \
+filter added to a closed idea's entry; an idea whose edge would come from its exit rather than its entry; a \
+restatement of an open idea in the record.
+
+A stop with no target earns on trends whatever the entry, so an exit alone can make an entry look like an edge. \
+Say in each card how its exits stay neutral, so that its result measures its entry.
+
+A card must not cite numbers from the record: mechanism, literature and rule only.
+
+Each stop item names a direction (a mechanism or a family of rules), never an open idea of the record: only the \
+human closes an idea."""
+
+# Only when a stop list is in force: the prompt shows it (stop_section) between the record and this instruction.
+REVISE_STOP = """\
+The stop list above is the one in force. Revise it: keep what still holds, drop what the record has since \
+answered, and add what it now shows."""
+
+RESEARCH_RETURN = """\
+Return at most {max_ideas} idea cards (none, when the record points nowhere new), a stop list of at most {stop} \
+one-line directions the builder should stop trying (each later round sees it, in place of the last one), and a \
+summary for the human. This round's reply contract is the one below, not the one under "Your reply":"""
+
+# When the record holds research_open_cap untried research ideas: the loop sets aside any card the round returns.
+RESEARCH_RETURN_CAPPED = """\
+Return no idea cards this round: the record already holds the untried research ideas the cap allows, so a card \
+would be set aside. Revise only the stop list (at most {stop} one-line directions the builder should stop trying; \
+each later round sees it, in place of the last one) and the summary for the human. This round's reply contract is \
+the one below, not the one under "Your reply":"""
+
+
+def research_instruction(pc, *, revising: bool = False, capped: bool = False) -> str:
+    """A research round's instruction: fixed text and the research contract, from the config alone. `revising`,
+    when a stop list is in force, asks the round to revise it; `capped`, when untried research ideas are at their
+    cap, asks for no cards."""
+    ret = (RESEARCH_RETURN_CAPPED if capped else RESEARCH_RETURN).format(max_ideas=pc.research_max_ideas,
+                                                                          stop=contract.STOP_MAX_ITEMS)
+    parts = [RESEARCH_INSTRUCTION, REVISE_STOP if revising else None, ret,
+             contract.describe_research(pc.timeframes, pc.research_max_ideas)]
+    return "\n\n".join(x for x in parts if x)

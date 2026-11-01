@@ -25,7 +25,9 @@ from perp_lab.store import db
 
 _TITLES = {"passed": "Passed", "promoted": "Promoted", "close call": "Close call",
            "signal before costs": "Signal before costs", "open": "Other open ideas"}
-_PAUSE = re.compile(r"paused: .*; until (\d{4}-\d\d-\d\d \d\d:\d\d) UTC\s*$")
+# The digest's own line shape (digest.pause): top level, so a model-written summary indented under a research line
+# can't match.
+_PAUSE = re.compile(r"^- \d\d:\d\d · paused: .*; until (\d{4}-\d\d-\d\d \d\d:\d\d) UTC\s*$")
 
 
 def state_dir(pc) -> Path:
@@ -52,16 +54,19 @@ def sleeping_until(state: Path, sid: int | None, now: datetime | None = None) ->
     if sid is None or not path.exists():
         return None
     lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    m = _PAUSE.search(lines[-1]) if lines else None
+    m = _PAUSE.match(lines[-1]) if lines else None
     if m is None:
         return None
-    until = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    try:
+        until = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    except ValueError:                                  # a date no calendar has
+        return None
     return until if until > (now or datetime.now(timezone.utc)) else None
 
 
-def session_state(record: Record, state: Path) -> str:
+def session_state(record: Record, state: Path, running: bool) -> str:
     sid = record.last_session_id()
-    if session_running(state):
+    if running:
         until = sleeping_until(state, sid)
         return f"sleeping until {until:%Y-%m-%d %H:%M} UTC" if until else "running"
     if sid is None:
@@ -218,6 +223,58 @@ def _idea(cfg, record: Record, pc, idea: dict, props: list[dict], wf: set[tuple[
             _proposal(cfg, p, wf)
 
 
+def _lines(x) -> list[str]:
+    """A list of one-line strings from a stored reply field; anything else (an invalid round keeps the raw reply)
+    reads as empty."""
+    return [str(v) for v in x] if isinstance(x, list) else []
+
+
+def _research_body(record: Record, pc, row: dict, running: bool) -> None:
+    ok = row.get("outcome") in ("ok", "capped")      # only a valid note's list reaches the builder
+    outcome = row["outcome"]
+    # The loop writes a round's row first, as interrupted, and its outcome at the round's end: the running
+    # session's own round is under way (a call, or a usage-limit wait, can take hours).
+    if outcome == "error: interrupted" and running and row.get("session_id") == record.last_session_id():
+        outcome = "under way"
+    st.markdown(f"**{row['at']:%Y-%m-%d %H:%M} UTC** · {outcome} · at {row['trials_used']} trials")
+    note = row.get("reply") if ok else (record.last_ok_research() or {}).get("reply")
+    note = note if isinstance(note, dict) else {}
+    if ok and isinstance(note.get("summary"), str) and note["summary"]:
+        st.markdown(f"**Summary:** {note['summary']}")
+    if pc.research_every == 0:                       # the loop's rule: research off, no list in force
+        st.markdown("**Research is off: no stop list is in force** (`proposer.research_every` is 0)")
+    elif stop := _lines(note.get("stop")):
+        st.markdown("**Stop list** (the builder is told to stop trying these)" if ok else
+                    "**Stop list in force** (from the latest valid round)")
+        for line in stop:
+            st.markdown(f"- {line}")
+    added = row.get("added") if ok else None
+    if ids := [i for i in added if isinstance(i, int) and not isinstance(i, bool)] if isinstance(added, list) else []:
+        titles = {i["id"]: i["title"] for i in record.ideas()}
+        # what each builds on, for the human only: in the round's reply, by the title the record keeps it under
+        cards = note.get("ideas") if isinstance(note.get("ideas"), list) else []
+        builds = {c["title"].strip().casefold(): " ".join(c["builds_on"].split()) for c in cards
+                  if isinstance(c, dict) and isinstance(c.get("title"), str) and isinstance(c.get("builds_on"), str)}
+        st.markdown("**Ideas added**")
+        for i in ids:
+            title = titles.get(i, "?")
+            on = builds.get(title.casefold())
+            st.markdown(f"- #{i} {title}" + (f" · builds on: {on}" if on else ""))
+
+
+def _research_notes(record: Record, pc, running: bool) -> None:
+    """The latest research round (spec: research-round-design, Where the human sees it); absent before the first.
+    A refused round keeps the model's raw reply, so nothing in it is trusted to have a shape."""
+    row = record.last_research()
+    if row is None:
+        return
+    with st.expander("Research notes"):
+        try:
+            _research_body(record, pc, row, running)
+        except Exception:                                # noqa: BLE001 - a bad note must not take the page down
+            st.caption("Research notes unreadable")
+
+
 def _wf_runs(cfg) -> set[tuple[str, str]]:
     runs = db.read_table(cfg, db.runs)
     runs = runs[runs.validation_mode == "walkforward"]
@@ -244,8 +301,10 @@ def page_ideas(cfg) -> None:
     c[0].metric("Proposer trials", f"{record.trials_used()} / {pc.trials_total}")
     c[1].metric("N store-wide", n)
     c[1].caption(f"bar at N: Sharpe {dsr.sharpe_bar(max(n, 1)):.2f}")
-    c[2].metric("Session", session_state(record, state))
+    running = session_running(state)               # one probe: the header and the research notes agree
+    c[2].metric("Session", session_state(record, state, running))
     c[3].metric("Tokens today", f"{tin:,} in / {tout:,} out")
+    _research_notes(record, pc, running)
     _add_form(record, pc)
 
     ideas = record.ideas()

@@ -312,3 +312,77 @@ def test_an_exclusion_reason_must_be_one_line(rec, reason):
     assert rec.idea(i)["status"] == "open"
     rec.exclude_idea(i, "  sign flip of B \n")
     assert rec.idea(i)["excluded_reason"] == "sign flip of B"
+
+
+def test_an_old_record_gets_the_research_table_and_keeps_its_rows(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    c = sqlite3.connect(state / "record.db")
+    c.execute(OLD_IDEAS)
+    c.execute("INSERT INTO ideas (title, origin, status, created_at) VALUES ('Old', 'seed', 'open', "
+              "'2026-11-01 00:00:00')")
+    c.commit()
+    c.close()
+    rec = Record(state)
+    c = sqlite3.connect(state / "record.db")
+    try:
+        assert c.execute("SELECT name FROM sqlite_master WHERE name = 'research'").fetchone() is not None
+    finally:
+        c.close()
+    assert rec.idea(1)["title"] == "Old" and rec.last_research() is None
+    rid = rec.add_research(session_id=None, trials_used=0, reply={}, added=[], tokens_in=1, tokens_out=2, outcome="ok")
+    assert Record(state).last_research()["id"] == rid
+
+
+def _research(rec, outcome, **f):
+    return rec.add_research(session_id=None, trials_used=3, reply={"stop": ["x"]}, added=[1, 2], tokens_in=10,
+                            tokens_out=5, outcome=outcome, **f)
+
+
+def test_research_rounds_come_back_latest_first_and_last_ok_skips_failures(rec):
+    assert rec.last_research() is None and rec.last_ok_research() is None
+    ok = _research(rec, "ok")
+    err = _research(rec, "error: model_call")
+    last = rec.last_research()
+    assert last["id"] == err and last["outcome"] == "error: model_call"
+    assert last["reply"] == {"stop": ["x"]} and last["added"] == [1, 2] and last["at"].tzinfo is not None
+    assert rec.last_ok_research()["id"] == ok
+    capped = _research(rec, "capped")
+    assert rec.last_ok_research()["id"] == capped       # a capped round carries a valid stop list too
+    _research(rec, "invalid")
+    assert rec.last_ok_research()["id"] == capped
+
+
+def test_untried_research_ideas_counts_only_open_unjudged_research_ideas(rec):
+    assert rec.untried_research_ideas() == 0
+    for origin in ("human", "seed", "proposer"):
+        rec.add_idea(f"not research {origin}", {}, origin, "1h")
+    rec.add_idea("R open", {}, "research", "1h")
+    b = rec.add_idea("R judged", {}, "research", "1h")
+    rec.add_idea("R dead", {}, "research", "1h", status="dead")
+    d = rec.add_idea("R pending", {}, "research", "1h")
+    _prop(rec, "pj", 0, idea_id=b, timeframe="1h")
+    _prop(rec, "pp", None, idea_id=d, timeframe="1h")   # staged, never judged: still untried
+    assert rec.untried_research_ideas() == 2
+
+
+def test_a_call_with_no_proposal_counts_toward_the_day(rec):
+    rec.add_call(seq=None, tokens_in=7, tokens_out=3, outcome="research")
+    assert rec.usage_on(datetime.now(UTC).date()) == (7, 3)
+
+
+def test_a_research_row_is_written_first_and_updated_at_its_rounds_end(rec):
+    rid = rec.add_research(session_id=None, trials_used=5, outcome="pending")
+    rec.update_research(rid, reply={"stop": []}, added=[3], tokens_in=1, tokens_out=2, outcome="ok")
+    r = rec.last_research()
+    assert (r["id"], r["outcome"], r["added"], r["reply"], r["trials_used"]) == (rid, "ok", [3], {"stop": []}, 5)
+    with pytest.raises(KeyError):
+        rec.update_research(rid + 1, outcome="ok")
+
+
+def test_last_research_can_be_limited_to_some_outcomes(rec):
+    ran = _research(rec, "invalid")
+    cut = _research(rec, "error: signal")
+    assert rec.last_research()["id"] == cut
+    assert rec.last_research(among=("ok", "invalid"))["id"] == ran
+    assert rec.last_research(among=("ok", "capped")) is None

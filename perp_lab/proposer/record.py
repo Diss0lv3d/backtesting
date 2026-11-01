@@ -68,7 +68,7 @@ ideas = sa.Table(
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("title", sa.String(256), nullable=False),
     sa.Column("card", sa.JSON),
-    sa.Column("origin", sa.String(16), nullable=False),     # seed | proposer | human
+    sa.Column("origin", sa.String(16), nullable=False),     # seed | proposer | human | research
     sa.Column("timeframe", sa.String(8)),
     sa.Column("status", sa.String(16), nullable=False),
     sa.Column("port_of", sa.Integer, sa.ForeignKey("ideas.id")),
@@ -131,6 +131,21 @@ judge_calls = sa.Table(
     sa.Column("seq", sa.Integer, sa.ForeignKey("proposals.seq"), nullable=False),
     sa.Column("at", UTCDateTime, nullable=False, index=True),
     sa.Column("exit", sa.Integer),
+)
+
+# One row per research round (spec: research-round-design, What it writes). A round has no proposal: its call goes
+# in `calls` with seq None, so it counts toward the day's token caps and never as a trial.
+research = sa.Table(
+    "research", md,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("session_id", sa.Integer, sa.ForeignKey("sessions.id")),
+    sa.Column("at", UTCDateTime, nullable=False),
+    sa.Column("trials_used", sa.Integer),
+    sa.Column("reply", sa.JSON),
+    sa.Column("added", sa.JSON),                        # ids of the ideas the round added
+    sa.Column("tokens_in", sa.Integer),
+    sa.Column("tokens_out", sa.Integer),
+    sa.Column("outcome", sa.String(64)),                # ok | capped | invalid | error: <code>
 )
 
 
@@ -359,6 +374,36 @@ class Record:
     def add_call(self, **f) -> None:
         f.setdefault("at", _now())
         self._insert(calls, f)
+
+    # -- research rounds
+    def add_research(self, **f) -> int:
+        f.setdefault("at", _now())
+        return self._insert(research, f)
+
+    def update_research(self, id: int, **f) -> None:
+        self._update(research, research.c.id, id, f)
+
+    def _latest_research(self, *where) -> dict | None:
+        q = sa.select(research).where(*where).order_by(research.c.id.desc()).limit(1)
+        with self.engine.connect() as c:
+            row = c.execute(q).mappings().first()
+        return None if row is None else dict(row)
+
+    def last_research(self, *, among: tuple[str, ...] | None = None) -> dict | None:
+        """The latest round; with `among`, the latest whose outcome is one of those."""
+        return self._latest_research() if among is None else self._latest_research(research.c.outcome.in_(among))
+
+    def last_ok_research(self) -> dict | None:
+        """The latest round with a valid stop list: ok, or capped (its ideas were held back, its stop list kept)."""
+        return self._latest_research(research.c.outcome.in_(("ok", "capped")))
+
+    def untried_research_ideas(self) -> int:
+        """Open research ideas no judge has run on: what the cap counts."""
+        judged = sa.exists().where(proposals.c.idea_id == ideas.c.id, proposals.c.judge_exit.is_not(None))
+        q = sa.select(sa.func.count()).select_from(ideas).where(
+            ideas.c.origin == "research", ideas.c.status == "open", ~judged)
+        with self.engine.connect() as c:
+            return int(c.execute(q).scalar())
 
     # -- judge calls
     def add_judge_call(self, **f) -> None:

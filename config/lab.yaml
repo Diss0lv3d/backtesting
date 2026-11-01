@@ -146,3 +146,6 @@ proposer:
   max_input_tokens_per_day: 4000000
   max_output_tokens_per_day: 500000
   call_timeout_s: 1800               # one model call's wall-clock limit; past it the call times out
+  research_every: 5                  # proposer trials between research rounds; 0 turns research off
+  research_max_ideas: 3              # new idea cards per research round
+  research_open_cap: 6               # untried research ideas the record may hold before a round adds no more

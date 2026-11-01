@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
 
 from perp_lab.dsr import sharpe_bar
-from perp_lab.proposer import prompt
+from perp_lab.proposer import contract, prompt, settings
 from perp_lab.proposer.record import Record, ideas
 from tests.test_store import cfg  # noqa: F401  (a temp config and store)
 
@@ -146,12 +147,16 @@ def rec(tmp_path):
     r.add_proposal(seq=4, idea_id=a, kind="refinement", state="dropped", **planted)
     r.add_proposal(seq=5, idea_id=b, kind="new", plugin="donchian_atr", timeframe="4h", source="z = 3\n",
                    state="judged", judge_exit=0, verdict=verdict(gross=-0.9, gross_p95=0.1), **planted)
+    # A research round: its time, summary and stop list are the loop's to use (the stop list only), never the record's
+    r.add_research(session_id=sid, at=PLANTED, trials_used=2, added=[], outcome="ok",
+                   reply={"ideas": [], "stop": ["STOP_LINE"], "summary": SENTINEL})
     return r
 
 
 def test_render_record_carries_no_time_and_no_run_id(rec):
     text = prompt.render_record(rec, 9, TFS)
-    for planted in (SENTINEL, RUN_ID, "report.md", "2029", "03:04:05", "05:06:07", "claude-x-1", "abcdef"):
+    for planted in (SENTINEL, RUN_ID, "report.md", "2029", "03:04:05", "05:06:07", "claude-x-1", "abcdef",
+                    "STOP_LINE"):
         assert planted not in text, planted
     outside = text
     for card in (CARD_A, CARD_B):
@@ -228,3 +233,90 @@ def test_a_fixup_holds_the_prompt_the_rejected_reply_and_the_errors():
     at = [text.find(s) for s in ("THE ROUND'S PROMPT", json.dumps(rejected, indent=1),
                                   "timeframe: must be one of ['1h']", "idea: required")]
     assert -1 not in at and at == sorted(at)
+
+
+STOP_HEADING = "Directions the research step recommends avoiding:"
+
+
+def test_the_stop_section_is_its_heading_and_one_line_per_direction():
+    assert prompt.stop_section([]) == ""
+    assert prompt.stop_section(["Sign flips of dead fades", "Exit-only\nchanges "]) == \
+        f"{STOP_HEADING}\n- Sign flips of dead fades\n- Exit-only changes\n"
+
+
+HUMAN_FIRST = "When the human asks for an idea below, that request comes before this list."
+
+
+def test_in_a_proposals_prompt_the_stop_list_gives_way_to_the_humans_request():
+    assert prompt.stop_section([], human_first=True) == ""
+    assert prompt.stop_section(["Exit-only\nchanges "], human_first=True) == \
+        f"{STOP_HEADING}\n- Exit-only changes\n\n{HUMAN_FIRST}\n"
+    assert HUMAN_FIRST not in prompt.stop_section(["Exit-only changes"])      # a research round's: no request
+
+
+def test_a_stop_item_names_a_direction_never_an_open_idea(cfg):
+    pc = settings.load(cfg)
+    for text in (prompt.research_instruction(pc), prompt.research_instruction(pc, revising=True)):
+        assert ("Each stop item names a direction (a mechanism or a family of rules), never an open idea of the "
+                "record: only the human closes an idea.") in " ".join(text.split())
+
+
+def test_the_research_instruction_says_what_the_round_is_for_and_ends_with_its_contract(cfg):
+    pc = settings.load(cfg)
+    text = prompt.research_instruction(pc)
+    described = contract.describe_research(pc.timeframes, pc.research_max_ideas)
+    assert text.endswith(described)
+    words = " ".join(text[: -len(described)].split())
+    for s in ("research round, not a proposal", "the piles, the diagnostics of every judged proposal, and what "
+              "closed each idea", "build on", "near-copy of any judged plugin's mechanism", "sign flip of a closed "
+              "idea", "filter added to a closed idea's entry", "from its exit rather than its entry",
+              "a restatement of an open idea in the record",
+              "A stop with no target earns on trends whatever the entry", "exits stay neutral",
+              "must not cite numbers from the record", "mechanism, literature and rule only",
+              f"at most {pc.research_max_ideas} idea cards", f"at most {contract.STOP_MAX_ITEMS}", "summary",
+              "not the one under \"Your reply\""):
+        assert s in words, s
+    assert not DATE.search(text)
+
+
+REVISE = "keep what still holds, drop what the record has since answered, and add what it now shows"
+
+
+def test_a_research_round_with_a_stop_list_in_force_is_asked_to_revise_it(cfg):
+    pc = settings.load(cfg)
+    first, later = prompt.research_instruction(pc), prompt.research_instruction(pc, revising=True)
+    words = " ".join(later.split())
+    assert "The stop list above is the one in force" in words and REVISE in words
+    assert later.endswith(contract.describe_research(pc.timeframes, pc.research_max_ideas))
+    # a first round has no list to revise: its instruction says nothing of one, and is the later one less that
+    assert "in force" not in first and REVISE not in " ".join(first.split())
+    assert later.replace(prompt.REVISE_STOP + "\n\n", "", 1) == first
+
+
+def test_a_capped_research_round_is_asked_for_no_cards_only_the_stop_list_and_summary(cfg):
+    pc = settings.load(cfg)
+    for revising in (False, True):
+        text = prompt.research_instruction(pc, revising=revising, capped=True)
+        assert text.endswith(contract.describe_research(pc.timeframes, pc.research_max_ideas))
+        words = " ".join(text.split())
+        for s in ("Return no idea cards this round: the record already holds the untried research ideas the cap "
+                  "allows", "Revise only the stop list", "and the summary for the human",
+                  "Each stop item names a direction", "not the one under \"Your reply\""):
+            assert s in words, s
+        assert f"at most {pc.research_max_ideas} idea cards" not in words
+        assert ("The stop list above is the one in force" in words) is revising
+    assert "Return no idea cards" not in prompt.research_instruction(pc)
+
+
+def test_the_research_instruction_follows_the_configured_limit(cfg):
+    pc = settings.load(cfg)
+    text = prompt.research_instruction(replace(pc, research_max_ideas=2))
+    assert "at most 2 idea cards" in text and "at most 2;" in text and "at most 3 idea cards" not in text
+
+
+def test_a_research_fixup_asks_for_a_corrected_note():
+    text = prompt.fixup("THE ROUND'S PROMPT", {"stop": 1}, ["stop: must be an array"], what="research note")
+    assert text.rstrip().endswith("Return a corrected research note: one JSON object, as the reply contract "
+                                  "describes.")
+    assert prompt.fixup("P", {}, ["e"]).rstrip().endswith("Return a corrected proposal: one JSON object, as the "
+                                                          "reply contract describes.")

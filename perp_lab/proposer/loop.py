@@ -8,6 +8,12 @@ goes back to the model as a fix-up, at most `fixups_per_proposal` per proposal, 
 The model sees only its own refused proposal and the check errors: never the judge's output, never the CLI's
 error text (R35), never a time.
 
+Every `research_every` proposer trials, or when no idea is answerable, a research round runs before the next
+proposal (research-round spec): one call of the same kind, on the record, the stop list in force and a fixed
+instruction, whose new idea cards enter the record (unless untried research ideas are at their cap) and whose stop
+list goes into every later prompt in place of the last one. A failed round is recorded and skipped; only a stop
+(model_config, a signal, the deadline) ends the session.
+
 Everything that touches the world is a `Deps` callable, so the loop runs in tests with fakes and a fake clock.
 
 `run_session` returns why the session stopped: trials_total, days or trials (the caps); infra_errors (3 judge or
@@ -37,7 +43,8 @@ from typing import Callable
 
 from perp_lab.config import DEFAULT_CONFIG
 from perp_lab.plugins import blob_hash
-from perp_lab.proposer import assemble, context, contract, model, piles, pin, proc, prompt, seed, settings
+from perp_lab.proposer import (assemble, context, contract, model, piles, pin, proc, prompt, research, seed,
+                               settings)
 from perp_lab.proposer.digest import Digest
 from perp_lab.proposer.record import Record
 from perp_lab.proposer.settings import StartRefused
@@ -53,6 +60,12 @@ SLEEP_CHUNK_S = 300        # a wait re-reads the wall clock this often: a suspen
 PROGRESS = ("promoted", "close call", "signal before costs")
 STOPS = ("trials_total", "days", "trials", "infra_errors", "stuck", "model_call", "model_config",
          "harness_changed", "signal", "budget_spent")
+# The outcomes of a research round that ran: its note was taken (ok, capped), refused after its fix-ups, or its call
+# failed. Any other never ran to an outcome (a stop cut it short, or the session died mid-round), so it is not "the
+# last round" when the next is due, and a restart runs it; a stop ends the session, so this can't loop. An
+# allow-list: an outcome a later stop reason brings counts as cut short until it is listed here (research-round
+# spec, Amended during the build).
+RAN = ("ok", "capped", "invalid", "error: model_call")
 
 
 @dataclass(frozen=True)
@@ -75,6 +88,14 @@ class _Stop(Exception):
     def __init__(self, reason: str, detail: str = ""):
         super().__init__(reason)
         self.reason, self.detail = reason, detail
+
+
+class _CallFailed(_Stop):
+    """A model call failed after its retries. From a proposal it stops the session (model_call); a research round
+    catches it, records the round and goes on (research-round spec, Failures)."""
+
+    def __init__(self, detail: str):
+        super().__init__("model_call", detail)
 
 
 class _Abort(BaseException):
@@ -158,6 +179,19 @@ class _Prop:
     copied: bool = False
     closed: bool = False
     recovered: bool = False
+
+
+@dataclass
+class _Research:
+    """What the loop knows of one research round so far."""
+
+    id: int
+    transcript: Path
+    reply: dict | None = None             # the last reply, valid or not: the row keeps it for the human
+    note: contract.ResearchNote | None = None
+    added: list[int] = field(default_factory=list)
+    held: int = 0                         # the cards a capped round returned anyway, set aside
+    tokens: list[int] = field(default_factory=lambda: [0, 0])
 
 
 # -- the record, settled from the verdicts
@@ -312,6 +346,7 @@ class _Session:
         self.system = context.static_context(cfg, pc)
         self.system_sha = hashlib.sha256(self.system.encode("utf-8")).hexdigest()
         self.schema = contract.schema(pc.timeframes)
+        self.research_schema = contract.research_schema(pc.timeframes, pc.research_max_ideas)
         self.sig = _Signals(deps.kill_judge)
         self.infra = self.stuck = 0
         self.tokens = [0, 0]
@@ -345,6 +380,9 @@ class _Session:
                     self._recover()
                     while True:
                         self._gate()
+                        if self._research_due():
+                            self._research()
+                            continue            # the gate again before the proposal: the call spent tokens
                         self._round()
                 except _Stop as e:
                     reason, detail = e.reason, e.detail
@@ -468,8 +506,10 @@ class _Session:
 
     def _propose(self, t: _Prop) -> bool:
         """Calls and checks until the proposal passes preflight (True), or it is dropped (False)."""
-        base = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes) + "\n"
-                + prompt.instruction(self._next_up()) + "\n")
+        # The record, the research step's stop list (none before a valid round) and the instruction.
+        parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
+                 prompt.stop_section(self._stop_list(), human_first=True), prompt.instruction(self._next_up()))
+        base = "\n".join(x for x in parts if x) + "\n"
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
             raw = self._call(t.seq, user).proposal
@@ -485,6 +525,17 @@ class _Session:
             raise _Stop("stuck")
         return False
 
+    def _stop_list(self) -> list[str]:
+        """The stop list in force: the latest research round's that returned a valid note (ok or capped), which
+        replaces the one before. None while research is off (research_every 0): a human turns it off exactly when
+        it steers badly. Only its lines reach the prompt, never the round's time or summary."""
+        if self.pc.research_every == 0:
+            return []
+        last = self.record.last_ok_research()
+        reply = last.get("reply") if last is not None else None
+        stop = reply.get("stop") if isinstance(reply, dict) else None
+        return [s for s in stop if isinstance(s, str)] if isinstance(stop, list) else []
+
     def _next_up(self) -> dict | None:
         """The idea the human flagged, while some proposal could work on it. A flag none could answer any more (a
         port that hit name_taken still made its idea, with no judge) is cleared: asked for, every attempt would be
@@ -495,8 +546,12 @@ class _Session:
             return None
         return idea
 
-    def _call(self, seq: int, user: str) -> model.Reply:
-        transcript = self.record.transcript_path(seq)
+    def _call(self, seq: int | None, user: str, schema: dict | None = None,
+              transcript: Path | None = None) -> model.Reply:
+        """One model call, through a usage-limit wait. A proposal's call (seq, the proposal schema and transcript)
+        by default; a research round's passes its own schema and transcript, and no seq."""
+        schema = schema if schema is not None else self.schema
+        transcript = transcript if transcript is not None else self.record.transcript_path(seq)
         while True:
             if self.sig.count:
                 raise _Stop("signal")
@@ -505,7 +560,7 @@ class _Session:
                                    ensure_ascii=False) + "\n")
             try:
                 with self.sig.waiting():
-                    reply = self.deps.call_model(self.system, user, self.schema, transcript)
+                    reply = self.deps.call_model(self.system, user, schema, transcript)
             except model.UsageLimit as e:
                 now = self.deps.now()
                 until = e.resets_at or now + timedelta(seconds=USAGE_BACKOFF_S)
@@ -520,7 +575,7 @@ class _Session:
                 continue                                              # the same call again
             except (model.ModelCallError, OSError) as e:              # OSError: the CLI gone mid-session
                 self._log_call(seq, 0, 0, None, "model_call")
-                raise _Stop("model_call", str(e)) from None
+                raise _CallFailed(str(e)) from None
             except model.ModelConfigError as e:
                 self._log_call(seq, 0, 0, None, "model_config")
                 raise _Stop("model_config", str(e)) from None
@@ -534,6 +589,8 @@ class _Session:
         if tin or tout:
             self.tokens[0] += tin
             self.tokens[1] += tout
+            if seq is None:                     # a research round's: its row takes its tokens at the round's end
+                return
             p = next(x for x in self.record.proposals() if x["seq"] == seq)
             self.record.update_proposal(seq, tokens_in=(p["tokens_in"] or 0) + tin,
                                         tokens_out=(p["tokens_out"] or 0) + tout)
@@ -739,6 +796,99 @@ class _Session:
         self.record.clear_next(t.idea_id)
         if t.kind == "port" and (src := self.record.idea(t.idea_id).get("port_of")) is not None:
             self.record.clear_next(src)
+
+    # -- a research round (research-round spec)
+    def _research_due(self) -> bool:
+        """Every research_every proposer trials (as trials_used counts them) since the last round that ran, whatever
+        its outcome; or when no idea is answerable, once per trial count. Either way never two rounds with no trial
+        between, so a round that keeps failing can't loop. research_every 0 turns research off."""
+        if self.pc.research_every == 0:
+            return False
+        last, used = self.record.last_research(among=RAN), self.record.trials_used()
+        since = (last or {}).get("trials_used") or 0
+        if used - since >= self.pc.research_every:
+            return True
+        if last is not None and since == used:
+            return False
+        # Every idea, not only the open ones: a port of an exhausted idea in a progress pile is work too (see the
+        # research-round spec, Amended during the build).
+        return all(assemble.answerable(i, self.record, self.pc) is not None for i in self.record.ideas())
+
+    def _research(self) -> None:
+        """One round: the call and its fix-ups, the ideas (unless capped), the row and the digest line. A failed
+        call or a note refused after the fix-ups is recorded and the session goes on; a stop (model_config, a
+        signal, the deadline in a usage-limit wait) ends it, after the round's record."""
+        # The row first, so its id names the transcript. Until the round says otherwise it was interrupted: a
+        # session that dies mid-round leaves a failed round behind, never one that looks under way.
+        rid = self.record.add_research(session_id=self.sid, at=self.deps.now(),
+                                       trials_used=self.record.trials_used(), outcome="error: interrupted")
+        r = _Research(id=rid, transcript=self.record.state_dir / "transcripts" / f"research-{rid}.jsonl")
+        try:
+            outcome, detail = self._research_note(r)
+        except _CallFailed as e:
+            # the CLI's text goes to the digest only (R35): a failure only research meets (a timeout on its bigger
+            # reply) must not hide behind its code, round after round
+            outcome, detail = "error: model_call", e.detail
+        except _Stop as e:
+            self._research_end(r, f"error: {e.reason}")
+            raise
+        except _Abort:
+            self._research_end(r, "error: signal")
+            raise
+        self._research_end(r, outcome, detail)
+
+    def _research_note(self, r: _Research) -> tuple[str, str | None]:
+        """(the outcome, a detail for the digest): calls and checks until a note is valid and written (ok, or
+        capped), or it is refused after the fix-ups (invalid, with its last attempt's first error, as a dropped
+        proposal's line has). The prompt is the record, the stop list in force (as a proposal sees it) and the
+        research instruction, which asks the round to revise that list: nothing else.
+
+        The cap is checked before the call: a round at the cap is asked for no cards and revises only the stop list
+        and the summary. Cards it returns anyway are set aside, never checked, so they can't cost a fix-up or the
+        stop list."""
+        stop = self._stop_list()
+        capped = self.record.untried_research_ideas() >= self.pc.research_open_cap
+        parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
+                 prompt.stop_section(stop), prompt.research_instruction(self.pc, revising=bool(stop), capped=capped))
+        base = "\n".join(x for x in parts if x) + "\n"
+        user = base
+        for attempt in range(self.pc.fixups_per_proposal + 1):
+            reply = self._call(None, user, self.research_schema, r.transcript)
+            tin, tout = _tokens(reply.usage)
+            r.tokens = [r.tokens[0] + tin, r.tokens[1] + tout]
+            r.reply = reply.proposal
+            note, errors = self._check_note(reply.proposal, capped)
+            if not errors:
+                if capped:
+                    ideas = reply.proposal.get("ideas") if isinstance(reply.proposal, dict) else None
+                    r.note, r.held = note, len(ideas) if isinstance(ideas, list) else 0
+                    return "capped", None
+                try:
+                    r.added = self.record.add_ideas([research.row(i) for i in note.ideas])
+                except ValueError as e:         # a title added since the check (the human's form, meanwhile)
+                    errors = [str(e)]
+                else:
+                    r.note = note
+                    return "ok", None
+            user = prompt.fixup(base, reply.proposal, errors, what="research note")
+        return "invalid", _short(errors[0])
+
+    def _check_note(self, raw: dict, capped: bool = False) -> tuple[contract.ResearchNote | None, list[str]]:
+        """(the note, []) once it passes the contract and every idea passes the human-card rules; else the errors
+        for its fix-up. A capped round's ideas are set aside unchecked: its note is its stop list and summary."""
+        if capped and isinstance(raw, dict):
+            raw = {**raw, "ideas": []}
+        try:
+            note = contract.parse_research(raw, self.pc.timeframes, self.pc.research_max_ideas)
+        except contract.ContractError as e:
+            return None, list(e.errors)
+        return note, research.check_note(note, self.record, self.pc)
+
+    def _research_end(self, r: _Research, outcome: str, detail: str | None = None) -> None:
+        self.record.update_research(r.id, reply=r.reply, added=r.added, tokens_in=r.tokens[0],
+                                    tokens_out=r.tokens[1], outcome=outcome)
+        stop, summary = (len(r.note.stop), r.note.summary) if r.note is not None else (0, None)
+        self.digest.research(r.added, stop, outcome, summary, detail, r.held)
 
     # -- crash recovery
     def _recover(self) -> None:

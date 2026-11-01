@@ -97,6 +97,17 @@ def test_ideas_prints_groups_in_the_spec_order(tmp_path, monkeypatch):
     assert f"#{sig} signal one \u2014 1h, open, signal before costs, judged 1" in blocks["signal before costs"]
 
 
+def test_ideas_marks_research_ideas_after_the_title(tmp_path, monkeypatch):
+    monkeypatch.chdir(context.ROOT)
+    rec = Record(tmp_path / "proposer")
+    rec.add_idea("from research", {}, "research", "4h")
+    _idea(rec, "from the model", "open")
+    r = runner.invoke(app, ["ideas", "--config", _config(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "#1 from research (research) \u2014 4h, open, none, judged 0" in r.output
+    assert "#2 from the model \u2014 1h, open, none, judged 0" in r.output
+
+
 def test_ideas_on_a_missing_record(tmp_path, monkeypatch):
     monkeypatch.chdir(context.ROOT)
     r = runner.invoke(app, ["ideas", "--config", _config(tmp_path)])

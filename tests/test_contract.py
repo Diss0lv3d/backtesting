@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from perp_lab.proposer.contract import (
-    BLOCK_FOR_KIND, FIELD_DOCS, ContractError, IdeaCard, Ports, Proposal, Refines, describe, parse, parse_card,
-    schema,
+    BLOCK_FOR_KIND, FIELD_DOCS, ContractError, IdeaCard, Ports, Proposal, Refines, ResearchIdea, ResearchNote,
+    describe, describe_research, parse, parse_card, parse_research, research_schema, schema,
 )
 
 TFS = ("15m", "1h", "4h")
@@ -26,6 +26,7 @@ def _names(s):
         for k, v in s.get("properties", {}).items():
             yield k
             yield from _names(v)
+        yield from _names(s.get("items"))
 
 
 def test_schema_and_description_come_from_the_same_fields():
@@ -35,7 +36,8 @@ def test_schema_and_description_come_from_the_same_fields():
     for n in names:
         assert n in text
     for key in FIELD_DOCS:
-        assert FIELD_DOCS[key] in text
+        if not key.startswith("Research"):
+            assert FIELD_DOCS[key] in text
 
 
 def test_parse_accepts_a_new_idea():
@@ -197,3 +199,175 @@ def test_parse_card_checks_a_card_as_parse_checks_a_new_ideas():
     assert len(as_card.value.errors) == 5
     with pytest.raises(ContractError, match="must be an object"):
         parse_card(["not", "a", "card"])
+
+
+# The research note: the reply of a research round, by the same machinery.
+
+MAX = 3
+IDEA = {**CARD, "timeframe": "4h", "builds_on": "the funding fades all closed"}
+
+
+def note(**over):
+    out = {"ideas": [IDEA], "stop": ["sign flips of closed ideas"], "summary": "what the record taught\nand why"}
+    out = {**out, **over}
+    return {k: v for k, v in out.items() if v is not ...}
+
+
+def test_the_research_schema_and_description_come_from_the_same_fields():
+    text = describe_research(TFS, MAX)
+    names = set(_names(research_schema(TFS, MAX)))
+    assert {"ideas", "stop", "summary", "title", "columns", "timeframe", "builds_on"} <= names
+    for n in names:
+        assert n in text
+    for key, doc in FIELD_DOCS.items():
+        if key.startswith("Research") or (key.startswith("IdeaCard.") and key != "IdeaCard.title"):
+            assert doc in text, key                              # an idea's card fields keep the card's words
+    assert FIELD_DOCS["IdeaCard.title"] not in text              # a research idea's title says more
+    assert f"ideas (array of objects, at most {MAX}; required)" in text
+    assert "stop (array of strings, at most 5; required)" in text
+    assert "  - builds_on (string; required)" in text and "  - timeframe (one of 15m, 1h, 4h; required)" in text
+
+
+def test_the_research_schema_has_no_combinator_at_its_top_level():
+    """The API refuses oneOf, allOf or anyOf at an input_schema's top level (R42): see the proposal's test."""
+    s = research_schema(TFS, MAX)
+    assert not {"oneOf", "allOf", "anyOf"} & set(s)
+    assert set(s) == {"type", "properties", "required", "additionalProperties"}
+
+
+def test_the_research_schema_is_closed_and_carries_the_limits():
+    jsonschema = pytest.importorskip("jsonschema")
+    s = research_schema(TFS, 2)
+    jsonschema.Draft202012Validator.check_schema(s)
+    assert s["additionalProperties"] is False and s["required"] == ["ideas", "stop", "summary"]
+    ideas, stop, summary = (s["properties"][k] for k in ("ideas", "stop", "summary"))
+    assert (ideas["type"], ideas["maxItems"]) == ("array", 2)
+    item = ideas["items"]
+    assert item["additionalProperties"] is False and item["required"] == [
+        "title", "mechanism", "why_it_persists", "signal", "trades_per_coin_per_year", "likely_failure", "columns",
+        "timeframe", "builds_on"]
+    assert item["properties"]["timeframe"]["enum"] == list(TFS)
+    assert (item["properties"]["builds_on"]["maxLength"], item["properties"]["builds_on"]["pattern"]) == (
+        300, "^[^\\r\\n]+$")
+    assert (stop["maxItems"], stop["items"]["maxLength"], stop["items"]["pattern"]) == (5, 200, "^[^\\r\\n]+$")
+    assert summary["maxLength"] == 2000 and "pattern" not in summary
+
+
+def test_parse_research_accepts_a_note():
+    n = parse_research(note(ideas=[IDEA, {**IDEA, "title": "u", "timeframe": "15m"}]), TFS, MAX)
+    assert isinstance(n, ResearchNote) and all(isinstance(i, ResearchIdea) for i in n.ideas)
+    assert [(i.title, i.timeframe) for i in n.ideas] == [("t", "4h"), ("u", "15m")]
+    assert n.ideas[0].columns == ("close", "volume") and n.ideas[0].trades_per_coin_per_year == 12.0
+    assert n.ideas[0].builds_on == "the funding fades all closed"
+    assert n.stop == ("sign flips of closed ideas",) and n.summary == "what the record taught\nand why"
+
+
+def test_a_note_may_hold_no_idea_and_no_stop():
+    n = parse_research(note(ideas=[], stop=[]), TFS, MAX)
+    assert n.ideas == () and n.stop == ()
+
+
+@pytest.mark.parametrize("over,error", [
+    ({"ideas": [IDEA] * 4}, "ideas: 4 items, at most 3"),
+    ({"stop": ["s"] * 6}, "stop: 6 items, at most 5"),
+    ({"stop": ["ok", "a\nb"]}, "stop[1]: must be one line"),
+    ({"stop": ["x" * 201]}, "stop[0]: 201 characters, at most 200"),
+    ({"stop": ["ok", ""]}, "stop: must be an array of non-empty strings"),
+    ({"summary": "x" * 2001}, "summary: 2001 characters, at most 2000"),
+    ({"summary": ""}, "summary: must be a non-empty string"),
+    ({"ideas": [IDEA, {**IDEA, "builds_on": "a\rb"}]}, "ideas[1].builds_on: must be one line"),
+    ({"ideas": [{**IDEA, "builds_on": "x" * 301}]}, "ideas[0].builds_on: 301 characters, at most 300"),
+    ({"ideas": [{**IDEA, "timeframe": "5m"}]}, "ideas[0].timeframe: must be one of ['15m', '1h', '4h'], got '5m'"),
+    ({"ideas": [{**IDEA, "columns": "close"}]}, "ideas[0].columns: must be an array of non-empty strings"),
+    ({"ideas": [{**IDEA, "extra": 1}]}, "ideas[0].extra: unknown field"),
+    ({"ideas": [{k: v for k, v in IDEA.items() if k != "builds_on"}]}, "ideas[0].builds_on: required"),
+    ({"ideas": ["card"]}, "ideas[0]: must be an object"),
+    ({"ideas": IDEA}, "ideas: must be an array of objects"),
+    ({"stop": ...}, "stop: required"),
+    ({"extra": 1}, "extra: unknown field"),
+])
+def test_parse_research_refuses_each_limit_with_a_clear_error(over, error):
+    with pytest.raises(ContractError) as e:
+        parse_research(note(**over), TFS, MAX)
+    assert e.value.errors == [error]
+
+
+def test_parse_research_takes_its_most_ideas_from_the_caller():
+    assert len(parse_research(note(ideas=[IDEA] * 4), TFS, 4).ideas) == 4
+    with pytest.raises(ContractError, match="ideas: 2 items, at most 1"):
+        parse_research(note(ideas=[IDEA] * 2), TFS, 1)
+
+
+def test_parse_research_lists_every_problem_and_refuses_a_non_object():
+    with pytest.raises(ContractError) as e:
+        parse_research({"ideas": [{**IDEA, "timeframe": "5m"}, {**IDEA, "signal": ""}], "stop": ["a\nb"]},
+                       TFS, MAX)
+    assert e.value.errors == ["ideas[0].timeframe: must be one of ['15m', '1h', '4h'], got '5m'",
+                              "ideas[1].signal: must be a non-empty string", "stop[0]: must be one line",
+                              "summary: required"]
+    with pytest.raises(ContractError):
+        parse_research([], TFS, MAX)
+
+
+# Known, accepted disagreement, left out of the table: a trailing newline on a one-line field ("a\n"). Python's
+# re, which jsonschema uses, lets `$` match before it, so the schema passes it; JSON Schema's own regex (ECMA 262)
+# doesn't, nor does parse. The proposal's hypothesis has the same pattern.
+RESEARCH_AGREEMENT = [
+    note(),
+    note(ideas=[], stop=[]),
+    note(ideas=[IDEA] * 3),
+    note(ideas=[IDEA] * 4),
+    note(ideas=IDEA),
+    note(ideas=["x"]),
+    note(ideas=...),
+    note(stop=["s"] * 5),
+    note(stop=["s"] * 6),
+    note(stop=["x" * 200]),
+    note(stop=["x" * 201]),
+    note(stop=["a\nb"]),
+    note(stop=[""]),
+    note(stop="one"),
+    note(stop=[1]),
+    note(summary="x" * 2000),
+    note(summary="x" * 2001),
+    note(summary="multi\nline"),
+    note(summary=""),
+    note(summary=...),
+    note(extra=1),
+    note(ideas=[{**IDEA, "extra": 1}]),
+    note(ideas=[{**IDEA, "timeframe": "5m"}]),
+    note(ideas=[{**IDEA, "builds_on": "x" * 300}]),
+    note(ideas=[{**IDEA, "builds_on": "x" * 301}]),
+    note(ideas=[{**IDEA, "builds_on": "a\nb"}]),
+    note(ideas=[{**IDEA, "builds_on": ""}]),
+    note(ideas=[{k: v for k, v in IDEA.items() if k != "timeframe"}]),
+    note(ideas=[{**IDEA, "trades_per_coin_per_year": True}]),
+    note(ideas=[{**IDEA, "columns": [""]}]),
+    note(ideas=[IDEA, {**IDEA, "title": ""}]),
+]
+
+
+@pytest.mark.parametrize("obj", RESEARCH_AGREEMENT)
+def test_parse_research_accepts_exactly_what_the_research_schema_accepts(obj):
+    jsonschema = pytest.importorskip("jsonschema")
+    try:
+        jsonschema.validate(obj, research_schema(TFS, MAX))
+        by_schema = True
+    except jsonschema.ValidationError:
+        by_schema = False
+    try:
+        parse_research(obj, TFS, MAX)
+        by_parse = True
+    except ContractError:
+        by_parse = False
+    assert by_parse == by_schema, obj
+
+
+def test_the_proposal_contract_is_unchanged_by_the_research_one():
+    """describe() still states only the proposal's fields: no research doc leaks into the proposal prompt."""
+    text = describe(TFS)
+    for key, doc in FIELD_DOCS.items():
+        if key.startswith("Research"):
+            assert doc not in text, key
+    assert "at most" not in text.replace(FIELD_DOCS["Proposal.hypothesis"], "").replace(
+        FIELD_DOCS["Proposal.source"], "")

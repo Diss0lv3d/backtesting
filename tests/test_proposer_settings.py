@@ -121,3 +121,29 @@ def test_run_starts_an_allowed_command_with_allowed_keywords():
     p = proc.run(["git", "rev-parse", "--git-dir"], claude_bin="claude", stdout=subprocess.PIPE, text=True,
                  cwd=REPO)
     assert p.communicate()[0].strip() and p.returncode == 0
+
+
+def test_the_shipped_config_has_the_research_defaults():
+    pc = load(load_config(REPO / "config/lab.yaml"))
+    assert (pc.research_every, pc.research_max_ideas, pc.research_open_cap) == (5, 3, 6)
+
+
+def test_research_every_zero_turns_research_off_and_loads():
+    assert load(_cfg(research_every=0)).research_every == 0
+
+
+@pytest.mark.parametrize("key,value", [
+    ("research_every", -1), ("research_max_ideas", 0), ("research_max_ideas", -2), ("research_open_cap", 0),
+    ("research_every", "5"), ("research_every", True), ("research_max_ideas", 2.5), ("research_open_cap", None),
+])
+def test_a_bad_research_setting_refuses(key, value):
+    with pytest.raises(StartRefused, match=f"proposer.{key}"):
+        load(_cfg(**{key: value}))
+
+
+@pytest.mark.parametrize("key", ["research_every", "research_max_ideas", "research_open_cap"])
+def test_a_missing_research_setting_refuses(key):
+    c = _cfg()
+    del c.raw["proposer"][key]
+    with pytest.raises(StartRefused, match=f"proposer.{key}"):
+        load(c)

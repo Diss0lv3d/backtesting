@@ -9,6 +9,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import signal
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -16,12 +17,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import sqlalchemy as sa
 
 from perp_lab.plugins import blob_hash, parse_meta
-from perp_lab.proposer import loop, piles, proc, settings
+from perp_lab.proposer import context, contract, loop, piles, proc, prompt, settings
 from perp_lab.proposer.model import ModelCallError, ModelConfigError, Reply, UsageLimit
 from perp_lab.proposer.pin import Pin, PinError
-from perp_lab.proposer.record import Record
+from perp_lab.proposer.record import Record, calls, research
 from perp_lab.proposer.settings import StartRefused
 from tests.test_seed import FAMILY, as_today, refreshed
 from tests.test_store import cfg  # noqa: F401  (fixture)
@@ -59,6 +61,12 @@ def port(idea_id, tf="4h", source=SRC_4H):
 BAD = {"kind": "new", "timeframe": "1h"}          # no hypothesis, source or idea
 
 
+def note(*titles, tf="1h", stop=("Exit-only changes",), summary="What the record taught."):
+    """A research round's reply, with a card per title."""
+    return {"ideas": [{**card(t), "timeframe": tf, "builds_on": "BUILDS-ON"} for t in titles], "stop": list(stop),
+            "summary": summary}
+
+
 def verdict(pile="no signal", *, overlap=None, **f):
     gates = {"net_sharpe": -1.0, "random_p95": 0.2, "oos_trades": 500, "min_oos_trades": 64}
     before = {"sharpe": -0.5, "random_p95": 0.1}
@@ -87,6 +95,7 @@ class Fake:
         self.cfg = cfg
         self.clock = T0
         self.replies = None            # None: a fresh new idea per call; a list: popped, then ModelCallError
+        self.notes = None              # research calls, as replies: None, an empty note per call
         self.n_new = 0
         self.calls = []
         self.preflights = []
@@ -112,11 +121,15 @@ class Fake:
         self.calls.append(SimpleNamespace(system=system, user=user, schema=schema, transcript=transcript))
         if self.on_call:
             self.on_call(self)
-        if self.replies is None:
+        researching = "stop" in schema["properties"]          # a research round's call
+        queue = self.notes if researching else self.replies
+        if queue is None and researching:
+            r = note()
+        elif queue is None:
             self.n_new += 1
             r = new(f"Idea {self.n_new}")
-        elif self.replies:
-            r = self.replies.pop(0)
+        elif queue:
+            r = queue.pop(0)
         else:
             raise ModelCallError("the fake has no more replies")
         if isinstance(r, BaseException):
@@ -1185,3 +1198,384 @@ def test_a_transient_kill_leaves_the_flag_and_a_real_verdict_clears_it(lab):
     assert seen[1]["id"] == i                       # still flagged when the second refinement was judged
     assert ASK.format(i) in lab.fake.calls[1].user
     assert lab.rec.next_up() is None
+
+
+# -- the research step's stop list in the proposal prompt
+STOP_HEADING = "Directions the research step recommends avoiding:"
+HUMAN_FIRST = "When the human asks for an idea below, that request comes before this list."
+
+
+def test_with_no_research_round_the_proposal_prompt_is_the_record_and_the_instruction(lab):
+    want = prompt.render_record(lab.rec, 0, lab.pc.timeframes) + "\n" + prompt.instruction() + "\n"
+    assert run(lab, trials=1) == "trials"
+    assert lab.fake.calls[0].user == want and STOP_HEADING not in want
+
+
+def test_the_latest_valid_research_rounds_stop_list_and_nothing_else_of_it_reaches_the_proposal_prompt(lab):
+    planted = datetime(2029, 3, 4, 5, 6, 7, tzinfo=UTC)
+    for outcome, stop in (("ok", ["Old direction"]), ("capped", ["Exit-only changes", "Sign flips of dead fades"]),
+                          ("invalid", ["Refused direction"]), ("error: model_call", None)):
+        lab.rec.add_research(session_id=None, at=planted, trials_used=0, added=[], outcome=outcome,
+                             reply=None if stop is None else {"ideas": [], "stop": stop, "summary": "SUMMARY"})
+    record = prompt.render_record(lab.rec, 0, lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=1000), trials=1) == "trials"     # no round falls due
+    assert order(lab) == "P"
+    user = lab.fake.calls[0].user
+    section = f"{STOP_HEADING}\n- Exit-only changes\n- Sign flips of dead fades\n\n{HUMAN_FIRST}\n"
+    assert user == record + "\n" + section + "\n" + prompt.instruction() + "\n"     # between record and instruction
+    for gone in ("Old direction", "Refused direction", "SUMMARY", "2029", "05:06"):
+        assert gone not in user, gone
+
+
+def test_with_research_off_no_stop_list_is_in_force(lab):
+    """R-RL4: research_every 0 turns the rounds off and the last round's stop list with them: a human turns research
+    off exactly when it steers badly."""
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok", reply=note(stop=["Old direction"]))
+    want = prompt.render_record(lab.rec, 0, lab.pc.timeframes) + "\n" + prompt.instruction() + "\n"
+    assert run(lab, replace(lab.pc, research_every=0), trials=1) == "trials"
+    assert order(lab) == "P" and lab.fake.calls[0].user == want
+
+
+
+# -- the research round (research-round spec)
+def researching(c) -> bool:
+    return Path(c.transcript).name.startswith("research-")
+
+
+def order(lab) -> str:
+    """The session's model calls in order: R a research round's, P a proposal's."""
+    return "".join("R" if researching(c) else "P" for c in lab.fake.calls)
+
+
+def research_calls(lab):
+    return [c for c in lab.fake.calls if researching(c)]
+
+
+def proposal_calls(lab):
+    return [c for c in lab.fake.calls if not researching(c)]
+
+
+def rounds(lab) -> list[dict]:
+    with lab.rec.engine.connect() as c:
+        return [dict(r) for r in c.execute(sa.select(research).order_by(research.c.id)).mappings()]
+
+
+def call_rows(lab) -> list[dict]:
+    with lab.rec.engine.connect() as c:
+        return [dict(r) for r in c.execute(sa.select(calls).order_by(calls.c.id)).mappings()]
+
+
+def nothing_answerable(lab):
+    """Close the fixture's one open idea: no proposal could work on any idea."""
+    lab.rec.exclude_idea(idea(lab, "Placeholder")["id"], "a placeholder")
+
+
+def test_a_research_round_runs_after_every_5_proposer_trials_and_not_before(lab):
+    assert lab.pc.research_every == 5
+    lab.fake.judge_exits = [2]                           # a refusal is no trial
+    assert run(lab, trials=11) == "trials"
+    assert order(lab) == "P" * 6 + "R" + "P" * 5 + "R" + "P"
+    assert [(r["trials_used"], r["outcome"], r["session_id"]) for r in rounds(lab)] == [(5, "ok", 1), (10, "ok", 1)]
+    assert [Path(c.transcript) for c in research_calls(lab)] == [
+        lab.state / "transcripts" / "research-1.jsonl", lab.state / "transcripts" / "research-2.jsonl"]
+    assert lab.rec.trials_used() == 11                   # research rounds are no trials
+
+
+def test_research_every_0_never_researches(lab):
+    nothing_answerable(lab)
+    assert run(lab, replace(lab.pc, research_every=0), trials=6) == "trials"
+    assert order(lab) == "P" * 6 and rounds(lab) == []
+
+
+def test_with_nothing_answerable_a_round_runs_once_until_a_trial_is_spent(lab):
+    nothing_answerable(lab)
+    lab.fake.replies = [BAD] * 4 + [new("A"), new("B")]   # dropped (no trial), then two judged and dead
+    assert run(lab, trials=2) == "trials"
+    assert order(lab) == "R" + "P" * 4 + "P" + "R" + "P"
+    assert [r["trials_used"] for r in rounds(lab)] == [0, 1]
+
+
+# R-RL2: a round a stop cut short never ran to an outcome, so it is not "the last round"; one that ran (its note
+# was taken, its call failed, or its note was refused) is. An allow-list: an outcome a later stop reason brings
+# (error: harness_changed, say) counts as cut short until it is listed as one that ran.
+OUTCOMES = [("error: signal", False), ("error: days", False), ("error: interrupted", False),
+            ("error: model_config", False), ("error: harness_changed", False), ("error: model_call", True),
+            ("invalid", True), ("ok", True), ("capped", True)]
+
+
+@pytest.mark.parametrize("outcome, counts", OUTCOMES)
+def test_a_round_a_stop_cut_short_does_not_count_as_the_last_round(lab, outcome, counts):
+    for k in range(2):                                   # two proposer trials so far
+        lab.rec.add_proposal(plugin=f"done{k}", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok", reply=note())
+    lab.rec.add_research(session_id=None, trials_used=1, added=[], outcome=outcome, reply=None)
+    assert run(lab, replace(lab.pc, research_every=2), trials=1) == "trials"
+    assert order(lab) == ("P" if counts else "RP")       # due 2 trials after the ok round, unless the later one ran
+
+
+@pytest.mark.parametrize("outcome, counts", OUTCOMES)
+def test_with_nothing_answerable_a_round_cut_short_runs_again_after_a_restart(lab, outcome, counts):
+    nothing_answerable(lab)
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome=outcome, reply=None)
+    assert run(lab, trials=1) == "trials"
+    assert order(lab) == ("P" if counts else "RP")
+
+
+def test_an_exhausted_idea_a_port_could_still_work_on_keeps_research_from_being_due(lab):
+    """R-RL1: answerable over every idea, not only the open ones: a port of an exhausted idea in a progress pile is
+    work the builder can do."""
+    nothing_answerable(lab)
+    i = lab.rec.add_idea("Fade", card("Fade"), "proposer", "1h")
+    for k in range(lab.pc.proposals_per_idea):
+        lab.rec.add_proposal(idea_id=i, plugin=f"fade_v{k}", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                             verdict={**verdict("signal before costs"), "lineage_id": "family:fade_v0"})
+    assert run(lab, trials=1) == "trials"
+    assert idea(lab, "Fade")["status"] == "exhausted" and order(lab) == "P" and rounds(lab) == []
+
+
+def test_an_ok_round_adds_its_ideas_and_the_next_proposal_carries_its_stop_list(lab):
+    nothing_answerable(lab)
+    want = prompt.render_record(lab.rec, 0, lab.pc.timeframes) + "\n" + prompt.research_instruction(lab.pc) + "\n"
+    reply = note("Basis squeeze", "Carry unwind", stop=["Exit-only changes", "Sign flips of dead fades"],
+                 summary="The fades died on costs.\nCarry is next.")
+    lab.fake.notes = [reply]
+    assert run(lab, trials=1) == "trials"
+    r, p = lab.fake.calls
+    # the research call: the static context, the record and the research instruction only, on its own schema
+    assert researching(r) and r.user == want and r.system == p.system == context.static_context(lab.cfg, lab.pc)
+    assert r.schema == contract.research_schema(lab.pc.timeframes, lab.pc.research_max_ideas)
+    assert [json.loads(ln)["user"] for ln in Path(r.transcript).read_text().splitlines()] == [want]
+    new_ideas = [i for i in lab.rec.ideas() if i["origin"] == "research"]
+    assert [(i["title"], i["timeframe"], i["status"], i["card"]) for i in new_ideas] == [
+        ("Basis squeeze", "1h", "open", card("Basis squeeze")), ("Carry unwind", "1h", "open", card("Carry unwind"))]
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["added"], row["reply"], row["trials_used"], row["at"]) == \
+        ("ok", [i["id"] for i in new_ideas], reply, 0, T0)
+    assert (row["tokens_in"], row["tokens_out"]) == (1100, 10)
+    # the proposal: the new ideas in its record, the stop list between the record and the instruction
+    assert "### #2 Basis squeeze" in p.user and "BUILDS-ON" not in p.user
+    assert p.user.endswith(f"{STOP_HEADING}\n- Exit-only changes\n- Sign flips of dead fades\n\n{HUMAN_FIRST}\n\n"
+                           + prompt.instruction() + "\n")
+    lines = digest(lab).splitlines()
+    k = lines.index("- 10:00 · research: +2 ideas (#2, #3); stop list 2 items")
+    assert lines[k + 1:k + 3] == ["  The fades died on costs.", "  Carry is next."]
+
+
+def test_a_round_sees_the_stop_list_in_force_and_is_asked_to_revise_it(lab):
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    for outcome, stop in (("ok", ["Old direction"]), ("capped", ["Exit-only changes"]), ("invalid", ["Refused"])):
+        lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome=outcome,
+                             reply={"ideas": [], "stop": stop, "summary": "SUMMARY"})
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=1), trials=1) == "trials"
+    assert order(lab) == "RP"
+    # the record, the list in force (the latest valid round's) and the instruction to revise it, in that order
+    assert research_calls(lab)[0].user == (record + "\n" + f"{STOP_HEADING}\n- Exit-only changes\n" + "\n"
+                                           + prompt.research_instruction(lab.pc, revising=True) + "\n")
+
+
+def test_with_a_stop_list_in_force_the_humans_request_comes_before_it(lab):
+    i = lab.rec.add_idea("Mine", card("Mine"), "human", "1h")
+    lab.rec.flag_next(i)
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok", reply=note(stop=["Human ideas"]))
+    assert run(lab, trials=1) == "trials"
+    user = lab.fake.calls[0].user
+    assert user.index("- Human ideas\n\n" + HUMAN_FIRST + "\n") < user.index(ASK.format(i))
+
+
+def test_a_later_valid_round_replaces_the_stop_list_and_a_failed_one_keeps_it(lab):
+    lab.fake.notes = [note(stop=["Stop A"]), *[{"bad": 1}] * 4, note(stop=["Stop B"])]
+    assert run(lab, replace(lab.pc, research_every=1), trials=4) == "trials"
+    assert order(lab) == "PRP" + "R" * 4 + "PRP"
+    assert [r["outcome"] for r in rounds(lab)] == ["ok", "invalid", "ok"]
+    assert [("- Stop A" in c.user, "- Stop B" in c.user) for c in proposal_calls(lab)] == [
+        (False, False), (True, False), (True, False), (False, True)]
+
+
+@pytest.mark.parametrize("untried, outcome", [(5, "ok"), (6, "capped")])
+def test_the_cap_holds_back_a_rounds_ideas_but_not_its_stop_list(lab, untried, outcome):
+    for k in range(untried):
+        lab.rec.add_idea(f"Untried {k}", card(f"Untried {k}"), "research", "1h")
+    for k in range(3):                                   # human ideas don't count toward the cap
+        lab.rec.add_idea(f"Human {k}", card(f"Human {k}"), "human", "1h")
+    lab.fake.notes = [note("Basis squeeze", stop=["Stop A"])]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    (row,) = rounds(lab)
+    assert row["outcome"] == outcome and row["reply"]["ideas"][0]["title"] == "Basis squeeze"   # kept in the row
+    added = [i["id"] for i in lab.rec.ideas() if i["title"] == "Basis squeeze"]
+    assert row["added"] == added and len(added) == (outcome == "ok")
+    assert "- Stop A" in proposal_calls(lab)[1].user
+    line = "research: 1 idea not added (cap); stop list 1 item" if outcome == "capped" else \
+        f"research: +1 idea (#{added[0]}); stop list 1 item"
+    assert line in digest(lab)
+
+
+def capped(lab):
+    """The record at its cap of untried research ideas, before the session."""
+    for k in range(lab.pc.research_open_cap):
+        lab.rec.add_idea(f"Untried {k}", card(f"Untried {k}"), "research", "1h")
+
+
+def test_a_capped_round_is_asked_for_no_cards(lab):
+    """R-RL5: the cap is checked before the call, and the round is told so."""
+    capped(lab)
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    lab.fake.notes = [note()]                            # no cards: as asked
+    assert run(lab, replace(lab.pc, research_every=1), trials=1) == "trials"
+    assert order(lab) == "RP"
+    assert research_calls(lab)[0].user == record + "\n" + prompt.research_instruction(lab.pc, capped=True) + "\n"
+    assert [(r["outcome"], r["added"]) for r in rounds(lab)] == [("capped", [])]
+    assert "research: 0 ideas not added (cap); stop list 1 item" in digest(lab)
+
+
+def test_a_capped_rounds_cards_are_set_aside_unchecked_and_its_stop_list_kept(lab):
+    """R-RL5: cards a capped round returns anyway are ignored, not refused: a bad one costs no fix-up."""
+    capped(lab)
+    bad = {"ideas": [{"title": "Half a card"}, {**card("Placeholder"), "timeframe": "1h", "builds_on": "b"}],
+           "stop": ["Stop A"], "summary": "S"}
+    lab.fake.notes = [bad]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert order(lab) == "PRP"                           # one research call: no fix-up
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["added"], row["reply"]) == ("capped", [], bad)      # kept in the row for the human
+    assert "- Stop A" in proposal_calls(lab)[1].user
+    assert "research: 2 ideas not added (cap); stop list 1 item" in digest(lab)
+    assert [i["title"] for i in lab.rec.ideas() if i["title"] == "Half a card"] == []
+
+
+def test_a_refused_note_goes_back_as_a_fixup(lab):
+    nothing_answerable(lab)
+    short = {"ideas": [], "stop": []}
+    lab.fake.notes = [short, note("Placeholder"), note("Basis squeeze")]
+    assert run(lab, trials=1) == "trials"
+    assert order(lab) == "RRRP"
+    r1, r2, r3 = research_calls(lab)
+    for c, rejected, error in ((r2, short, "summary: required"),
+                               (r3, note("Placeholder"), "idea #1 (Placeholder): title: an idea titled "
+                                                         "'Placeholder' is already in the record")):
+        assert c.user.startswith(r1.user.rstrip("\n")) and json.dumps(rejected, indent=1) in c.user
+        assert error in c.user and "Return a corrected research note" in c.user
+    assert "summary: required" not in r3.user
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["reply"], row["tokens_in"]) == ("ok", note("Basis squeeze"), 3300)
+    assert idea(lab, "Basis squeeze")["origin"] == "research"
+
+
+def test_a_title_taken_between_the_check_and_the_write_goes_back_as_a_fixup(lab, monkeypatch):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze"), note("Carry unwind")]
+    check = loop.research.check_note
+
+    def late(n, record, pc):                             # the human adds the same title meanwhile
+        errors = check(n, record, pc)
+        if n.ideas[0].title == "Basis squeeze":
+            record.add_idea("Basis squeeze", card("Basis squeeze"), "human", "1h")
+        return errors
+    monkeypatch.setattr(loop.research, "check_note", late)
+    assert run(lab, trials=1) == "trials"
+    assert order(lab) == "RRP" and "duplicate idea title: 'Basis squeeze'" in research_calls(lab)[1].user
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["added"]) == ("ok", [idea(lab, "Carry unwind")["id"]])
+    assert idea(lab, "Basis squeeze")["origin"] == "human"
+
+
+def test_a_note_still_refused_after_its_fixups_is_invalid_and_the_session_goes_on(lab):
+    lab.fake.notes = [{"bad": 1}] * 8
+    assert run(lab, trials=11) == "trials"
+    # the next round is due 5 trials after the failed one: no loop of research calls
+    assert order(lab) == "P" * 5 + "R" * 4 + "P" * 5 + "R" * 4 + "P"
+    assert [(r["trials_used"], r["outcome"], r["added"], r["reply"]) for r in rounds(lab)] == [
+        (5, "invalid", [], {"bad": 1}), (10, "invalid", [], {"bad": 1})]
+    # why, for the human: the last attempt's first error, as a dropped proposal's line gives it
+    assert digest(lab).count("research: invalid after fix-ups: bad: unknown field\n") == 2
+    assert [i for i in lab.rec.ideas() if i["origin"] == "research"] == []
+
+
+def test_a_research_call_that_fails_is_recorded_and_the_session_goes_on(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [ModelCallError(f"claude exited 1; stderr: {SENTINEL}")]
+    assert run(lab, trials=1) == "trials"
+    assert order(lab) == "RP" and [p["state"] for p in props(lab)] == ["judged"]
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["reply"], row["added"], row["tokens_in"]) == ("error: model_call", None, [], 0)
+    assert lab.rec.session(1)["stop_reason"] == "trials"
+    # why, for the human: a research-only failure (a timeout on the bigger reply) must not hide behind its code
+    assert f"research: error model_call: claude exited 1; stderr: {SENTINEL}" in digest(lab)
+    assert [(c["seq"], c["outcome"]) for c in call_rows(lab)] == [(None, "model_call"), (1, "reply")]
+    assert not [c for c in lab.fake.calls if SENTINEL in c.user or SENTINEL in c.system]
+    assert SENTINEL not in json.dumps(rounds(lab), default=str)
+
+
+def test_a_model_config_error_in_research_stops_the_session(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [ModelConfigError("the CLI's init failed the check: tools ['Bash']")]
+    assert run(lab) == "model_config"
+    assert order(lab) == "R" and props(lab) == []
+    assert [r["outcome"] for r in rounds(lab)] == ["error: model_config"]
+    text = digest(lab)
+    assert "research: error model_config" in text and "Stop reason: model_config" in text
+
+
+def test_a_usage_limit_in_research_waits_and_repeats_the_same_call(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [UsageLimit(T0 + timedelta(hours=2)), note("Basis squeeze")]
+    assert run(lab, trials=1) == "trials"
+    assert slept(lab) == 7200.0 and order(lab) == "RRP"
+    r1, r2 = research_calls(lab)
+    assert r1.user == r2.user and [r["outcome"] for r in rounds(lab)] == ["ok"]
+    assert "paused: the Claude Code usage limit" in digest(lab)
+
+
+def test_a_signal_during_a_research_call_stops_the_session(lab):
+    nothing_answerable(lab)
+    lab.fake.on_call = lambda f: signal.raise_signal(signal.SIGTERM)
+    assert run(lab) == "signal"
+    assert order(lab) == "R" and props(lab) == []
+    assert [r["outcome"] for r in rounds(lab)] == ["error: signal"] and "research: error signal" in digest(lab)
+
+
+def test_a_session_that_dies_mid_round_leaves_the_round_interrupted(lab):
+    nothing_answerable(lab)
+    seen = []
+
+    def crash(fake):
+        seen.append([r["outcome"] for r in rounds(lab)])
+        raise RuntimeError("killed")
+    lab.fake.on_call = crash
+    with pytest.raises(RuntimeError, match="killed"):
+        run(lab)
+    assert seen == [["error: interrupted"]] and [r["outcome"] for r in rounds(lab)] == ["error: interrupted"]
+    assert lab.rec.session(1)["stop_reason"] == "error"
+
+
+def test_a_research_calls_tokens_count_toward_the_days_caps_and_the_session(lab):
+    assert run(lab, replace(lab.pc, max_input_tokens_per_day=6000), trials=6) == "trials"
+    # 5 proposals read 5,500 tokens; the research call's 1,100 reach the cap, so the 6th waits for the next day
+    assert order(lab) == "PPPPPRP" and slept(lab) == TO_MIDNIGHT
+    assert lab.rec.usage_on(T0.date()) == (6600, 60)
+    assert props(lab)[-1]["judged_at"] == T0 + timedelta(seconds=TO_MIDNIGHT)
+    s = lab.rec.session(1)
+    assert (s["tokens_in"], s["tokens_out"]) == (7700, 70)
+
+
+def test_a_research_round_waits_out_the_days_judge_quota_first(lab):
+    assert run(lab, replace(lab.pc, trials_per_day=5), trials=6) == "trials"
+    assert order(lab) == "PPPPPRP"
+    assert [r["at"] for r in rounds(lab)] == [T0 + timedelta(seconds=TO_MIDNIGHT)]
+
+
+DATE = re.compile(r"20\d\d-\d\d-\d\d")
+
+
+def test_no_research_rounds_time_summary_or_builds_on_reaches_any_prompt(lab):
+    planted = datetime(2029, 3, 4, 5, 6, 7, tzinfo=UTC)
+    lab.rec.add_research(session_id=None, at=planted, trials_used=0, added=[], outcome="ok",
+                         reply=note(stop=["Old stop"], summary="SUMMARY-0"))
+    lab.fake.notes = [note("Basis squeeze", summary="SUMMARY-1"), note("Carry unwind", summary="SUMMARY-2")]
+    assert run(lab, replace(lab.pc, research_every=1), trials=3) == "trials"
+    assert order(lab) == "PRPRP" and [r["at"] for r in rounds(lab)] == [planted, T0, T0]
+    for c in lab.fake.calls:
+        for gone in ("SUMMARY", "BUILDS-ON", "05:06", "10:00", "2029"):
+            assert gone not in c.user, gone
+        assert not DATE.search(c.user), DATE.search(c.user)

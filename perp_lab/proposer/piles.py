@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 
 RANK = {"promoted": 4, "close call": 3, "signal before costs": 2, "no signal": 1, "broken": 0}
+MODEL_ORIGINS = ("proposer", "research")      # the ideas a model wrote
 
 
 def _num(x) -> bool:
@@ -82,7 +83,9 @@ def idea_status(idea: dict, proposals: list[dict], family_outcome: str | None, p
     if family_outcome in ("passed", "failed"):
         return family_outcome
     judged = _judged(proposals)
-    if idea.get("origin") == "proposer" and judged and all(p.get("duplicate_of") is not None for p in judged):
+    # Only a model-written idea, the proposer's own or a research round's, can be a duplicate: a human's or a
+    # seeded one never is (proposer spec, Human ideas; research-round spec, What it writes).
+    if idea.get("origin") in MODEL_ORIGINS and judged and all(p.get("duplicate_of") is not None for p in judged):
         return "duplicate"
     best = best_pile([_pile_of(p) for p in judged if p.get("duplicate_of") is None])
     if best == "no signal":
