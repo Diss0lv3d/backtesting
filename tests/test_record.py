@@ -442,3 +442,59 @@ def test_an_old_record_gets_the_stops_table_and_keeps_its_ideas(tmp_path):
     assert rec.idea(1)["title"] == "Old" and rec.stops() == []
     rec.add_stop("Round-number stop cascades")
     assert [s["text"] for s in Record(state).stops()] == ["Round-number stop cascades"]
+
+
+# -- the referee's columns (referee-and-human-stops spec): new columns on existing tables, so the column migration
+
+# The research table as record.db first had it (2026-11-01): no referee column.
+OLD_RESEARCH = """CREATE TABLE research (
+    id INTEGER NOT NULL, session_id INTEGER, at DATETIME NOT NULL, trials_used INTEGER, reply JSON, added JSON,
+    tokens_in INTEGER, tokens_out INTEGER, outcome VARCHAR(64), PRIMARY KEY (id),
+    FOREIGN KEY(session_id) REFERENCES sessions (id))"""
+
+
+def _columns(state, table) -> list[str]:
+    c = sqlite3.connect(state / "record.db")
+    try:
+        return [row[1] for row in c.execute(f"PRAGMA table_info({table})")]
+    finally:
+        c.close()
+
+
+def test_an_old_record_gets_the_referee_columns_once_and_keeps_its_rows(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    c = sqlite3.connect(state / "record.db")
+    c.execute(OLD_IDEAS)
+    c.execute(OLD_RESEARCH)
+    c.execute("INSERT INTO ideas (title, origin, status, created_at) VALUES ('Old', 'seed', 'open', "
+              "'2026-11-01 00:00:00')")
+    c.execute("INSERT INTO research (at, trials_used, reply, added, outcome) VALUES ('2026-11-01 00:00:00', 5, "
+              "'{\"stop\": [\"x\"]}', '[1]', 'ok')")
+    c.commit()
+    c.close()
+    rec = Record(state)
+    assert rec.idea(1)["title"] == "Old" and rec.idea(1)["web_reviewed"] is False
+    old = rec.last_research()
+    assert (old["reply"], old["added"], old["outcome"], old["referee"]) == ({"stop": ["x"]}, [1], "ok", None)
+    rec.update_research(old["id"], referee={"verdicts": [{"title": "Old", "decision": "accept"}]})
+    again = Record(state)                       # the migration is idempotent
+    assert _columns(state, "ideas").count("web_reviewed") == 1 and _columns(state, "research").count("referee") == 1
+    assert again.last_research()["referee"] == {"verdicts": [{"title": "Old", "decision": "accept"}]}
+    assert again.idea(1)["web_reviewed"] is False
+
+
+def test_an_idea_is_not_web_reviewed_unless_it_is_added_so(rec):
+    assert rec.add_seed([{"id": 10, "title": "S", "card": {}, "origin": "seed", "timeframe": "4h",
+                          "status": "open"}], [])
+    assert rec.idea(10)["web_reviewed"] is False
+    a, b = rec.add_ideas([{"title": "A", "card": {}, "origin": "research", "timeframe": "1h"},
+                          {"title": "B", "card": {}, "origin": "research", "timeframe": "1h", "web_reviewed": True}])
+    assert (rec.idea(a)["web_reviewed"], rec.idea(b)["web_reviewed"]) == (False, True)
+
+
+def test_a_research_row_has_no_referee_until_one_is_written(rec):
+    rid = rec.add_research(session_id=None, trials_used=5, outcome="pending")
+    assert rec.last_research()["referee"] is None
+    rec.update_research(rid, referee={"error": "model_call"})
+    assert rec.last_research()["referee"] == {"error": "model_call"}

@@ -78,6 +78,8 @@ ideas = sa.Table(
     sa.Column("created_at", UTCDateTime, nullable=False),
     # When the human asked for the idea to be tried next; one idea at most. A time, so never in a prompt.
     sa.Column("next_up", UTCDateTime),
+    # Reviewed by a referee that could read academic papers, some maybe after the cutoff: weaker exam evidence.
+    sa.Column("web_reviewed", sa.Boolean, nullable=False, default=False, server_default=sa.text("0")),
     sa.Index("ux_ideas_title_nocase", sa.func.lower(sa.column("title")), unique=True),
 )
 
@@ -146,6 +148,7 @@ research = sa.Table(
     sa.Column("tokens_in", sa.Integer),
     sa.Column("tokens_out", sa.Integer),
     sa.Column("outcome", sa.String(64)),                # ok | capped | invalid | error: <code>
+    sa.Column("referee", sa.JSON),                      # the verdicts, fetches and denials, or the error; or null
 )
 
 # The human's stop list (referee-and-human-stops spec): directions the human rules out, in every proposal and
@@ -164,6 +167,8 @@ stops = sa.Table(
 # record.db predates these.
 _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("ideas", "next_up", "DATETIME"),
+    ("ideas", "web_reviewed", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("research", "referee", "JSON"),
 ]
 
 
