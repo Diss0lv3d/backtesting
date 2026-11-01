@@ -916,6 +916,19 @@ def test_a_failed_start_check_is_a_start_refusal(lab, step, error):
     assert lab.fake.calls == [] and not (lab.state / "sessions").exists()
 
 
+@pytest.mark.parametrize("resets, said", [
+    (datetime(2026, 11, 2, 13, 20, tzinfo=UTC), "it resets at 2026-11-02 13:20 UTC"),
+    (None, "no reset time given"),
+])
+def test_a_usage_limit_at_the_start_probe_is_refused_as_such(lab, resets, said):
+    """M-7: the probe hitting the plan's usage limit is not a logged-out CLI: the refusal says when it resets."""
+    lab.fake.start_error["probe"] = UsageLimit(resets)
+    with pytest.raises(StartRefused) as e:
+        run(lab)
+    assert "usage limit" in str(e.value) and said in str(e.value) and "logged in" not in str(e.value)
+    assert lab.fake.calls == [] and not (lab.state / "sessions").exists()
+
+
 def test_a_bad_config_is_refused_at_the_start(lab):
     lab.cfg.raw["proposer"] = {**lab.cfg.raw["proposer"], "model": "opus"}
     with pytest.raises(StartRefused, match="pinned"):

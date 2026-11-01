@@ -764,7 +764,12 @@ def _start_checks(deps: Deps, pc, state: Path) -> tuple[pin.Pin, str]:
         deps.probe(state / "logs" / "probe.jsonl")
     except FileNotFoundError:
         raise StartRefused(f"the Claude Code CLI ({pc.claude_bin}) is not installed or not on PATH") from None
-    except (model.ModelCallError, model.ModelConfigError, model.UsageLimit, OSError) as e:
+    except model.UsageLimit as e:                       # not a logged-out CLI: say when to start again (M-7)
+        when = (f"it resets at {e.resets_at.astimezone(UTC):%Y-%m-%d %H:%M} UTC" if e.resets_at is not None
+                else "no reset time given")
+        raise StartRefused(f"the Claude Code usage limit is reached, so the model probe was refused ({when}); "
+                           "start again once it resets") from None
+    except (model.ModelCallError, model.ModelConfigError, OSError) as e:
         raise StartRefused(f"the model probe failed (is the CLI logged in?): {e}") from None
     return harness, cli
 
