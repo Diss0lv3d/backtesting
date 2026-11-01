@@ -12,8 +12,8 @@ Everything that touches the world is a `Deps` callable, so the loop runs in test
 
 `run_session` returns why the session stopped: trials_total, days or trials (the caps); infra_errors (3 judge or
 preflight exits of 1 in a row, a judge counting once after its retries); stuck (5 proposals in a row dropped
-after their fix-ups); model_call or model_config (the model call); harness_changed (the pin); signal (SIGINT or
-SIGTERM); budget_spent (a verdict shows the global holdout budget spent). A start a guard refuses raises
+after their fix-ups); model_call or model_config (the model call); harness_changed (the pin); signal (SIGINT,
+SIGTERM or SIGHUP); budget_spent (a verdict shows the global holdout budget spent). A start a guard refuses raises
 StartRefused instead (R34).
 
 Paths: the state dir resolves against the repo (the checkout the editable install points at), never the working
@@ -86,7 +86,9 @@ class _RoundOver(Exception):
 
 
 class _Signals:
-    """SIGINT and SIGTERM for the session (spec "Pace and budget", stop conditions).
+    """SIGINT, SIGTERM and SIGHUP for the session (spec "Pace and budget", stop conditions). SIGHUP, from a closed
+    terminal, is handled as SIGTERM is: unhandled, it would end the session with no record of its end and leave
+    the judge orphaned (M-4).
 
     A judge is never cut short by the first signal: it finishes, its verdict is filed, and the session stops. The
     second kills it. Outside a judge, a signal that comes during a wait (a model call, a preflight, a sleep) ends
@@ -129,7 +131,7 @@ class _Signals:
 
     @contextlib.contextmanager
     def installed(self):
-        old = {s: signal.signal(s, self) for s in (signal.SIGINT, signal.SIGTERM)}
+        old = {s: signal.signal(s, self) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
         try:
             yield
         finally:

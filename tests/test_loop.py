@@ -576,6 +576,33 @@ def test_two_signals_kill_the_judge_and_record_interrupted(lab):
     assert lab.rec.judge_calls_on(T0.date()) == 1 and lab.rec.trials_used() == 1
 
 
+@pytest.fixture
+def hup_guard():
+    """SIGHUP's default action ends the process: a session that doesn't handle it fails the test, not ends it."""
+    def guard(signum, frame):
+        raise RuntimeError("SIGHUP reached the test's own handler")
+    old = signal.signal(signal.SIGHUP, guard)
+    yield guard
+    signal.signal(signal.SIGHUP, old)
+
+
+@pytest.mark.parametrize("hups", [1, 2])
+def test_a_sighup_is_handled_like_sigterm(lab, hup_guard, hups):
+    """M-4: closing the terminal sends SIGHUP. One lets the judge finish and stops; a second kills the judge."""
+    def hang_up(fake):
+        for _ in range(hups):
+            signal.raise_signal(signal.SIGHUP)
+    lab.fake.on_judge = hang_up
+    assert run(lab) == "signal"
+    (p,) = props(lab)
+    if hups == 1:
+        assert (p["state"], p["judge_exit"], p["pile"]) == ("judged", 0, "no signal") and not lab.fake.killed
+    else:
+        assert (p["state"], p["broken_reason"]) == ("broken", "interrupted") and lab.fake.killed
+    assert lab.rec.session(1)["stop_reason"] == "signal" and "## End" in digest(lab)
+    assert signal.getsignal(signal.SIGHUP) is hup_guard              # restored
+
+
 def test_a_signal_just_before_the_judge_starts_no_judge(lab):
     # 1: the pin check before preflight, 2: the one before the judge, after the copy
     lab.fake.pin_error = lambda n: signal.raise_signal(signal.SIGINT) if n == 2 else None
