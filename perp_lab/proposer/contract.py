@@ -2,7 +2,10 @@
 
 The JSON schema handed to `claude -p --json-schema`, the prompt's description of the reply and the
 orchestrator's own validation are all generated from the fields below (ADR 0007), so they can't drift.
-`parse` does its own checks rather than pulling in a schema library: it covers exactly what `schema` emits.
+`parse` does its own checks rather than pulling in a schema library: it covers exactly what `schema` emits,
+plus one rule the schema can't carry. The CLI sends the schema as a tool's input_schema, and the API refuses
+oneOf, allOf or anyOf at its top level (R42), so "kind -> its block" is stated by `describe` and enforced by
+`parse` alone.
 """
 
 from __future__ import annotations
@@ -133,15 +136,8 @@ def _object_schema(cls, timeframes):
 
 
 def schema(timeframes) -> dict:
-    s = _object_schema(Proposal, tuple(timeframes))
-    s["allOf"] = [
-        {
-            "if": {"properties": {"kind": {"const": kind}}, "required": ["kind"]},
-            "then": {"required": [block]},
-        }
-        for kind, block in BLOCK_FOR_KIND.items()
-    ]
-    return s
+    # No oneOf/allOf/anyOf at the top level: the API refuses the whole call (R42). parse() checks kind -> block.
+    return _object_schema(Proposal, tuple(timeframes))
 
 
 def _type_words(tp, timeframes, name):

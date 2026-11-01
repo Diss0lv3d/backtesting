@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from perp_lab.proposer.contract import (
-    FIELD_DOCS, ContractError, IdeaCard, Ports, Proposal, Refines, describe, parse, schema,
+    BLOCK_FOR_KIND, FIELD_DOCS, ContractError, IdeaCard, Ports, Proposal, Refines, describe, parse, schema,
 )
 
 TFS = ("15m", "1h", "4h")
@@ -64,8 +64,20 @@ def test_a_kind_requires_its_block(kind, block):
     with pytest.raises(ContractError) as e:
         parse({"kind": kind, "timeframe": "1h", "hypothesis": "h", "source": "s"}, TFS)
     assert any(block in m for m in e.value.errors)
-    then = [a["then"]["required"] for a in schema(TFS)["allOf"] if a["if"]["properties"]["kind"]["const"] == kind]
-    assert then == [[block]]
+    assert f"When kind is {kind}, {block} is required." in describe(TFS)     # the model is told the rule
+
+
+def test_the_schema_has_no_combinator_at_its_top_level():
+    """The CLI turns --json-schema into a tool's input_schema. With the kind -> block rule as a top-level allOf
+    (if/then on kind), a real call on 2026-11-01 got, as a result with is_error true, api_error_status 400 and
+    terminal_reason api_error:
+
+        API Error: 400 tools.1.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level
+
+    so every proposal call failed (R42). The rule is parse()'s alone now, and describe() states it."""
+    s = schema(TFS)
+    assert not {"oneOf", "allOf", "anyOf"} & set(s)
+    assert set(s) == {"type", "properties", "required", "additionalProperties"}
 
 
 def test_the_schema_is_closed():
@@ -111,7 +123,8 @@ def _case(**over):
 
 
 # Known, accepted disagreements, left out of the table: integral floats like 3.0 for integer fields (the
-# schema accepts them, parse refuses), and the source limit (bytes in parse, characters in the schema).
+# schema accepts them, parse refuses), and the source limit (bytes in parse, characters in the schema). The one
+# rule parse adds on purpose, kind -> its block, is `_kind_rule` below.
 AGREEMENT = [
     _case(),
     _case(kind="refinement", idea=..., refines={"idea_id": 1, "change": "c"}),
@@ -140,12 +153,18 @@ AGREEMENT = [
 ]
 
 
+def _kind_rule(obj) -> bool:
+    """The rule the schema can't carry (the API refuses a top-level allOf, R42): parse requires the kind's block."""
+    block = BLOCK_FOR_KIND.get(obj.get("kind")) if isinstance(obj.get("kind"), str) else None
+    return block is None or block in obj
+
+
 @pytest.mark.parametrize("obj", AGREEMENT)
-def test_parse_accepts_exactly_what_the_schema_accepts(obj):
+def test_parse_accepts_exactly_what_the_schema_and_the_kind_rule_accept(obj):
     jsonschema = pytest.importorskip("jsonschema")
     try:
         jsonschema.validate(obj, schema(TFS))
-        by_schema = True
+        by_schema = _kind_rule(obj)
     except jsonschema.ValidationError:
         by_schema = False
     try:
@@ -154,3 +173,11 @@ def test_parse_accepts_exactly_what_the_schema_accepts(obj):
     except ContractError:
         by_parse = False
     assert by_parse == by_schema, obj
+
+
+@pytest.mark.parametrize("obj", [_case(kind="refinement", idea=...), _case(kind="port", idea=...), _case(idea=...)])
+def test_the_kind_rule_is_the_only_thing_parse_adds(obj):
+    jsonschema = pytest.importorskip("jsonschema")
+    jsonschema.validate(obj, schema(TFS))                # the schema lets a kind without its block through
+    with pytest.raises(ContractError, match="required when kind is"):
+        parse(obj, TFS)
