@@ -97,6 +97,25 @@ def test_trials_used_counts_interrupted_judge(rec):
     assert rec.trials_used() == 2
 
 
+def test_a_proposal_is_the_proposers_unless_marked_seed(rec):
+    a = _prop(rec, "a", None)
+    b = _prop(rec, "b", 0, [], origin="seed")
+    assert [(p["seq"], p["origin"]) for p in rec.proposals()] == [(a, "proposer"), (b, "seed")]
+    with pytest.raises(Exception):
+        _prop(rec, "c", 0, [], origin="seeded")
+    assert len(rec.proposals()) == 2
+
+
+def test_a_seeded_trial_counts_in_neither_trials_used_nor_judge_calls_on(rec):
+    # trials_total is for the proposer's own trials; the human's were judged on no day of the proposer's
+    today = datetime.now(UTC)
+    _prop(rec, "human", 0, ["Sharpe low"], origin="seed")
+    _prop(rec, "human2", 1, ["x"], origin="seed")
+    assert rec.trials_used() == 0 and rec.judge_calls_on(today.date()) == 0
+    _prop(rec, "mine", 0, ["Sharpe low"], judged_at=today)
+    assert rec.trials_used() == 1 and rec.judge_calls_on(today.date()) == 1
+
+
 def test_day_splits_at_midnight_utc(rec):
     d = date(2026, 10, 20)
     before = datetime(2026, 10, 19, 23, 59, 59, tzinfo=UTC)

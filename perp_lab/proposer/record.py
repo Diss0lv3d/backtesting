@@ -72,6 +72,7 @@ proposals = sa.Table(
     sa.Column("seq", sa.Integer, primary_key=True, autoincrement=False),
     sa.Column("session_id", sa.Integer, sa.ForeignKey("sessions.id")),
     sa.Column("idea_id", sa.Integer, sa.ForeignKey("ideas.id"), index=True),
+    sa.Column("origin", sa.String(16), nullable=False, default="proposer"),   # seed | proposer
     sa.Column("kind", sa.String(16)),
     sa.Column("plugin", sa.String(128)),
     sa.Column("timeframe", sa.String(8)),
@@ -92,6 +93,8 @@ proposals = sa.Table(
     # port), so a run (plugin, timeframe) is unique. A missing timeframe counts as one value, never as many.
     sa.Index("ux_proposals_plugin_tf", sa.column("plugin"), sa.func.coalesce(sa.column("timeframe"), ""),
              unique=True),
+    # A seeded human trial never counts toward trials_total, so a misspelt origin must not pass for one.
+    sa.CheckConstraint("origin IN ('seed', 'proposer')", name="ck_proposals_origin"),
 )
 
 calls = sa.Table(
@@ -242,8 +245,10 @@ class Record:
             return int(c.execute(q).scalar())
 
     def trials_used(self) -> int:
-        """Every judge call except a refusal (exit 2) and a lookahead kill; an interrupted judge counts."""
-        q = sa.select(proposals.c.judge_exit, proposals.c.verdict).where(proposals.c.judge_exit.is_not(None))
+        """The proposer's own judge calls, except a refusal (exit 2) and a lookahead kill; an interrupted judge
+        counts. Seeded human trials never count: trials_total is "for the proposer's own trials" (spec, Pace)."""
+        q = sa.select(proposals.c.judge_exit, proposals.c.verdict).where(
+            proposals.c.judge_exit.is_not(None), proposals.c.origin == "proposer")
         with self.engine.connect() as c:
             rows = c.execute(q).all()
         return sum(1 for code, verdict in rows if code != 2 and not (code == 0 and _lookahead_kill(verdict)))
