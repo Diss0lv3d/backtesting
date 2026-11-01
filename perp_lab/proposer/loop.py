@@ -469,7 +469,7 @@ class _Session:
     def _propose(self, t: _Prop) -> bool:
         """Calls and checks until the proposal passes preflight (True), or it is dropped (False)."""
         base = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes) + "\n"
-                + prompt.instruction() + "\n")
+                + prompt.instruction(self.record.next_up()) + "\n")
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
             raw = self._call(t.seq, user).proposal
@@ -713,8 +713,20 @@ class _Session:
         """The proposal's final record, its idea settled, and its digest line."""
         self.record.update_proposal(t.seq, state=state, **f)
         t.closed = True
+        if f.get("judge_exit") is not None:
+            self._answered(t)
         settle(self.record, self.pc)
         self.digest.line(t.seq, t.name, t.tf, t.kind, t.title, ("recovered: " if t.recovered else "") + outcome)
+
+    def _answered(self, t: _Prop) -> None:
+        """A judged proposal, whatever its outcome, answers the human's "try next" for the idea it worked on: its
+        own, and for a port the idea it ports. A dropped one doesn't: the request stands."""
+        if t.idea_id is None:
+            return
+        ids = [t.idea_id]
+        if t.kind == "port":
+            ids.append(self.record.idea(t.idea_id).get("port_of"))
+        self.record.clear_next(*(i for i in ids if i is not None))
 
     # -- crash recovery
     def _recover(self) -> None:
