@@ -23,7 +23,7 @@ from perp_lab.plugins import blob_hash, parse_meta
 from perp_lab.proposer import context, contract, loop, piles, proc, prompt, settings
 from perp_lab.proposer.model import ModelCallError, ModelConfigError, Reply, UsageLimit
 from perp_lab.proposer.pin import Pin, PinError
-from perp_lab.proposer.record import Record, calls, research
+from perp_lab.proposer.record import Record, calls, research, stops
 from perp_lab.proposer.settings import StartRefused
 from tests.test_seed import FAMILY, as_today, refreshed
 from tests.test_store import cfg  # noqa: F401  (fixture)
@@ -1234,6 +1234,98 @@ def test_with_research_off_no_stop_list_is_in_force(lab):
     want = prompt.render_record(lab.rec, 0, lab.pc.timeframes) + "\n" + prompt.instruction() + "\n"
     assert run(lab, replace(lab.pc, research_every=0), trials=1) == "trials"
     assert order(lab) == "P" and lab.fake.calls[0].user == want
+
+
+# -- the human's stop list (referee-and-human-stops spec)
+HUMAN_STOP_HEADING = "Directions the human has ruled out:"
+PLANTED = datetime(2029, 3, 4, 5, 6, 7, tzinfo=UTC)
+
+
+def human_stops(lab, *texts, removed=("Removed direction",)) -> None:
+    """The human's items in force, and some removed, with a planted time on every row."""
+    for t in (*texts, *removed):
+        lab.rec.add_stop(t)
+    for s in lab.rec.stops():
+        if s["text"] in removed:
+            lab.rec.remove_stop(s["id"])
+    with lab.rec.engine.begin() as c:
+        c.execute(sa.update(stops).values(created_at=PLANTED))
+        c.execute(sa.update(stops).where(stops.c.removed_at.is_not(None)).values(removed_at=PLANTED))
+
+
+def no_time_or_removed_item(user: str) -> None:
+    for gone in ("Removed direction", "2029", "05:06"):
+        assert gone not in user, gone
+
+
+def test_the_humans_stop_list_comes_before_the_research_steps_in_the_proposal_prompt(lab):
+    human_stops(lab, "Round-number stop cascades", "High-volume return premia")
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok",
+                         reply=note(stop=["Exit-only changes"]))
+    record = prompt.render_record(lab.rec, 0, lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=1000), trials=1) == "trials"
+    assert order(lab) == "P"
+    user = lab.fake.calls[0].user
+    human = f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n- High-volume return premia\n"
+    research_ = f"{STOP_HEADING}\n- Exit-only changes\n\n{HUMAN_FIRST}\n"
+    assert user == record + "\n" + human + "\n" + research_ + "\n" + prompt.instruction() + "\n"
+    no_time_or_removed_item(user)
+
+
+def test_with_no_research_list_the_humans_stop_list_stands_alone_before_the_instruction(lab):
+    human_stops(lab, "Round-number stop cascades")
+    record = prompt.render_record(lab.rec, 0, lab.pc.timeframes)
+    assert run(lab, trials=1) == "trials"
+    user = lab.fake.calls[0].user
+    assert user == (record + "\n" + f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n" + "\n"
+                    + prompt.instruction() + "\n")
+    assert STOP_HEADING not in user and HUMAN_FIRST not in user
+
+
+def test_with_only_removed_items_the_proposal_prompt_is_as_before(lab):
+    human_stops(lab)                                 # one item, removed
+    want = prompt.render_record(lab.rec, 0, lab.pc.timeframes) + "\n" + prompt.instruction() + "\n"
+    assert run(lab, trials=1) == "trials"
+    assert lab.fake.calls[0].user == want and HUMAN_STOP_HEADING not in want
+
+
+@pytest.mark.parametrize("research_list", [False, True])
+def test_the_humans_stop_list_comes_before_the_research_steps_in_a_research_prompt(lab, research_list):
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    human_stops(lab, "Round-number stop cascades")
+    if research_list:
+        lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok",
+                             reply=note(stop=["Exit-only changes"]))
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=1), trials=1) == "trials"
+    assert order(lab) == "RP"
+    research_ = f"{STOP_HEADING}\n- Exit-only changes\n" + "\n" if research_list else ""
+    user = research_calls(lab)[0].user
+    assert user == (record + "\n" + f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n" + "\n" + research_
+                    + prompt.research_instruction(lab.pc, revising=research_list) + "\n")
+    assert HUMAN_FIRST not in user
+    no_time_or_removed_item(user)
+
+
+def test_with_research_off_the_humans_stop_list_stays_in_force(lab):
+    """It's the human's, not research's: research_every 0 drops only the research step's list."""
+    human_stops(lab, "Round-number stop cascades")
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok", reply=note(stop=["Old direction"]))
+    record = prompt.render_record(lab.rec, 0, lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=0), trials=1) == "trials"
+    assert lab.fake.calls[0].user == (record + "\n" + f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n"
+                                      + "\n" + prompt.instruction() + "\n")
+
+
+def test_a_session_picks_up_the_humans_edits_at_its_next_prompt(lab):
+    a = lab.rec.add_stop("Round-number stop cascades")
+    edits = iter([lambda: lab.rec.add_stop("High-volume return premia"), lambda: lab.rec.remove_stop(a)])
+    lab.fake.on_judge = lambda fake: next(edits, lambda: None)()        # after the 1st and the 2nd trial
+    assert run(lab, trials=3) == "trials"
+    seen = [[t for t in ("Round-number stop cascades", "High-volume return premia") if f"- {t}\n" in c.user]
+            for c in lab.fake.calls]
+    assert seen == [["Round-number stop cascades"], ["Round-number stop cascades", "High-volume return premia"],
+                    ["High-volume return premia"]]
 
 
 

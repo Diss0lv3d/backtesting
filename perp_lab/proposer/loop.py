@@ -506,8 +506,9 @@ class _Session:
 
     def _propose(self, t: _Prop) -> bool:
         """Calls and checks until the proposal passes preflight (True), or it is dropped (False)."""
-        # The record, the research step's stop list (none before a valid round) and the instruction.
+        # The record, the human's stop list, the research step's (none before a valid round) and the instruction.
         parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
+                 prompt.human_stop_section(self._human_stops()),
                  prompt.stop_section(self._stop_list(), human_first=True), prompt.instruction(self._next_up()))
         base = "\n".join(x for x in parts if x) + "\n"
         user = base
@@ -535,6 +536,11 @@ class _Session:
         reply = last.get("reply") if last is not None else None
         stop = reply.get("stop") if isinstance(reply, dict) else None
         return [s for s in stop if isinstance(s, str)] if isinstance(stop, list) else []
+
+    def _human_stops(self) -> list[str]:
+        """The human's stop list, read for every prompt, so a session picks up the human's edits without a restart.
+        In force whatever research_every says: it's the human's, not research's. Only the items' text."""
+        return [s["text"] for s in self.record.stops()]
 
     def _next_up(self) -> dict | None:
         """The idea the human flagged, while some proposal could work on it. A flag none could answer any more (a
@@ -840,8 +846,9 @@ class _Session:
     def _research_note(self, r: _Research) -> tuple[str, str | None]:
         """(the outcome, a detail for the digest): calls and checks until a note is valid and written (ok, or
         capped), or it is refused after the fix-ups (invalid, with its last attempt's first error, as a dropped
-        proposal's line has). The prompt is the record, the stop list in force (as a proposal sees it) and the
-        research instruction, which asks the round to revise that list: nothing else.
+        proposal's line has). The prompt is the record, the human's stop list, the research step's list in force
+        (as a proposal sees them) and the research instruction, which asks the round to revise its own list and
+        leave the human's alone: nothing else.
 
         The cap is checked before the call: a round at the cap is asked for no cards and revises only the stop list
         and the summary. Cards it returns anyway are set aside, never checked, so they can't cost a fix-up or the
@@ -849,7 +856,8 @@ class _Session:
         stop = self._stop_list()
         capped = self.record.untried_research_ideas() >= self.pc.research_open_cap
         parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
-                 prompt.stop_section(stop), prompt.research_instruction(self.pc, revising=bool(stop), capped=capped))
+                 prompt.human_stop_section(self._human_stops()), prompt.stop_section(stop),
+                 prompt.research_instruction(self.pc, revising=bool(stop), capped=capped))
         base = "\n".join(x for x in parts if x) + "\n"
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):

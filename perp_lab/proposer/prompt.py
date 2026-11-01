@@ -8,6 +8,8 @@ only the old judgement's decision, so the model never sees two different OOS Sha
 
 A research round (research-round spec) gets the same record with a fixed instruction of its own. Of what it
 returns, only the stop list ever reaches a later prompt (stop_section): never its time, summary or ideas' reasons.
+The human's own stop list (human_stop_section) goes before it in every proposal and research prompt: the items'
+text only, never when they were added.
 """
 
 from __future__ import annotations
@@ -203,14 +205,28 @@ STOP_HEADING = "Directions the research step recommends avoiding:"
 HUMAN_FIRST = "When the human asks for an idea below, that request comes before this list."
 
 
+def _items(items: list[str]) -> list[str]:
+    # one line each, whatever the row holds: an item must not start a markdown line of its own
+    return [f"- {' '.join(str(s).split())}" for s in items]
+
+
 def stop_section(stop: list[str], *, human_first: bool = False) -> str:
     """The stop list in force (the latest valid research round's), for every later proposal and research round;
     "" when it has none. `human_first`, in a proposal's prompt, adds that the human's request comes first."""
     if not stop:
         return ""
-    # one line each, whatever the row holds: an item must not start a markdown line of its own
-    lines = [STOP_HEADING, *(f"- {' '.join(str(s).split())}" for s in stop)]
-    return "\n".join([*lines, *(["", HUMAN_FIRST] if human_first else [])]) + "\n"
+    return "\n".join([STOP_HEADING, *_items(stop), *(["", HUMAN_FIRST] if human_first else [])]) + "\n"
+
+
+HUMAN_STOP_HEADING = "Directions the human has ruled out:"
+
+
+def human_stop_section(items: list[str]) -> str:
+    """The human's stop list (record.stops: only the items' text), for every proposal and research prompt, before
+    the research step's; "" when it has none."""
+    if not items:
+        return ""
+    return "\n".join([HUMAN_STOP_HEADING, *_items(items)]) + "\n"
 
 
 RESEARCH_INSTRUCTION = """\
@@ -231,7 +247,8 @@ Say in each card how its exits stay neutral, so that its result measures its ent
 A card must not cite numbers from the record: mechanism, literature and rule only.
 
 Each stop item names a direction (a mechanism or a family of rules), never an open idea of the record: only the \
-human closes an idea."""
+human closes an idea. The directions the human has ruled out, when listed above, are the human's: not yours to \
+revise, and your stop list must not restate them."""
 
 # Only when a stop list is in force: the prompt shows it (stop_section) between the record and this instruction.
 REVISE_STOP = """\

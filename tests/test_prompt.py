@@ -254,6 +254,28 @@ def test_in_a_proposals_prompt_the_stop_list_gives_way_to_the_humans_request():
     assert HUMAN_FIRST not in prompt.stop_section(["Exit-only changes"])      # a research round's: no request
 
 
+HUMAN_STOP_HEADING = "Directions the human has ruled out:"
+
+
+def test_the_humans_stop_section_is_its_heading_and_one_line_per_item():
+    assert prompt.human_stop_section([]) == ""
+    assert prompt.human_stop_section(["Round-number stop cascades", "High-volume\nreturn  premia "]) == \
+        f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n- High-volume return premia\n"
+    assert HUMAN_FIRST not in prompt.human_stop_section(["Round-number stop cascades"])
+
+
+HUMANS = ("The directions the human has ruled out, when listed above, are the human's: not yours to revise, and "
+          "your stop list must not restate them.")
+
+
+def test_every_research_round_is_told_the_humans_directions_are_not_its_to_revise_or_restate(cfg):
+    pc = settings.load(cfg)
+    for revising in (False, True):
+        for capped in (False, True):
+            text = prompt.research_instruction(pc, revising=revising, capped=capped)
+            assert HUMANS in " ".join(text.split()), (revising, capped)
+
+
 def test_a_stop_item_names_a_direction_never_an_open_idea(cfg):
     pc = settings.load(cfg)
     for text in (prompt.research_instruction(pc), prompt.research_instruction(pc, revising=True)):
