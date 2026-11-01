@@ -268,10 +268,11 @@ def _blocks(msg: dict, kind: str) -> list[dict]:
 
 class _Fence:
     """One call's fetch audit (R-RF4). In a tool-less call a WebFetch means the CLI did not hold its flags. In a
-    web call every assistant block must be text, thinking or a tool_use of StructuredOutput or WebFetch, and every
-    user block a tool_result answering, once, a tool_use already issued. A fetch off the allowlist is harmless only
-    if the CLI refused it: its tool_result is an error (checked as it arrives, since the model reads it next) and
-    the result lists it in permission_denials. The texts of the CLI's denials differ by path, so none is read."""
+    web call every assistant block must be text, thinking or a tool_use of StructuredOutput or WebFetch (a fetch's
+    url the one in the message's `wire_tool_inputs`, when shown), and every user block a tool_result answering,
+    once, a tool_use already issued. A fetch off the allowlist is harmless only if the CLI refused it: its
+    tool_result is an error (checked as it arrives, since the model reads it next) and the result lists it in
+    permission_denials. The texts of the CLI's denials differ by path, so none is read."""
 
     def __init__(self, domains: tuple[str, ...]):
         self.domains = domains
@@ -291,7 +292,7 @@ class _Fence:
                 if block.get("type") not in ASSISTANT_BLOCKS:
                     raise FenceBreach(f"an assistant block of type {block.get('type')!r}")
                 if block.get("type") == "tool_use":
-                    self._use(block)
+                    self._use(block, msg)
         elif kind == "user":
             for block in _blocks(msg, "user"):
                 self._answer(block)
@@ -312,7 +313,7 @@ class _Fence:
             if tid not in self.refused:
                 raise FenceBreach(f"off-list fetch: {host}: no error tool_result")
 
-    def _use(self, block: dict) -> None:
+    def _use(self, block: dict, msg: dict) -> None:
         tid, name = block.get("id"), block.get("name")
         if not (isinstance(tid, str) and tid) or tid in self.uses:
             raise FenceBreach(f"a tool_use whose id is missing or reused: {tid!r}")
@@ -322,6 +323,11 @@ class _Fence:
         if name == "WebFetch":
             inp = block.get("input")
             url = inp.get("url") if isinstance(inp, dict) else None
+            if "wire_tool_inputs" in msg:  # the input as the API sent it: the fetch must be that one
+                wire = msg["wire_tool_inputs"]
+                wire = wire.get(tid) if isinstance(wire, dict) else None
+                if not (isinstance(wire, dict) and "url" in wire and wire["url"] == url):
+                    raise FenceBreach(f"a fetch whose url differs from its wire input: {url!r}"[:STDERR_TAIL])
             if not isinstance(url, str):
                 url = json.dumps(url)
             self.fetches.append((tid, url))

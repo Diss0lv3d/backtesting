@@ -387,10 +387,11 @@ DENIED_RULE = ("Permission to use WebFetch has been denied. IMPORTANT: You *may*
 NO_CONTENT = object()
 
 
-def _fetch(tid: str, url) -> str:
-    m = _msg(ASSISTANT)
+def _fetch(tid: str, url, **wire) -> str:
+    """A WebFetch tool_use. Real assistant messages carry `wire_tool_inputs`, the inputs as the API sent them; it
+    matches here unless the test passes its own."""
     item = {"type": "tool_use", "id": tid, "name": "WebFetch", "input": {"url": url, "prompt": "Its findings?"}}
-    return json.dumps({**m, "message": {**m["message"], "content": [item]}})
+    return _said(item, **wire)
 
 
 def _fetched(tid: str, content=f"Paper {ARXIV}: no round-number effect survives costs.", **flags) -> str:
@@ -408,10 +409,13 @@ def _denied(tid: str, text: str = DENIED) -> list[str]:
     return [json.dumps(notice), _fetched(tid, text, is_error=True)]
 
 
-def _said(*blocks) -> str:
-    """An assistant message with these content blocks."""
+def _said(*blocks, **wire) -> str:
+    """An assistant message with these content blocks, and their `wire_tool_inputs` unless given."""
     m = _msg(ASSISTANT)
-    return json.dumps({**m, "message": {**m["message"], "content": list(blocks)}})
+    inputs = {b["id"]: b.get("input") for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"
+              and isinstance(b.get("id"), str)}
+    return json.dumps({**m, "message": {**m["message"], "content": list(blocks)},
+                       **(wire or {"wire_tool_inputs": inputs})})
 
 
 def _told(content) -> str:
@@ -657,6 +661,31 @@ def test_a_web_stream_shape_the_fence_cannot_vouch_for_is_a_breach(fake, pc, tra
     fake.scenario([OK[UI], INIT_WEB, *lines, 30, *OK[ASSISTANT:]])
     start = time.monotonic()
     with pytest.raises(model.FenceBreach):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+def _wire(tid: str, url) -> dict:
+    return {"wire_tool_inputs": {tid: {"url": url, "prompt": "Its findings?"}}}
+
+
+def test_a_fetch_whose_wire_input_agrees_passes(fake, pc, transcript):
+    assert _msg(ASSISTANT)["wire_tool_inputs"]  # the real reply's StructuredOutput input: not compared
+    fake.scenario([*_web(_fetch("toolu_a", ARXIV, **_wire("toolu_a", ARXIV)), _fetched("toolu_a")), _result()])
+    assert model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS).fetches == [ARXIV]
+
+
+@pytest.mark.parametrize("wire", [
+    _wire("toolu_a", GECKO), _wire("toolu_a", ARXIV + "?x"), _wire("toolu_a", None), _wire("toolu_other", ARXIV),
+    {"wire_tool_inputs": {"toolu_a": {"prompt": "Its findings?"}}}, {"wire_tool_inputs": {"toolu_a": ARXIV}},
+    {"wire_tool_inputs": [ARXIV]}, {"wire_tool_inputs": None},
+], ids=["other-host", "other-url", "null-url", "no-entry", "no-url", "entry-not-object", "a-list", "null"])
+def test_a_fetch_whose_wire_input_differs_is_a_breach(fake, pc, transcript, wire):
+    """Review minor 4: when the CLI shows the input it got from the API, the fetch must be that one."""
+    fake.scenario([OK[UI], INIT_WEB, _fetch("toolu_a", ARXIV, **wire), 30, *OK[ASSISTANT:]])
+    start = time.monotonic()
+    with pytest.raises(model.FenceBreach, match="wire"):
         model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
     assert time.monotonic() - start < QUICK_S
     assert _gone(fake.seen["pid"])
