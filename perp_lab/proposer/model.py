@@ -67,6 +67,7 @@ BACKOFF_S = (30, 60, 120, 240)  # between the 5 tries
 VERSION_TIMEOUT_S = 60
 PROBE_SYSTEM = "Answer as JSON."
 PROBE_USER = "Reply with ok true."
+PROBE_WEB_USER = "Reply with ok true. Fetch nothing."  # the referee's web call: its flags, init and fence, no fetch
 PROBE_SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
 CHUNK = 65536
 STDERR_TAIL = 300
@@ -494,6 +495,9 @@ def cli_version(pc) -> str:
     return out.decode("utf-8", "replace").strip()
 
 
-def probe(pc, transcript: Path) -> None:
-    """Each session's first call: a one-line reply that must pass the same init check as every call."""
-    call(pc, PROBE_SYSTEM, PROBE_USER, PROBE_SCHEMA, transcript)
+def probe(pc, transcript: Path, *, web_domains: tuple[str, ...] | None = ()) -> None:
+    """Each session's first call: a one-line reply that must pass the same init check as every call. With web
+    domains, the referee's web call is probed the same way, through its own argv, environment, init check and fence,
+    asked to fetch nothing: a CLI update that breaks it fails here, while the human is there."""
+    call(pc, PROBE_SYSTEM, PROBE_WEB_USER if web_domains else PROBE_USER, PROBE_SCHEMA, transcript,
+         web_domains=web_domains)

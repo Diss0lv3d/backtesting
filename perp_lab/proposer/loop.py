@@ -86,7 +86,8 @@ class Deps:
     pin_check: Callable    # () -> None, or pin.PinError: the harness changed since pin_take
     pin_take: Callable     # () -> pin.Pin, or pin.PinError("dirty")
     cli_version: Callable  # () -> str
-    probe: Callable        # (transcript) -> None, or a model error: the CLI is missing, logged out or misconfigured
+    probe: Callable        # (transcript, *, web_domains=()) -> None, or a model error: the CLI is missing, logged
+    #                        out or misconfigured; with web_domains, the referee's web call is (_start_checks)
     kill_judge: Callable   # () -> None: kill the running judge's process group (the second signal)
 
 
@@ -1079,8 +1080,20 @@ def _session_lock(state: Path):
         yield
 
 
+WEB_OFF = "proposer.research_referee_web false runs the referee without the web"
+
+
+def _usage_refused(e: model.UsageLimit) -> StartRefused:
+    """A probe at the plan's usage limit is not a logged-out CLI: say when to start again (M-7)."""
+    when = (f"it resets at {e.resets_at.astimezone(UTC):%Y-%m-%d %H:%M} UTC" if e.resets_at is not None
+            else "no reset time given")
+    return StartRefused(f"the Claude Code usage limit is reached, so the model probe was refused ({when}); "
+                        "start again once it resets")
+
+
 def _start_checks(deps: Deps, pc, state: Path) -> tuple[pin.Pin, str]:
-    """The pin, the CLI's version and the probe call: each failure is a start refusal, never a traceback (R34)."""
+    """The pin, the CLI's version and the probe call, and the referee's web call's probe when a session would make
+    that call: each failure is a start refusal, never a traceback (R34)."""
     try:
         harness = deps.pin_take()
     except pin.PinError as e:
@@ -1093,14 +1106,27 @@ def _start_checks(deps: Deps, pc, state: Path) -> tuple[pin.Pin, str]:
         deps.probe(state / "logs" / "probe.jsonl")
     except FileNotFoundError:
         raise StartRefused(f"the Claude Code CLI ({pc.claude_bin}) is not installed or not on PATH") from None
-    except model.UsageLimit as e:                       # not a logged-out CLI: say when to start again (M-7)
-        when = (f"it resets at {e.resets_at.astimezone(UTC):%Y-%m-%d %H:%M} UTC" if e.resets_at is not None
-                else "no reset time given")
-        raise StartRefused(f"the Claude Code usage limit is reached, so the model probe was refused ({when}); "
-                           "start again once it resets") from None
+    except model.UsageLimit as e:
+        raise _usage_refused(e) from None
     except (model.ModelCallError, model.ModelConfigError, OSError) as e:
         raise StartRefused(f"the model probe failed (is the CLI logged in?): {e}") from None
+    if pc.research_every and pc.research_referee and pc.research_referee_web:
+        _probe_web(deps, pc, state)
     return harness, cli
+
+
+def _probe_web(deps: Deps, pc, state: Path) -> None:
+    """The referee's web call, probed with its allowlist and asked to fetch nothing. A CLI update that breaks its
+    flags, its init (the tools, permissionMode) or the fence's reading of its stream would otherwise show hours
+    into the session, as a review failed closed every round; here it refuses the start, naming the cause."""
+    try:
+        deps.probe(state / "logs" / "probe-web.jsonl", web_domains=tuple(pc.referee_domains))
+    except model.UsageLimit as e:
+        raise _usage_refused(e) from None
+    except model.FenceBreach as e:
+        raise StartRefused(f"the referee's web probe broke the fence: {e}; {WEB_OFF}") from None
+    except (model.ModelCallError, model.ModelConfigError, OSError) as e:
+        raise StartRefused(f"the referee's web probe failed: {e}; {WEB_OFF}") from None
 
 
 def _refuse(record: Record, pc) -> None:
@@ -1199,5 +1225,5 @@ def default_deps(cfg, pc, repo: Path) -> Deps:
         call_model=lambda system, user, schema, transcript, web_domains=(): model.call_with_retries(
             pc, system, user, schema, transcript, web_domains=web_domains),
         preflight=preflight, judge=judge, now=lambda: datetime.now(UTC), sleep=time.sleep, pin_check=pin_check,
-        pin_take=pin_take, cli_version=lambda: model.cli_version(pc), probe=lambda t: model.probe(pc, t),
-        kill_judge=kill_judge)
+        pin_take=pin_take, cli_version=lambda: model.cli_version(pc),
+        probe=lambda t, web_domains=(): model.probe(pc, t, web_domains=web_domains), kill_judge=kill_judge)

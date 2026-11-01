@@ -488,6 +488,27 @@ def test_a_web_call_runs_the_fenced_argv_and_records_an_allowed_fetch(fake, pc, 
     assert transcript.read_text().splitlines() == [*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a")), _result()]
 
 
+def test_the_web_probe_is_a_fenced_call_that_asks_for_no_fetch(fake, pc, transcript):
+    fake.scenario([*_web(), _result()])
+    assert model.probe(pc, transcript, web_domains=DOMAINS) is None
+    seen = fake.seen
+    assert seen["argv"][1:] == model.argv(pc, model.PROBE_SYSTEM, model.PROBE_SCHEMA, web_domains=DOMAINS)[1:]
+    assert seen["env"].get("CLAUDE_CODE_EVAL_CONFINED") == "1"
+    assert seen["stdin"] == model.PROBE_WEB_USER == "Reply with ok true. Fetch nothing."
+
+
+@pytest.mark.parametrize("lines, error", [
+    (OK, model.ModelConfigError),                                              # a tool-less init: no WebFetch
+    ([OK[UI], _line(INIT, tools=WEB_TOOLS, permissionMode="bypassPermissions"), *OK[ASSISTANT:]],
+     model.ModelConfigError),
+    ([*_web(_fetch("toolu_a", GECKO), _fetched("toolu_a", "BTC 67,000")), _result()], model.FenceBreach),
+], ids=["no-webfetch", "permission-mode", "off-list-fetch-ran"])
+def test_the_web_probe_fails_as_the_referees_call_would(fake, pc, transcript, lines, error):
+    fake.scenario(lines)
+    with pytest.raises(error):
+        model.probe(pc, transcript, web_domains=DOMAINS)
+
+
 def test_a_web_init_in_either_order_passes(fake, pc, transcript):
     fake.scenario([OK[UI], _line(INIT, tools=["WebFetch", "StructuredOutput"]), *OK[ASSISTANT:]])
     assert model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS).proposal == {"ok": True}

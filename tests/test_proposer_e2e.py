@@ -12,7 +12,8 @@ Between rounds 1 and 2, a research round: the temp config's `research_every` is 
 1's trial, and none again, since round 2 spends no trial and round 3's ends the session. Its reply has two idea
 cards and a stop list, which every later proposal is sent. A referee reviews the cards in a web call (the config's
 default): its stream shows one allowed arXiv fetch, then a report that accepts the first card and rejects the
-second, so only the first enters the record, marked web_reviewed.
+second, so only the first enters the record, marked web_reviewed. That web call is probed at the start too, after
+the plain probe: the same fenced argv and environment, asked to fetch nothing.
 
 Before the session, sentinels go where the model must never look: a run's notes in lab.db, that run's
 report.md, the holdout log, a file under data/, and round 1's plugin's own print, so that the research round, its
@@ -203,28 +204,30 @@ def _told(tid: str, content: str) -> str:
     return json.dumps({**m, "message": {**m["message"], "content": [block]}})
 
 
-def referee_reply(report: dict) -> dict:
+def web_reply(structured_output: dict, fetch: bool = True) -> dict:
     """A web call's scenario, in the shapes of CLI 2.1.316 (tests/test_model.py): init with WebFetch and the
-    default permission mode, one allowed fetch and its page, then the report through StructuredOutput, and its
-    result."""
+    default permission mode, one allowed fetch and its page (unless not `fetch`), then the reply through
+    StructuredOutput, and its result."""
     init = json.loads(STREAM[1])
     result = json.loads(STREAM[5])
-    fetch = {"type": "tool_use", "id": "toolu_e2e_fetch", "name": "WebFetch",
-             "input": {"url": ARXIV, "prompt": "Does a round-number effect survive costs?"}}
-    answer = {"type": "tool_use", "id": "toolu_e2e_report", "name": "StructuredOutput", "input": report}
+    get = {"type": "tool_use", "id": "toolu_e2e_fetch", "name": "WebFetch",
+           "input": {"url": ARXIV, "prompt": "Does a round-number effect survive costs?"}}
+    answer = {"type": "tool_use", "id": "toolu_e2e_report", "name": "StructuredOutput", "input": structured_output}
     page = f"SENTINEL_FETCHED. A paper of {PLANTED:%Y-%m-%d}: no round-number effect survives costs."
     return {"lines": [STREAM[0], json.dumps({**init, "tools": ["StructuredOutput", "WebFetch"],
                                              "permissionMode": "default"}),
-                      _said([fetch]), _told(fetch["id"], page),
+                      *([_said([get]), _told(get["id"], page)] if fetch else []),
                       _said([answer]), _told(answer["id"], "Structured output provided successfully"),
-                      STREAM[4], json.dumps({**result, "structured_output": report, "permission_denials": []})],
+                      STREAM[4], json.dumps({**result, "structured_output": structured_output,
+                                             "permission_denials": []})],
             "exit": 0}
 
 
 CALLS = [reply({"ok": True}),                          # the probe
+         web_reply({"ok": True}, fetch=False),         # the referee's web call's probe
          reply(ROUND_1), reply(ROUND_1_FIX),
          reply(RESEARCH),                              # due after round 1's trial
-         referee_reply(REPORT),                        # its referee, a web call
+         web_reply(REPORT),                            # its referee, a web call
          *[reply(ROUND_2)] * 4,                        # the proposal and its 3 fix-ups
          reply(ROUND_3)]
 
@@ -411,41 +414,43 @@ def test_a_session_files_three_rounds_and_nothing_forbidden_reaches_the_model(la
                      f"  {RESEARCH['summary']}\n")
     assert digest.index("0010 · ") < digest.index(research_line) < digest.index("0011 · ")
 
-    # What the model was sent: the version check, the probe, 2 proposal calls, the research call, its referee's,
-    # 4 + 1 more. All but the probe have the same system prompt (the static context); the research and referee
-    # calls have their own schemas.
+    # What the model was sent: the version check, the probe and the web probe, 2 proposal calls, the research call,
+    # its referee's, 4 + 1 more. All but the probes have the same system prompt (the static context); the research
+    # and referee calls have their own schemas.
     calls = seen_calls(root)
-    assert [c["argv"][1:] == ["--version"] for c in calls] == [True] + [False] * 10
-    assert calls[1]["stdin"] == model.PROBE_USER
+    assert [c["argv"][1:] == ["--version"] for c in calls] == [True] + [False] * 11
+    assert (calls[1]["stdin"], calls[2]["stdin"]) == (model.PROBE_USER, model.PROBE_WEB_USER)
+    assert [json.loads(arg(c, "--json-schema")) for c in calls[1:3]] == [model.PROBE_SCHEMA] * 2
     proposing = contract.schema(pc.timeframes)
     researching = contract.research_schema(pc.timeframes, pc.research_max_ideas)
     refereeing = contract.referee_schema(pc.timeframes, pc.research_max_ideas)
-    assert [json.loads(arg(c, "--json-schema")) for c in calls[2:]] == \
+    assert [json.loads(arg(c, "--json-schema")) for c in calls[3:]] == \
         [proposing] * 2 + [researching, refereeing] + [proposing] * 5
-    assert len({arg(c, "--system-prompt") for c in calls[2:]}) == 1
+    assert len({arg(c, "--system-prompt") for c in calls[3:]}) == 1
     # The research call: the record and the research instruction, no stop list yet. The referee call: the round's
     # two cards and the referee instruction. Every proposal after them gets the round's stop list, and that the
     # human's request comes before it; none before it.
-    assert calls[4]["stdin"].endswith("\n" + prompt.research_instruction(pc) + "\n")
-    referee = calls[5]
+    assert calls[5]["stdin"].endswith("\n" + prompt.research_instruction(pc) + "\n")
+    referee = calls[6]
     assert referee["stdin"].endswith("\n" + prompt.referee_instruction(pc) + "\n")
     assert "### Card 1" in referee["stdin"] and "Round-number stop cascade" in referee["stdin"]
     stop = ("Directions the research step recommends avoiding:\n"
             "- Channel breakouts at any lookback\n- A filter added to a closed idea's entry\n\n"
             "When the human asks for an idea below, that request comes before this list.\n")
-    assert [(prompt.STOP_HEADING in c["stdin"], stop in c["stdin"]) for c in calls[2:]] == \
+    assert [(prompt.STOP_HEADING in c["stdin"], stop in c["stdin"]) for c in calls[3:]] == \
         [(False, False)] * 4 + [(True, True)] * 5
-    # The referee alone had the web: WebFetch and one allow rule per academic domain, no settings sources, the
-    # confined env. Every other call stayed tool-less.
+    # The referee alone had the web, and its probe: WebFetch and one allow rule per academic domain, no settings
+    # sources, the confined env. Every other call stayed tool-less.
     rules = [f"WebFetch(domain:{d})" for d in pc.referee_domains]
     fenced = ["--tools", "WebFetch", "--allowedTools", *rules, "--setting-sources", ""]
-    at = referee["argv"].index("--tools")
-    assert referee["argv"][at:at + len(fenced)] == fenced and "WebSearch" not in referee["argv"]
-    assert referee["env"].get("CLAUDE_CODE_EVAL_CONFINED") == "1"
-    for c in calls[1:5] + calls[6:]:
+    for c in (calls[2], referee):
+        at = c["argv"].index("--tools")
+        assert c["argv"][at:at + len(fenced)] == fenced and "WebSearch" not in c["argv"]
+        assert c["env"].get("CLAUDE_CODE_EVAL_CONFINED") == "1"
+    for c in calls[1:2] + calls[3:6] + calls[7:]:
         assert arg(c, "--tools") == "" and "--allowedTools" not in c["argv"]
         assert "--setting-sources" not in c["argv"] and "CLAUDE_CODE_EVAL_CONFINED" not in c["env"]
-    refused = [c["stdin"] for c in calls[2:] if "## Your last reply was refused" in c["stdin"]]
+    refused = [c["stdin"] for c in calls[3:] if "## Your last reply was refused" in c["stdin"]]
     assert len(refused) == 4
     assert "lookahead: " in refused[0] and "near-copy of closed idea #1 (Donchian breakout)" in refused[1]
 

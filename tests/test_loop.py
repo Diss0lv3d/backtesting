@@ -119,7 +119,8 @@ class Fake:
         self.pin_error = None          # raised by pin_check, or a callable(n) -> error or None
         self.on_call = self.on_preflight = self.on_judge = self.on_sleep = None
         self.killed = False
-        self.start_error = {}          # "pin_take" | "cli_version" | "probe" -> exception
+        self.start_error = {}          # "pin_take" | "cli_version" | "probe" | "probe_web" -> exception
+        self.probes = []               # (transcript, web_domains), in order
         self.branch = "main"
 
     def deps(self):
@@ -202,9 +203,11 @@ class Fake:
             raise self.start_error["cli_version"]
         return "2.1.316 (Claude Code)"
 
-    def probe(self, transcript):
-        if "probe" in self.start_error:
-            raise self.start_error["probe"]
+    def probe(self, transcript, web_domains=()):
+        self.probes.append((Path(transcript), tuple(web_domains)))
+        step = "probe_web" if web_domains else "probe"
+        if step in self.start_error:
+            raise self.start_error[step]
 
 
 @pytest.fixture
@@ -1018,6 +1021,47 @@ def test_a_usage_limit_at_the_start_probe_is_refused_as_such(lab, resets, said):
     with pytest.raises(StartRefused) as e:
         run(lab)
     assert "usage limit" in str(e.value) and said in str(e.value) and "logged in" not in str(e.value)
+    assert lab.fake.calls == [] and not (lab.state / "sessions").exists()
+
+
+# The referee's web call, probed at the start: a CLI update that breaks it is met while the human is there
+def test_a_web_referee_is_probed_at_the_start_after_the_plain_probe(lab):
+    pc = replace(lab.pc, research_referee=True)
+    assert pc.research_referee_web and pc.research_every
+    assert run(lab, pc, trials=0) == "trials"
+    assert lab.fake.probes == [(lab.state / "logs" / "probe.jsonl", ()),
+                               (lab.state / "logs" / "probe-web.jsonl", pc.referee_domains)]
+
+
+@pytest.mark.parametrize("over", [{"research_referee": False}, {"research_referee_web": False},
+                                  {"research_every": 0}], ids=["referee-off", "web-off", "research-off"])
+def test_no_web_probe_when_no_web_referee_runs(lab, over):
+    pc = replace(lab.pc, **{"research_referee": True, **over})
+    assert run(lab, pc, trials=0) == "trials"
+    assert lab.fake.probes == [(lab.state / "logs" / "probe.jsonl", ())]
+
+
+@pytest.mark.parametrize("error, cause", [
+    (FenceBreach("off-list fetch: docs.python.org: its tool_result is not an error"),
+     "the referee's web probe broke the fence: off-list fetch: docs.python.org: its tool_result is not an error"),
+    (ModelConfigError("the CLI's init failed the check: permissionMode 'acceptEdits', not 'default'"),
+     "the referee's web probe failed: the CLI's init failed the check: permissionMode 'acceptEdits', not 'default'"),
+    (ModelCallError("claude exited 1; stderr: unknown option '--setting-sources'"),
+     "the referee's web probe failed: claude exited 1; stderr: unknown option '--setting-sources'"),
+], ids=["fence", "model-config", "model-call"])
+def test_a_failed_web_probe_is_a_start_refusal_that_names_its_cause(lab, error, cause):
+    lab.fake.start_error["probe_web"] = error
+    with pytest.raises(StartRefused) as e:
+        run(lab, replace(lab.pc, research_referee=True))
+    assert str(e.value).startswith(cause) and "proposer.research_referee_web" in str(e.value)
+    assert lab.fake.calls == [] and not (lab.state / "sessions").exists()
+
+
+def test_a_usage_limit_at_the_web_probe_is_refused_as_such(lab):
+    lab.fake.start_error["probe_web"] = UsageLimit(datetime(2026, 11, 2, 13, 20, tzinfo=UTC))
+    with pytest.raises(StartRefused) as e:
+        run(lab, replace(lab.pc, research_referee=True))
+    assert "usage limit" in str(e.value) and "it resets at 2026-11-02 13:20 UTC" in str(e.value)
     assert lab.fake.calls == [] and not (lab.state / "sessions").exists()
 
 
@@ -2032,6 +2076,15 @@ def test_the_real_deps_pass_the_web_domains_to_the_model_call(lab, monkeypatch):
     assert deps.call_model("s", "u", {}, t, web_domains=("arxiv.org",)) == "R"
     assert seen == [("s", "u", {"web_domains": ()}), ("s", "u", {"web_domains": ("arxiv.org",)})]
 
+
+def test_the_real_deps_pass_the_web_domains_to_the_probe(lab, monkeypatch):
+    seen = []
+    monkeypatch.setattr(loop.model, "probe", lambda pc, transcript, **kw: seen.append((transcript, kw)))
+    deps = loop.default_deps(lab.cfg, lab.pc, lab.root)
+    t = lab.state / "t.jsonl"
+    deps.probe(t)
+    deps.probe(t, web_domains=("arxiv.org",))
+    assert seen == [(t, {"web_domains": ()}), (t, {"web_domains": ("arxiv.org",)})]
 
 
 # R-RF8: the titles of the cards the referee rejected reach every later research prompt; nothing else of its review
