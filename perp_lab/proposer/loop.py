@@ -800,7 +800,7 @@ class _Session:
     # -- a research round (research-round spec)
     def _research_due(self) -> bool:
         """Every research_every proposer trials (as trials_used counts them) since the last round, whatever its
-        outcome; or when no open idea is answerable, once per trial count. Either way never two rounds with no trial
+        outcome; or when no idea is answerable, once per trial count. Either way never two rounds with no trial
         between, so a round that keeps failing can't loop. research_every 0 turns research off."""
         if self.pc.research_every == 0:
             return False
@@ -810,8 +810,8 @@ class _Session:
             return True
         if last is not None and since == used:
             return False
-        return all(assemble.answerable(i, self.record, self.pc) is not None
-                   for i in self.record.ideas() if i["status"] == "open")
+        # Every idea, not only the open ones: a port of an exhausted idea in a progress pile is work too (R-RL1).
+        return all(assemble.answerable(i, self.record, self.pc) is not None for i in self.record.ideas())
 
     def _research(self) -> None:
         """One round: the call and its fix-ups, the ideas (unless capped), the row and the digest line. A failed

@@ -1284,6 +1284,18 @@ def test_with_nothing_answerable_a_round_runs_once_until_a_trial_is_spent(lab):
     assert [r["trials_used"] for r in rounds(lab)] == [0, 1]
 
 
+def test_an_exhausted_idea_a_port_could_still_work_on_keeps_research_from_being_due(lab):
+    """R-RL1: answerable over every idea, not only the open ones: a port of an exhausted idea in a progress pile is
+    work the builder can do."""
+    nothing_answerable(lab)
+    i = lab.rec.add_idea("Fade", card("Fade"), "proposer", "1h")
+    for k in range(lab.pc.proposals_per_idea):
+        lab.rec.add_proposal(idea_id=i, plugin=f"fade_v{k}", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                             verdict={**verdict("signal before costs"), "lineage_id": "family:fade_v0"})
+    assert run(lab, trials=1) == "trials"
+    assert idea(lab, "Fade")["status"] == "exhausted" and order(lab) == "P" and rounds(lab) == []
+
+
 def test_an_ok_round_adds_its_ideas_and_the_next_proposal_carries_its_stop_list(lab):
     nothing_answerable(lab)
     want = prompt.render_record(lab.rec, 0, lab.pc.timeframes) + "\n" + prompt.research_instruction(lab.pc) + "\n"
