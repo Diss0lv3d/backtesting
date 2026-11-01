@@ -550,3 +550,23 @@ def test_the_stop_list_is_absent_without_a_record_and_creates_nothing(populated)
     at = _ideas_at()
     assert not any(e.label == "Your stop list" for e in at.expander)
     assert not (populated.path.parent / "no_proposer_state").exists()
+
+
+def test_a_stop_list_that_cannot_be_read_does_not_take_the_page_down(populated, monkeypatch):
+    from perp_lab.proposer.record import Record
+    _record(populated)
+
+    def boom(self):
+        raise RuntimeError("bad row")
+    monkeypatch.setattr(Record, "stops", boom)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert "Stop list unreadable" in [c.value for c in at.caption]
+    assert "#### open one" in [m.value for m in at.markdown]          # the rest of the page is there
+
+
+def test_the_stop_list_absence_is_about_the_dir_the_page_reads(populated):
+    # positive control: the dir the absence test checks is the one the page reads, since a record made there shows it
+    assert not any(e.label == "Your stop list" for e in _ideas_at().expander)
+    _record(populated)
+    assert any(e.label == "Your stop list" for e in _ideas_at().expander)

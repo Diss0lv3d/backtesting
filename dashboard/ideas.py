@@ -206,18 +206,24 @@ def _stop_list(record: Record) -> None:
     seed: it adds nothing the seed check could miss."""
     with st.expander("Your stop list"):
         st.warning(human.WARNING)
-        stops = record.stops()
-        if not stops:
-            st.caption("Nothing ruled out yet.")
-        for s in stops:
-            c = st.columns([8, 1])
-            c[0].markdown(f"#{s['id']} {s['text']}")
-            c[1].button("Remove", key=f"remove_stop_{s['id']}", on_click=_stop_remove,
-                        args=(record, s["id"]))
-        st.text_input("Rule out a direction (one line)", key="new_stop")
-        st.button("Add", key="add_stop", on_click=_stop_add, args=(record,))
+        try:
+            _stop_body(record)
+        except Exception:                                # noqa: BLE001 - a bad row must not take the page down
+            st.caption("Stop list unreadable")
         if err := st.session_state.pop("stop_error", None):
             st.caption(err)
+
+
+def _stop_body(record: Record) -> None:
+    stops = record.stops()
+    if not stops:
+        st.caption("Nothing ruled out yet.")
+    for s in stops:
+        c = st.columns([8, 1])
+        c[0].markdown(f"#{s['id']} {s['text']}")
+        c[1].button("Remove", key=f"remove_stop_{s['id']}", on_click=_stop_remove, args=(record, s["id"]))
+    st.text_input("Rule out a direction (one line)", key="new_stop")
+    st.button("Add", key="add_stop", on_click=_stop_add, args=(record,))
 
 
 def _act(i: int, done: str, change, *args) -> None:
