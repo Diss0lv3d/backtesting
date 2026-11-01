@@ -12,7 +12,8 @@ The stream's shape is the real CLI's (2.1.316; tests/fixtures/claude_stream_ok.j
 messages such as `ui_invalidate` may come before init, and a rate limit is read from
 `rate_limit_event.rate_limit_info` (`status`, `resetsAt` in epoch seconds), never from `overageStatus`. Only a
 status other than `allowed` and `allowed_warning` is a limit (R29): the warning is a near-limit notice on a call
-that is still served.
+that is still served. An error result's `api_error_status` decides whether a retry can help (R42): a 4xx won't
+change on a retry, so 429 is the usage limit and any other 4xx a ModelConfigError; the rest is retried.
 """
 
 from __future__ import annotations
@@ -51,7 +52,8 @@ class Reply:
 
 
 class ModelConfigError(Exception):
-    """The CLI is not set up as the spec requires; the session stops with `model_config`."""
+    """The CLI is not set up as the spec requires, or the API refuses the call as made (a 4xx other than 429): no
+    retry can help, and the session stops with `model_config`."""
 
 
 class UsageLimit(Exception):
@@ -208,6 +210,26 @@ def _read(pc, lines, log) -> tuple[bool, dict | None]:
     return init, result
 
 
+def _api_status(result: dict) -> int | None:
+    v = result.get("api_error_status")
+    if isinstance(v, str) and v.isdigit():
+        v = int(v)
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def _refused(result: dict) -> None:
+    """An error result the API refused: no retry can change a 4xx (R42). Checked before the exit code, which an
+    API error may make non-zero."""
+    status = _api_status(result)
+    if not result.get("is_error") or status is None or not 400 <= status < 500:
+        return
+    if status == 429:
+        raise UsageLimit(None)
+    text = result.get("result")
+    raise ModelConfigError(f"the API refused the call ({status})" + (f": {text[:STDERR_TAIL]}"
+                                                                     if isinstance(text, str) and text else ""))
+
+
 def _tail(err) -> str:
     size = err.seek(0, os.SEEK_END)
     err.seek(max(0, size - STDERR_TAIL))
@@ -229,6 +251,8 @@ def call(pc, system: str, user: str, schema: dict, transcript: Path) -> Reply:
                 raise ModelCallError(f"no exit within {pc.call_timeout_s} s: timed out, killed") from None
         finally:
             _end(p)
+        if result is not None:
+            _refused(result)
         if p.returncode != 0:
             raise ModelCallError(f"claude exited {p.returncode}" + _tail(err))
         if not init:

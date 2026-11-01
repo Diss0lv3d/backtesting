@@ -329,3 +329,41 @@ def test_the_probe_fails_on_a_bad_init(fake, pc, transcript):
     fake.scenario([OK[UI], _line(INIT, tools=["StructuredOutput", "Bash"]), *OK[ASSISTANT:]])
     with pytest.raises(model.ModelConfigError):
         model.probe(pc, transcript)
+
+
+# The API's own refusal, from the real call of 2026-11-01 (R42): the schema had a top-level allOf.
+API_400 = ("API Error: 400 tools.1.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the "
+           "top level")
+
+
+def _api_error(status, text=API_400) -> str:
+    return _line(RESULT, drop=("structured_output",), is_error=True, api_error_status=status,
+                 terminal_reason="api_error", result=text)
+
+
+@pytest.mark.parametrize("exit", [0, 1])
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422])
+def test_an_api_4xx_is_a_config_error_with_no_retry(fake, pc, transcript, status, exit):
+    fake.scenario([*OK[:RESULT], _api_error(status)], exit=exit)
+    sleeps = []
+    with pytest.raises(model.ModelConfigError) as e:
+        model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append)
+    assert sleeps == [] and str(status) in str(e.value) and API_400 in str(e.value)
+
+
+@pytest.mark.parametrize("exit", [0, 1])
+def test_an_api_429_is_a_usage_limit_with_no_reset_time(fake, pc, transcript, exit):
+    fake.scenario([*OK[:RESULT], _api_error(429, "API Error: 429 rate_limit_error")], exit=exit)
+    sleeps = []
+    with pytest.raises(model.UsageLimit) as e:
+        model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append)
+    assert sleeps == [] and e.value.resets_at is None
+
+
+@pytest.mark.parametrize("status", [500, 529, None])
+def test_an_api_5xx_or_unknown_error_is_still_retried(fake, pc, transcript, status):
+    fake.scenario([*OK[:RESULT], _api_error(status, "API Error: overloaded")])
+    sleeps = []
+    with pytest.raises(model.ModelCallError):
+        model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append)
+    assert sleeps == [30, 60, 120, 240]
