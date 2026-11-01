@@ -1024,7 +1024,8 @@ proposer from the Ideas page and from `lab idea`, with structured cards and butt
   human's words. It is a request, and the idea rules don't change. The flag clears when a proposal
   that refines or ports the idea answers it, with a filed verdict (whatever its pile) or the
   judge's refusal (exit 2), and when the idea's status leaves open. A judge that reached no result
-  (exit 1 after its retries, exit 0 with no verdict file, a kill by a second signal) leaves it, and
+  (exit 1 after its retries, exit 0 with no verdict file, a kill by a second signal, or a kill on
+  its last transient attempt, an infrastructure outcome by R48) leaves it, and
   so does a proposal dropped before its judge.
 - **What the model must not see.** A human card and an exclusion reason reach the model as
   written. Code can't check prose for real-data results, so the page and the CLI warn wherever the

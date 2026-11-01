@@ -702,6 +702,8 @@ class _Session:
         failure (memory pressure, a loaded host) would otherwise reset the count and never stop the session, each
         proposal adding a trial (R48). Any other verdict is a result and resets it."""
         self._file(t, verdict, done)
+        if not transient_kill(verdict):        # an infrastructure outcome answers no "try next" either
+            self._answered(t)
         if _budget_spent(verdict):
             raise _Stop("budget_spent")
         self._infra(not transient_kill(verdict))
@@ -719,7 +721,6 @@ class _Session:
         if _budget_spent(verdict):
             outcome += "; the global holdout budget is spent"
         self._close(t, "judged", outcome, verdict=verdict, pile=pile, duplicate_of=dup, **done)
-        self._answered(t)
 
     def _close(self, t: _Prop, state: str, outcome: str, **f) -> None:
         """The proposal's final record, its idea settled, and its digest line."""
@@ -731,8 +732,8 @@ class _Session:
     def _answered(self, t: _Prop) -> None:
         """A filed verdict, whatever its pile, or the judge's refusal answers the human's "try next" for the idea
         the proposal worked on: its own, and for a port the idea it ports. A judge that reached no result (exit 1
-        after its retries, exit 0 with no verdict file, killed by a second signal) doesn't, nor does a proposal
-        dropped before its judge: the request stands."""
+        after its retries, exit 0 with no verdict file, killed by a second signal, a kill on its last transient
+        attempt) doesn't, nor does a proposal dropped before its judge: the request stands."""
         if t.idea_id is None:
             return
         self.record.clear_next(t.idea_id)

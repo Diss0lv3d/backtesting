@@ -1170,3 +1170,18 @@ def test_a_judge_that_reached_no_result_leaves_the_flag(lab, monkeypatch, outcom
     (p,) = props(lab)
     assert (p["broken_reason"], p["judge_exit"] is not None) == (outcome, True)
     assert lab.rec.next_up()["id"] == i
+
+
+def test_a_transient_kill_leaves_the_flag_and_a_real_verdict_clears_it(lab):
+    """A kill on the judge's last transient attempt is an infrastructure outcome (R48), not an answer."""
+    i = lab.rec.add_idea("Mine", card("Mine"), "human", "1h")
+    lab.rec.flag_next(i)
+    lab.fake.replies = [refine(i), refine(i)]
+    lab.fake.verdict = lambda name: TRANSIENT_KILL if name.startswith("px0001") else verdict("signal before costs")
+    seen = []
+    lab.fake.on_judge = lambda fake: seen.append(lab.rec.next_up())
+    assert run(lab, trials=2) == "trials"
+    assert [p["verdict"]["reasons"] for p in props(lab)][0] == ["plugin_error: died"]
+    assert seen[1]["id"] == i                       # still flagged when the second refinement was judged
+    assert ASK.format(i) in lab.fake.calls[1].user
+    assert lab.rec.next_up() is None
