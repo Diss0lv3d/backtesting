@@ -1932,7 +1932,9 @@ def test_a_model_config_error_in_the_referee_stops_the_session_and_adds_nothing(
     lab.fake.reports = [ModelConfigError("the CLI's init failed the check: tools ['Bash']")]
     assert run(lab, refereed(lab)) == "model_config"
     assert order(lab) == "RV" and props(lab) == [] and research_ideas(lab) == []
-    assert [(r["outcome"], r["added"], r["referee"]) for r in rounds(lab)] == [("error: model_config", [], None)]
+    # the row says the note was valid and the referee's call was the one that stopped (review minor 2)
+    assert [(r["outcome"], r["added"], r["referee"]) for r in rounds(lab)] == [
+        ("error: model_config", [], {"web": True, "fetches": [], "denied": [], "error": "model_config"})]
     assert "research: error model_config" in digest(lab)
 
 
@@ -1953,7 +1955,20 @@ def test_a_signal_during_the_referee_stops_the_session_and_adds_nothing(lab):
     lab.fake.on_call = lambda f: refereeing(f.calls[-1]) and signal.raise_signal(signal.SIGTERM)
     assert run(lab, refereed(lab)) == "signal"
     assert order(lab) == "RV" and research_ideas(lab) == []
-    assert [(r["outcome"], r["referee"]) for r in rounds(lab)] == [("error: signal", None)]
+    assert [(r["outcome"], r["referee"]) for r in rounds(lab)] == [
+        ("error: signal", {"web": True, "fetches": [], "denied": [], "error": "signal"})]
+
+
+def test_the_deadline_in_a_referees_usage_limit_wait_leaves_its_reason_and_fetches_on_the_row(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze")]
+    lab.fake.reports = [Reply(proposal={"bad": 1}, usage=dict(USAGE), cost_usd=0.01, fetches=[ARXIV]),
+                        UsageLimit(T0 + timedelta(days=3))]
+    assert run(lab, refereed(lab), days=1) == "days"
+    assert order(lab) == "RVV" and research_ideas(lab) == []
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["added"], row["tokens_in"]) == ("error: days", [], 2200)
+    assert row["referee"] == {"web": True, "fetches": [ARXIV], "denied": [], "error": "days"}
 
 
 @pytest.mark.parametrize("case", ["no-cards", "capped", "off"])

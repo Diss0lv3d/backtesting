@@ -927,7 +927,8 @@ class _Session:
 
         It fails closed: a call that fails, a fence breach (R-RF5) or a report still refused after its fix-ups adds
         no card, and the row and the digest say why; the round goes on. A stop (model_config, a signal, the
-        deadline in a usage-limit wait) goes up, as from any call."""
+        deadline in a usage-limit wait) goes up, as from any call, once its reason is on the row: the note was
+        valid, and the referee's call is the one that stopped."""
         web = self.pc.research_referee_web
         domains = tuple(self.pc.referee_domains) if web else ()
         fetches, denied = [], []
@@ -958,6 +959,12 @@ class _Session:
             error, why = "model_call", _short(e.detail, REFEREE_ERROR_MAX)    # the CLI's text: the digest's only
         except model.FenceBreach as e:
             error = f"fence: {e}"
+        except _Stop as e:
+            r.referee = _referee_row(web, fetches, denied, error=e.reason)
+            raise
+        except _Abort:
+            r.referee = _referee_row(web, fetches, denied, error="signal")
+            raise
         r.referee, r.referee_why = _referee_row(web, fetches, denied, error=_short(error, REFEREE_ERROR_MAX)), why
 
     def _check_report(self, raw: dict, note: contract.ResearchNote,
