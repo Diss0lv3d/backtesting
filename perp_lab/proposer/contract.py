@@ -9,6 +9,11 @@ oneOf, allOf or anyOf at its top level (R42), so "kind -> its block" is stated b
 
 A research round's reply, `ResearchNote`, comes from the same machinery (`research_schema`, `describe_research`,
 `parse_research`); its ideas' record rules (a new title, a proposer timeframe, readable columns) are research.py's.
+So does the referee's, `RefereeReport` (`referee_schema`, `describe_referee`, `parse_referee`); pairing its verdicts
+with the note's cards ("revised exactly when revise" among them, which no schema without a combinator can say) is
+research.check_report's. A field typed `X | None` with no default, like `Verdict.revised`, is always present and may
+be null: the schema says so with a type list, never an anyOf. One with a default of None, like `Proposal.idea`, is
+omitted when unused and refuses a null, as before.
 """
 
 from __future__ import annotations
@@ -25,6 +30,9 @@ BUILDS_ON_MAX_CHARS = 300
 STOP_MAX_ITEMS = 5
 STOP_MAX_CHARS = 200
 SUMMARY_MAX_CHARS = 2_000
+REASON_MAX_CHARS = 300
+SOURCES_MAX_ITEMS = 5
+URL_MAX_CHARS = 500
 
 # field -> (at most this many characters, one line?): the schema states it and parse enforces it, on each item
 # of an array of strings
@@ -33,6 +41,8 @@ TEXT_LIMITS = {
     "builds_on": (BUILDS_ON_MAX_CHARS, True),
     "stop": (STOP_MAX_CHARS, True),
     "summary": (SUMMARY_MAX_CHARS, False),
+    "reason": (REASON_MAX_CHARS, True),
+    "sources": (URL_MAX_CHARS, True),
 }
 ONE_LINE = "^[^\\r\\n]+$"
 
@@ -68,6 +78,16 @@ FIELD_DOCS: dict[str, str] = {
     "characters. May be empty.",
     "ResearchNote.summary": f"For the human: what the record has taught and why these ideas. At most "
     f"{SUMMARY_MAX_CHARS} characters.",
+    "RefereeReport.verdicts": "One verdict per card, in the cards' order.",
+    "Verdict.title": "The title of the card this verdict is on, as the card has it.",
+    "Verdict.decision": "accept (the card is added as written), revise (the corrected card in revised is added "
+    "instead) or reject (nothing is added).",
+    "Verdict.reason": f"One line, at most {REASON_MAX_CHARS} characters: why. A reject names what rules the card "
+    "out.",
+    "Verdict.sources": f"The URLs fetched in this review that the verdict relies on, at most {SOURCES_MAX_ITEMS}, "
+    "each on an allowed academic host. Empty when none was fetched.",
+    "Verdict.revised": "When decision is revise, the corrected card: the same idea with a claim corrected, the rule "
+    "sharpened, the exit neutralised or the timeframe fixed, under the card's title or a new one. Otherwise null.",
 }
 
 
@@ -118,6 +138,20 @@ class ResearchNote:
     summary: str
 
 
+@dataclass(frozen=True)
+class Verdict:
+    title: str
+    decision: Literal["accept", "revise", "reject"]
+    reason: str
+    sources: tuple[str, ...]
+    revised: ResearchIdea | None        # no default: present, a card or null
+
+
+@dataclass(frozen=True)
+class RefereeReport:
+    verdicts: tuple[Verdict, ...]
+
+
 # kind -> the block it requires
 BLOCK_FOR_KIND = {"new": "idea", "refinement": "refines", "port": "ports"}
 
@@ -135,6 +169,11 @@ def _unwrap(tp):
         if len(args) == 1:
             return args[0], True
     return tp, False
+
+
+def _nullable(f, optional) -> bool:
+    """`X | None` with no default: a required field whose value may be null."""
+    return optional and f.default is MISSING
 
 
 class _Ctx(typing.NamedTuple):
@@ -200,8 +239,11 @@ def _object_schema(cls, ctx):
     props, required = {}, []
     for f in fields(cls):
         inner, optional = _unwrap(hints[f.name])
-        props[f.name] = _field_schema(inner, ctx, _doc(cls, f.name), f.name)
-        if not optional and f.default is MISSING:
+        s = _field_schema(inner, ctx, _doc(cls, f.name), f.name)
+        # A type list, not an anyOf with null: the API refuses combinators at the top level (R42), and the
+        # schema stays free of them at any depth.
+        props[f.name] = {**s, "type": [s["type"], "null"]} if _nullable(f, optional) else s
+        if f.default is MISSING:
             required.append(f.name)
     return {"type": "object", "properties": props, "required": required, "additionalProperties": False}
 
@@ -214,6 +256,10 @@ def _research_ctx(timeframes, max_ideas) -> _Ctx:
     return _Ctx(tuple(timeframes), {"ideas": max_ideas, "stop": STOP_MAX_ITEMS})
 
 
+def _referee_ctx(timeframes, max_ideas) -> _Ctx:
+    return _Ctx(tuple(timeframes), {"verdicts": max_ideas, "sources": SOURCES_MAX_ITEMS})
+
+
 def schema(timeframes) -> dict:
     # No oneOf/allOf/anyOf at the top level: the API refuses the whole call (R42). parse() checks kind -> block.
     return _object_schema(Proposal, _proposal_ctx(timeframes))
@@ -221,6 +267,10 @@ def schema(timeframes) -> dict:
 
 def research_schema(timeframes, max_ideas: int) -> dict:
     return _object_schema(ResearchNote, _research_ctx(timeframes, max_ideas))     # no combinator, as schema()
+
+
+def referee_schema(timeframes, max_ideas: int) -> dict:
+    return _object_schema(RefereeReport, _referee_ctx(timeframes, max_ideas))     # no combinator at any depth
 
 
 def _type_words(tp, ctx, name):
@@ -244,9 +294,10 @@ def _describe_class(cls, ctx, indent, out):
     hints = _hints(cls)
     for f in fields(cls):
         inner, optional = _unwrap(hints[f.name])
-        req = "optional" if optional or f.default is not MISSING else "required"
+        words = _type_words(inner, ctx, f.name) + (" or null" if _nullable(f, optional) else "")
+        req = "required" if f.default is MISSING else "optional"
         doc = _doc(cls, f.name) or ""
-        out.append(f"{'  ' * indent}- {f.name} ({_type_words(inner, ctx, f.name)}; {req}): {doc}")
+        out.append(f"{'  ' * indent}- {f.name} ({words}; {req}): {doc}")
         sub = inner if is_dataclass(inner) else _item(inner)
         if is_dataclass(sub):
             _describe_class(sub, ctx, indent + 1, out)
@@ -264,6 +315,13 @@ def describe(timeframes) -> str:
 def describe_research(timeframes, max_ideas: int) -> str:
     out = ["Reply with one JSON object and nothing else. Unknown keys are refused.", ""]
     _describe_class(ResearchNote, _research_ctx(timeframes, max_ideas), 0, out)
+    return "\n".join(out)
+
+
+def describe_referee(timeframes, max_ideas: int) -> str:
+    out = ["Reply with one JSON object and nothing else. Unknown keys are refused.", ""]
+    _describe_class(RefereeReport, _referee_ctx(timeframes, max_ideas), 0, out)
+    out += ["", "When decision is revise, revised is required; otherwise it is null."]
     return "\n".join(out)
 
 
@@ -350,9 +408,12 @@ def _check_object(cls, obj, path, ctx, errors):
         inner, optional = _unwrap(hints[f.name])
         p = f"{path}.{f.name}" if path else f.name
         if f.name not in obj:
-            if not optional and f.default is MISSING:
+            if f.default is MISSING:
                 errors.append(f"{p}: required")
                 bad = True
+            continue
+        if obj[f.name] is None and _nullable(f, optional):
+            kwargs[f.name] = None
             continue
         val = _check_value(inner, obj[f.name], p, ctx, f.name, errors)
         if val is None:
@@ -391,3 +452,12 @@ def parse_research(obj: dict, timeframes, max_ideas: int) -> ResearchNote:
     if errors or note is None:
         raise ContractError(errors)
     return note
+
+
+def parse_referee(obj: dict, timeframes, max_ideas: int) -> RefereeReport:
+    """The referee's reply by the contract alone; research.check_report pairs it with the note's cards."""
+    errors: list[str] = []
+    report = _check_object(RefereeReport, obj, "", _referee_ctx(timeframes, max_ideas), errors)
+    if errors or report is None:
+        raise ContractError(errors)
+    return report

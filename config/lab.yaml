@@ -149,3 +149,10 @@ proposer:
   research_every: 5                  # proposer trials between research rounds; 0 turns research off
   research_max_ideas: 3              # new idea cards per research round
   research_open_cap: 6               # untried research ideas the record may hold before a round adds no more
+  # The referee (docs/superpowers/specs/2026-11-01-referee-and-human-stops-design.md): a second call reviews each
+  # research round's cards before any enters the record. With the web it may fetch (WebFetch only, never search)
+  # from these academic hosts alone, fenced by the CLI and again in code; false keeps it tool-less.
+  research_referee: true
+  research_referee_web: true
+  referee_domains: [arxiv.org, export.arxiv.org, api.semanticscholar.org, api.crossref.org, ideas.repec.org,
+                    papers.ssrn.com, www.nber.org]

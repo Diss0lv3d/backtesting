@@ -147,3 +147,57 @@ def test_a_missing_research_setting_refuses(key):
     del c.raw["proposer"][key]
     with pytest.raises(StartRefused, match=f"proposer.{key}"):
         load(c)
+
+
+REFEREE_DOMAINS = ("arxiv.org", "export.arxiv.org", "api.semanticscholar.org", "api.crossref.org", "ideas.repec.org",
+                   "papers.ssrn.com", "www.nber.org")
+
+
+def test_the_shipped_config_has_the_referee_defaults():
+    pc = load(load_config(REPO / "config/lab.yaml"))
+    assert pc.research_referee is True and pc.research_referee_web is True
+    assert pc.referee_domains == REFEREE_DOMAINS
+
+
+def test_the_referee_can_be_turned_off_or_kept_off_the_web():
+    pc = load(_cfg(research_referee=False, research_referee_web=False))
+    assert (pc.research_referee, pc.research_referee_web) == (False, False)
+    assert load(_cfg(research_referee_web=False, referee_domains=[])).referee_domains == ()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("research_referee", "yes"), ("research_referee", 1), ("research_referee", None),
+    ("research_referee_web", "true"), ("research_referee_web", 0), ("research_referee_web", [True]),
+])
+def test_a_referee_switch_must_be_true_or_false(key, value):
+    with pytest.raises(StartRefused, match=f"proposer.{key} must be true or false"):
+        load(_cfg(**{key: value}))
+
+
+@pytest.mark.parametrize("value", [
+    "arxiv.org", None, {"arxiv.org": 1}, [""], ["arxiv"], ["*.arxiv.org"], ["arxiv.org/abs"], ["https://arxiv.org"],
+    ["arxiv.org", 3], ["arxiv.org."], ["exämple.org"], ["arxiv .org"], ["arxiv.org:443"], ["user@arxiv.org"],
+    ["Karxiv.org"],
+])
+def test_a_referee_domain_that_is_not_a_plain_hostname_refuses(value):
+    with pytest.raises(StartRefused, match="proposer.referee_domains"):
+        load(_cfg(referee_domains=value))
+
+
+def test_a_referee_on_the_web_needs_a_domain():
+    with pytest.raises(StartRefused, match="proposer.referee_domains"):
+        load(_cfg(referee_domains=[]))
+
+
+def test_the_settings_and_the_caller_share_one_domain_rule():
+    """R-RF1: a domain the start guard lets through is one model.argv turns into a rule, and no other."""
+    from perp_lab.proposer import model, settings
+    assert settings.DOMAIN is model.DOMAIN
+
+
+@pytest.mark.parametrize("key", ["research_referee", "research_referee_web", "referee_domains"])
+def test_a_missing_referee_setting_refuses(key):
+    c = _cfg()
+    del c.raw["proposer"][key]
+    with pytest.raises(StartRefused, match=f"proposer.{key}"):
+        load(c)
