@@ -17,7 +17,7 @@ from perp_lab.proposer.settings import load
 from tests.conftest import REPO
 
 # The real stream, CLI 2.1.316 (the build's one real model call): ui_invalidate, init, assistant, user,
-# rate_limit_event, result.
+# rate_limit_event, result. Init's cwd, original_cwd, socket path and plugin paths are scrubbed; nothing else.
 FIXTURE = REPO / "tests/fixtures/claude_stream_ok.jsonl"
 OK = FIXTURE.read_text().splitlines()
 UI, INIT, ASSISTANT, USER, RATE, RESULT = range(6)
@@ -137,6 +137,7 @@ def test_the_transcript_holds_every_line_and_no_token(fake, pc, transcript):
     assert transcript.read_bytes() == FIXTURE.read_bytes() * 2
     assert not TOKEN.search(FIXTURE.read_text())
     assert not TOKEN.search(transcript.read_text())
+    assert "/home/" not in FIXTURE.read_text()  # scrubbed of the capturing machine's paths
 
 
 def test_a_large_stdin_is_fed_whole(fake, pc, transcript):
