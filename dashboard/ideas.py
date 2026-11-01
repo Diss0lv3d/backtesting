@@ -264,7 +264,7 @@ def _stop_body(record: Record) -> None:
         st.caption("Nothing ruled out yet.")
     for s in stops:
         c = st.columns([8, 1])
-        c[0].markdown(f"#{s['id']} {s['text']}")
+        c[0].markdown(f"#{s['id']} {_text(s['text'])}")      # the human's, maybe pasted from a page they read
         c[1].button("Remove", key=f"remove_stop_{s['id']}", on_click=_stop_remove, args=(record, s["id"]))
     st.text_input("Rule out a direction (one line)", key="new_stop")
     st.button("Add", key="add_stop", on_click=_stop_add, args=(record,))

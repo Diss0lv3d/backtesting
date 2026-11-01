@@ -731,7 +731,7 @@ def test_the_stop_list_adds_an_item_and_shows_it_with_the_warning(populated):
     _stop_buttons(at, "Add")[0].click().run()
     assert not at.exception, [e.message for e in at.exception]
     assert [s["text"] for s in r.stops()] == ["no funding-sign flips"]
-    assert "#1 no funding-sign flips" in [m.value for m in at.markdown]
+    assert "#1 no funding-sign flips" in [_shown(m.value) for m in at.markdown]
     assert "Stop #1 added" in [t.value for t in at.toast]
     assert at.text_input(key="new_stop").value == ""
 
@@ -759,6 +759,18 @@ def test_the_stop_list_removes_an_item_and_reports_a_stale_one(populated):
     _stop_buttons(at, "Remove")[0].click().run()
     assert r.stops() == [] and "Stop #1 removed" in [t.value for t in at.toast]
     assert not at.exception
+
+
+def test_the_humans_stop_text_shows_as_written_and_never_as_markup(populated):
+    """M4: the human wrote it, but it is text the code didn't write, maybe pasted from what their own web research
+    read: shown as written, and linking nothing, as every such string on the page."""
+    r = _record(populated)
+    r.add_stop(EVIL)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    texts = [m.value for m in at.markdown if m.value.startswith("#1 ")]
+    _no_markup(texts)
+    assert [_shown(x) for x in texts] == [f"#1 {EVIL_SHOWN}"]
 
 
 def test_the_stop_list_is_absent_without_a_record_and_creates_nothing(populated):
