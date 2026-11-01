@@ -368,16 +368,25 @@ def test_a_judged_proposal_resets_the_dropped_count(lab):
     assert [p["state"] for p in props(lab)] == ["dropped"] * 4 + ["judged"] + ["dropped"] * 5
 
 
+SENTINEL = "CLI-STDERR-TAIL"
+
+
 @pytest.mark.parametrize("error, reason", [
-    (ModelCallError("claude exited 1; stderr: CLI-STDERR-TAIL"), "model_call"),
-    (ModelConfigError("the CLI's init failed the check: tools ['Bash']"), "model_config"),
+    (ModelCallError(f"claude exited 1; stderr: {SENTINEL}"), "model_call"),
+    (ModelConfigError(f"the CLI's init failed the check: tools ['Bash'] {SENTINEL}"), "model_config"),
 ])
 def test_a_model_error_stops_the_session_and_its_text_reaches_only_the_digest(lab, error, reason):
-    lab.fake.replies = [error]
+    # a judged round, then a fix-up whose call fails: prompts were sent before and around the error
+    lab.fake.replies = [new("A"), BAD, error]
     assert run(lab) == reason
     assert str(error) in digest(lab) and lab.rec.session(1)["stop_reason"] == reason
-    (p,) = props(lab)
-    assert (p["state"], p["broken_reason"]) == ("dropped", reason)
+    assert [(p["state"], p["broken_reason"]) for p in props(lab)] == [("judged", None), ("dropped", reason)]
+    prompts = [json.loads(ln) for f in sorted((lab.state / "transcripts").glob("*.jsonl"))
+               for ln in f.read_text().splitlines()]
+    assert len(prompts) == 3 and {ln["type"] for ln in prompts} == {"proposer_prompt"}
+    assert not [ln for ln in prompts if SENTINEL in ln["user"]]
+    assert not [c for c in lab.fake.calls if SENTINEL in c.user or SENTINEL in c.system]
+    assert SENTINEL not in json.dumps(lab.rec.proposals(), default=str)
 
 
 def test_a_pin_change_stops_with_harness_changed_before_preflight(lab):
@@ -463,6 +472,22 @@ def test_a_fixup_holds_the_rounds_prompt_the_rejected_proposal_and_the_errors(la
     assert {x.system for x in c} == {c[0].system}
 
 
+def test_a_source_refused_by_the_source_checks_goes_back_to_the_model(lab):
+    sets_parent = SRC.replace("from perp_lab.strategy", 'PARENT = "donchian_atr"\nfrom perp_lab.strategy')
+    imports_os = SRC.replace("from perp_lab.strategy", "import os\nfrom perp_lab.strategy")
+    lab.fake.replies = [new("A", source=sets_parent), new("A", source=imports_os), new("A")]
+    assert run(lab, trials=1) == "trials"
+    c = lab.fake.calls
+    assert len(c) == 3 and [p["state"] for p in props(lab)] == ["judged"]
+    for k, (rejected, error) in enumerate([(new("A", source=sets_parent), "the source assigns PARENT"),
+                                           (new("A", source=imports_os), "import of 'os' is not allowed")], start=1):
+        assert c[k].user.startswith(c[0].user.rstrip("\n"))
+        assert json.dumps(rejected, indent=1) in c[k].user and error in c[k].user
+    # a refused source is never staged, preflighted or copied
+    assert [pf[2] for pf in lab.fake.preflights] == [(lab.root / "strategies" / "px0001_a.py").read_bytes()]
+    assert b"import os" not in lab.fake.preflights[0][2] and b"PARENT" not in lab.fake.preflights[0][2]
+
+
 def test_a_near_copy_found_by_preflight_goes_back_to_the_model(lab):
     i = closed_idea(lab)
     near = {**ok_report(), "overlap": [{"strategy": "old_plugin", "timeframe": "1h", "overlap": 0.7, "mirror": 0.0,
@@ -477,12 +502,12 @@ def test_a_near_copy_found_by_preflight_goes_back_to_the_model(lab):
 # -- signals
 def test_one_sigint_lets_the_judge_finish_then_stops(lab):
     lab.fake.on_judge = lambda f: signal.raise_signal(signal.SIGINT)
-    before = signal.getsignal(signal.SIGINT)
+    before = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
     assert run(lab) == "signal"
     (p,) = props(lab)
     assert (p["state"], p["judge_exit"], p["pile"]) == ("judged", 0, "no signal")
     assert not lab.fake.killed and len(lab.fake.calls) == 1
-    assert signal.getsignal(signal.SIGINT) is before
+    assert {s: signal.getsignal(s) for s in before} == before        # both handlers restored
 
 
 def test_two_signals_kill_the_judge_and_record_interrupted(lab):
@@ -538,7 +563,9 @@ def test_a_usage_limit_sleeps_until_its_reset_then_repeats_the_same_call(lab, re
 
 
 # -- the day changes
-def test_a_utc_day_change_between_preflight_and_judge_reruns_preflight(lab):
+def test_a_day_change_during_preflight_runs_it_again_before_the_copy(lab):
+    """The clock passes midnight while preflight runs, so preflight runs again before the copy (R36). A day change
+    after preflight returns, before the judge starts, is not checked again."""
     lab.fake.clock = datetime(2026, 11, 2, 23, 59, 30, tzinfo=UTC)
 
     def past_midnight(fake):
