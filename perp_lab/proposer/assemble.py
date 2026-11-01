@@ -166,21 +166,34 @@ def check_source(text: bytes, name: str, tf: str, pc: ProposerConfig) -> None:
         raise Rejected(f"the grid has {combos} combinations; the limit is {pc.max_grid_combos}")
 
 
+def port_group(ideas: dict[int, dict], idea_id: int | None, port_of: int | None) -> set[int]:
+    """The ideas an idea's overlap checks skip (R46): itself, the idea it ports, and every other port of that idea;
+    an idea that ports nothing is its own source. A port keeps its source's mechanism by design, so without this
+    each side refuses the other's refinements, and the redirect can't be met: a refinement keeps its timeframe,
+    and there is one port per timeframe. `idea_id` is None for a port not yet made an idea."""
+    src = port_of if port_of is not None else idea_id
+    return {i for i in (idea_id, src) if i is not None} | {i for i, x in ideas.items() if x.get("port_of") == src}
+
+
 def check_overlap_rules(report: dict, p: Proposal, target: dict | None, record: Record, pc: ProposerConfig) -> None:
     # The orchestrator's own mistakes, not the model's: a ValueError, never a fix-up.
     if not report.get("ok"):
         raise ValueError("the overlap rules apply only to a passing preflight report")
     if "overlap" in (report.get("skipped") or {}):
         raise ValueError("preflight did not measure overlap; the near-copy check was not made")
-    exempt = target["id"] if target is not None and p.kind in ("refinement", "port") else None
+    ideas = {i["id"]: i for i in record.ideas()}
+    exempt: set[int] = set()
+    if target is not None and p.kind == "refinement":
+        exempt = port_group(ideas, target["id"], target.get("port_of"))
+    elif target is not None and p.kind == "port":
+        exempt = port_group(ideas, None, target["id"])
     # Ideas own runs, not plugin names: a seed plugin can run under one idea at 4h and under its port at 1h.
     owner = {(x["plugin"], x["timeframe"]): x["idea_id"] for x in record.proposals() if x.get("plugin")}
-    ideas = {i["id"]: i for i in record.ideas()}
     for e in report.get("overlap") or []:
         if e["overlap"] < pc.overlap_max:
             continue
         idea = ideas.get(owner.get((e["strategy"], e["timeframe"])))
-        if idea is None or idea["id"] == exempt:
+        if idea is None or idea["id"] in exempt:
             continue
         if idea["status"] != "open":
             raise Rejected(f"near-copy of closed idea #{idea['id']} ({idea['title']})")

@@ -243,8 +243,8 @@ def _piles(cfg, pc: ProposerConfig) -> str:
         f"idea, a position overlap ≥ {om} or an OOS daily-return correlation ≥ {cm} files it as a duplicate of "
         "that idea, and its pile doesn't count toward its own idea's best pile, unless that pile is better than "
         f"the closed idea's best. A mirror of any judged run (mirror overlap ≥ {om}, or correlation ≤ −{cm}) is a "
-        "duplicate whatever its pile. A refinement is exempt against its own idea, a port against the idea it "
-        "ports.",
+        "duplicate whatever its pile. A refinement or a port is exempt against its port group: the source idea "
+        "(the idea ported, or the refined idea itself if it ports nothing) and every port of that source.",
         "An idea's champion is the plugin a refinement gets as `PARENT`: the idea's most recent promotion still "
         "waiting for its exam, otherwise its best plugin by pile, then by net OOS Sharpe. Never a broken one.",
         "An idea's status:",
@@ -272,10 +272,10 @@ def _piles(cfg, pc: ProposerConfig) -> str:
             f"{MAX_BYTES // 1024} KB.",
             "- Preflight runs it on synthetic bars only: the lookahead check, then the overlap of positions held "
             "(each plugin at its defaults) with every judged plugin. A near-copy (overlap ≥ "
-            f"{om}) of a closed idea's plugin is refused. A near-copy of an open idea's plugin is refused unless it "
-            "is a refinement or a port of that idea. A mirror (the same overlap with one side flipped) of any "
-            "judged plugin is refused. The synthetic bars' taker, open-interest and volume columns are random "
-            "walks, and they have no `slippage` column.",
+            f"{om}) of a judged plugin outside the proposal's port group is refused: a closed idea's outright, an "
+            "open idea's with the advice to refine or port that idea instead. A mirror (the same overlap with one "
+            "side flipped) of any judged plugin is refused. The synthetic bars' taker, open-interest and volume "
+            "columns are random walks, and they have no `slippage` column.",
             f"- A refused reply comes back with the errors. A proposal gets {pc.fixups_per_proposal} fix-ups; then it "
             "is dropped, with no trial.",
         ]),

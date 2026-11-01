@@ -798,6 +798,40 @@ def test_a_port_is_exempt_from_the_closed_idea_it_ports(lab):
     assert (port_idea["port_of"], port_idea["timeframe"], port_idea["card"]) == (x, "4h", card("Breakout"))
 
 
+def _port_group(lab):
+    """A dead source idea at 1h, its port at 4h (open, signal before costs), and an unrelated dead idea."""
+    x = closed_idea(lab, "Breakout", "brk")
+    other = closed_idea(lab, "Other", "oth")
+    p = lab.rec.add_idea("Breakout, 4h", card("Breakout"), "proposer", "4h", port_of=x)
+    lab.rec.add_proposal(idea_id=p, plugin="brk4", timeframe="4h", kind="port", state="judged", judge_exit=0,
+                         verdict={**verdict("signal before costs"), "lineage_id": "family:brk4"})
+    return x, other, p
+
+
+@pytest.mark.parametrize("path", ["round", "recovery"])
+def test_a_refinement_of_a_port_is_exempt_after_the_trial_from_its_port_group_only(lab, path):
+    """R46, after the trial: a refinement of a port that correlates with the port's (closed) source keeps its pile;
+    one that correlates with an unrelated closed idea is still a duplicate of it."""
+    x, other, p = _port_group(lab)
+    lab.fake.verdict = lambda name: verdict("no signal", overlap={"correlation": [
+        {"strategy": "brk" if len(lab.fake.judges) == 1 else "oth", "timeframe": "1h", "value": 0.9}]})
+    refinement = {"kind": "refinement", "timeframe": "4h", "hypothesis": "h", "source": SRC_4H,
+                  "refines": {"idea_id": p, "change": "c"}}
+    if path == "round":
+        lab.fake.replies = [refinement, refinement]
+        assert run(lab, trials=2) == "trials"
+    else:
+        for seq, name in ((5, "px0005_breakout_4h"), (6, "px0006_breakout_4h")):
+            text = SRC_4H.replace('"""', f'"""{seq} ', 1).encode()
+            (lab.root / "strategies" / f"{name}.py").write_bytes(text)
+            lab.rec.add_proposal(seq=seq, idea_id=p, kind="refinement", plugin=name, timeframe="4h",
+                                 hash=blob_hash(text), source=text.decode(), state="copied")
+        lab.fake.replies = []
+        assert run(lab) == "model_call"                  # recovery judged both; then no reply
+    mine = [q for q in props(lab) if q["idea_id"] == p and q["kind"] == "refinement"]
+    assert [(q["pile"], q["duplicate_of"]) for q in mine] == [("no signal", None), ("no signal", other)]
+
+
 # -- the start
 def test_the_start_takes_a_lock_a_second_session_is_refused(lab):
     lab.state.mkdir(parents=True, exist_ok=True)

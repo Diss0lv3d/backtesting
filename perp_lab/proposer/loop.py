@@ -149,7 +149,7 @@ class _Prop:
     text: bytes | None = None
     hash: str | None = None
     idea_id: int | None = None
-    exempt: set = field(default_factory=set)   # ideas its after-trial overlap is not checked against
+    exempt: set = field(default_factory=set)   # ideas its after-trial overlap is not checked against (R46)
     proposal: contract.Proposal | None = None
     target: dict | None = None
     copied: bool = False
@@ -202,6 +202,12 @@ def snapshot(record: Record, cfg, pc) -> None:
         if v is not None and v != p.get("verdict"):
             record.update_proposal(p["seq"], verdict=v, pile=piles.pile(v))
     settle(record, pc)
+
+
+def _exempt(record: Record, idea_id: int) -> set[int]:
+    """The ideas a proposal's after-trial overlap is not checked against: its idea's port group (R46)."""
+    ideas = {i["id"]: i for i in record.ideas()}
+    return assemble.port_group(ideas, idea_id, ideas[idea_id].get("port_of"))
 
 
 def _budget_spent(verdict) -> bool:
@@ -600,7 +606,7 @@ class _Session:
             card = {k: v for k, v in (target.get("card") or {}).items() if k != "notes"}   # notes on its proposals
             t.idea_id = self.record.add_idea(title, card, "proposer", p.timeframe, port_of=target["id"])
             t.title = title
-        t.exempt = {t.idea_id} | ({target["id"]} if p.kind == "port" else set())
+        t.exempt = _exempt(self.record, t.idea_id)
         self.record.update_proposal(t.seq, idea_id=t.idea_id)
 
     def _copy(self, t: _Prop) -> bool:
@@ -693,7 +699,7 @@ class _Session:
             t = _Prop(seq=p["seq"], kind=p["kind"], tf=p["timeframe"], name=p["plugin"], hash=p["hash"],
                       idea_id=p["idea_id"], title=idea["title"] if idea else None, recovered=True)
             if idea is not None:
-                t.exempt = {idea["id"]} | ({idea["port_of"]} if p["kind"] == "port" and idea["port_of"] else set())
+                t.exempt = _exempt(self.record, idea["id"])
             dest = seed.STRATEGIES / f"{p['plugin']}.py" if p["plugin"] else None
             ours = bool(dest is not None and p["hash"] and dest.is_file() and blob_hash(dest.read_bytes()) == p["hash"])
             self.handled.append(p["seq"])

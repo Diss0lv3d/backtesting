@@ -353,13 +353,50 @@ def test_a_plugin_under_two_ideas_at_two_timeframes_is_attributed_by_its_run(rec
     judged(rec, d1, "donchian_atr", tf="1h")
     at4, at1 = report(("donchian_atr", 0.9, "4h")), report(("donchian_atr", 0.9, "1h"))
     check_overlap_rules(at4, refine(d4, "4h"), rec.idea(d4), rec, PC)
-    with pytest.raises(Rejected, match=f"near-copy of closed idea #{d1} \\(Donchian 1h\\)"):
-        check_overlap_rules(at1, refine(d4, "4h"), rec.idea(d4), rec, PC)
+    check_overlap_rules(at1, refine(d4, "4h"), rec.idea(d4), rec, PC)       # its port: one port group (R46)
     with pytest.raises(Rejected, match=f"refinement \\(or a port\\) of idea #{d4} \\(Donchian 4h\\)"):
         check_overlap_rules(at4, prop(), None, rec, PC)
     with pytest.raises(Rejected, match=f"near-copy of closed idea #{d1} \\(Donchian 1h\\)"):
         check_overlap_rules(at1, prop(), None, rec, PC)
     check_overlap_rules(report(("donchian_atr", 0.9, "15m")), prop(), None, rec, PC)   # a run it doesn't know
+
+
+@pytest.fixture
+def group(rec):
+    """A source idea at 1h with two ports (4h, 15m), and two ideas outside that port group, one open, one dead."""
+    def make(source_status):
+        x = rec.add_idea("Source", {}, "seed", "1h", status=source_status)
+        p4 = rec.add_idea("Source, 4h", {}, "proposer", "4h", port_of=x)
+        p15 = rec.add_idea("Source, 15m", {}, "proposer", "15m", port_of=x)
+        u = rec.add_idea("Unrelated open", {}, "seed", "1h")
+        c = rec.add_idea("Unrelated dead", {}, "seed", "1h", status="dead")
+        for i, plug, tf in zip((x, p4, p15, u, c), PLUGS, ("1h", "4h", "15m", "1h", "1h")):
+            judged(rec, i, plug, SBC, tf=tf)
+        return x, p4, p15, u, c
+    return make
+
+
+PLUGS = ("x_plug", "p4_plug", "p15_plug", "u_plug", "c_plug")
+
+
+@pytest.mark.parametrize("source_status", ["open", "exhausted"])
+def test_a_port_group_shares_the_preflight_exemption(rec, group, source_status):
+    """R46: a port keeps its source's mechanism, so without a group exemption a refinement of the port is refused
+    as a near-copy of the source (or redirected to it), and the source's refinements are redirected to the port:
+    neither redirect can be met."""
+    x, p4, p15, u, c = group(source_status)
+    near = {plug: report((plug, 0.9, tf)) for plug, tf in zip(PLUGS, ("1h", "4h", "15m", "1h", "1h"))}
+    check_overlap_rules(near["x_plug"], refine(p4, "4h"), rec.idea(p4), rec, PC)      # a port's against its source
+    check_overlap_rules(near["p15_plug"], refine(p4, "4h"), rec.idea(p4), rec, PC)    # ... and its sibling port
+    check_overlap_rules(near["p4_plug"], refine(x, "1h"), rec.idea(x), rec, PC)       # the source's against a port
+    check_overlap_rules(near["p4_plug"], port(x, "15m"), rec.idea(x), rec, PC)        # a new port against another
+    for p, t in ((refine(p4, "4h"), p4), (refine(x, "1h"), x), (port(x, "15m"), x)):
+        with pytest.raises(Rejected, match=f"refinement \\(or a port\\) of idea #{u} \\(Unrelated open\\)"):
+            check_overlap_rules(near["u_plug"], p, rec.idea(t), rec, PC)
+        with pytest.raises(Rejected, match=f"near-copy of closed idea #{c} \\(Unrelated dead\\)"):
+            check_overlap_rules(near["c_plug"], p, rec.idea(t), rec, PC)
+    with pytest.raises(Rejected):                                                     # a new idea: no group
+        check_overlap_rules(near["p4_plug"], prop(), None, rec, PC)
 
 
 def test_unknown_plugin_ignored(world):
