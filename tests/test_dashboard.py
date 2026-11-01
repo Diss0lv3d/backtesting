@@ -377,3 +377,32 @@ def test_try_next_is_offered_only_for_an_idea_a_proposal_could_work_on(populated
     assert f"try_next_{untested}" not in keys and f"try_next_{portable}" in keys
     assert any(c.value.startswith(f"Try next: no proposal can work on idea #{untested} (LCE untested) now")
                for c in at.caption)
+
+
+def _research_row(r, ids, **over):
+    sid = r.start_session(model="m")
+    reply = {"ideas": [], "stop": ["fading wicks on 5m", "plain momentum"], "summary": "Funding ideas look thin."}
+    return r.add_research(session_id=sid, trials_used=5, reply=reply, added=ids, tokens_in=10, tokens_out=5,
+                          outcome="ok", **over)
+
+
+def test_ideas_page_shows_research_ideas_tagged_and_the_latest_research_notes(populated):
+    r = _record(populated)
+    i = r.add_idea("basis squeeze", {"mechanism": "m"}, "research", "4h")
+    _research_row(r, [i])
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert any(c.value == f"idea {i} · research · 4h · open" for c in at.caption)
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    text = " ".join(m.value for m in notes.markdown)
+    assert "ok" in text and "5 trials" in text and "UTC" in text
+    assert "Funding ideas look thin." in text
+    assert "fading wicks on 5m" in text and "plain momentum" in text
+    assert f"#{i} basis squeeze" in text
+
+
+def test_ideas_page_has_no_research_notes_without_a_research_row(populated):
+    _record(populated)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert not [e for e in at.expander if e.label == "Research notes"]

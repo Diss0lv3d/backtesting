@@ -218,6 +218,27 @@ def _idea(cfg, record: Record, pc, idea: dict, props: list[dict], wf: set[tuple[
             _proposal(cfg, p, wf)
 
 
+def _research_notes(record: Record) -> None:
+    """The latest research round (spec: research-round-design, Where the human sees it); absent before the first."""
+    row = record.last_research()
+    if row is None:
+        return
+    reply = row.get("reply") or {}
+    titles = {i["id"]: i["title"] for i in record.ideas()}
+    with st.expander("Research notes"):
+        st.markdown(f"**{row['at']:%Y-%m-%d %H:%M} UTC** · {row['outcome']} · at {row['trials_used']} trials")
+        if reply.get("summary"):
+            st.markdown(f"**Summary:** {reply['summary']}")
+        if reply.get("stop"):
+            st.markdown("**Stop list** (the builder is told to stop trying these)")
+            for line in reply["stop"]:
+                st.markdown(f"- {line}")
+        if row.get("added"):
+            st.markdown("**Ideas added**")
+            for i in row["added"]:
+                st.markdown(f"- #{i} {titles.get(i, '?')}")
+
+
 def _wf_runs(cfg) -> set[tuple[str, str]]:
     runs = db.read_table(cfg, db.runs)
     runs = runs[runs.validation_mode == "walkforward"]
@@ -246,6 +267,7 @@ def page_ideas(cfg) -> None:
     c[1].caption(f"bar at N: Sharpe {dsr.sharpe_bar(max(n, 1)):.2f}")
     c[2].metric("Session", session_state(record, state))
     c[3].metric("Tokens today", f"{tin:,} in / {tout:,} out")
+    _research_notes(record)
     _add_form(record, pc)
 
     ideas = record.ideas()
