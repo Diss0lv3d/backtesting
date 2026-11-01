@@ -458,6 +458,21 @@ def test_two_signals_kill_the_judge_and_record_interrupted(lab):
     assert lab.rec.judge_calls_on(T0.date()) == 1 and lab.rec.trials_used() == 1
 
 
+def test_a_signal_just_before_the_judge_starts_no_judge(lab):
+    # 1: the pin check before preflight, 2: the one before the judge, after the copy
+    lab.fake.pin_error = lambda n: signal.raise_signal(signal.SIGINT) if n == 2 else None
+    assert run(lab) == "signal"
+    assert lab.fake.judges == [] and [p["state"] for p in props(lab)] == ["copied"]   # for the next start
+    assert lab.rec.judge_calls_on(T0.date()) == 0
+
+
+def test_a_signal_just_before_a_recovery_judge_starts_no_judge(lab):
+    _copied(lab)
+    lab.fake.pin_error = lambda n: signal.raise_signal(signal.SIGTERM)
+    assert run(lab) == "signal"
+    assert lab.fake.judges == [] and [p["state"] for p in props(lab)] == ["copied"]
+
+
 def test_a_signal_outside_a_judge_ends_the_wait_at_once(lab):
     lab.fake.on_call = lambda f: signal.raise_signal(signal.SIGTERM)
     assert run(lab) == "signal"

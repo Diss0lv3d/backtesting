@@ -582,6 +582,10 @@ class _Session:
         self._pin_check()
         logs = self.state / "logs"
         logs.mkdir(parents=True, exist_ok=True)
+        # Only a judge already running may finish after a signal: none starts after one. The copy stays `copied`
+        # for the next start's recovery (this covers recovery's own judges too).
+        if self.sig.count:
+            raise _Stop("signal")
         with self.sig.judging():
             code = self.deps.judge(t.name, t.tf, logs / f"{t.name}.log")
         # Every judge call counts toward the day's quota, whatever its exit code.
