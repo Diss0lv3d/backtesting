@@ -84,6 +84,9 @@ def test_status_table():
     assert idea_status(IDEA, [prop(1, ns)], "failed", 4) == "failed"
     assert idea_status(IDEA, [prop(1, ns, dup=2)], None, 4) == "duplicate"
     assert idea_status({**IDEA, "origin": "seed"}, [prop(1, ns, dup=2)], None, 4) == "open"
+    # R-RL3: a research idea is model-written, so it takes the status as the proposer's own do; a human one doesn't
+    assert idea_status({**IDEA, "origin": "research"}, [prop(1, ns, dup=2)], None, 4) == "duplicate"
+    assert idea_status({**IDEA, "origin": "human"}, [prop(1, ns, dup=2)], None, 4) == "open"
     assert idea_status(IDEA, [prop(1, ns)], None, 4) == "dead"
     assert idea_status(IDEA, [prop(i, cc) for i in range(4)], None, 4) == "exhausted"
     assert idea_status(IDEA, [prop(1, cc)], None, 4) == "open"

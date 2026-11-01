@@ -98,6 +98,9 @@ note.
 ### What it writes
 
 - Each idea → `Record.add_ideas` with origin `research` (all or none, one transaction). Ideas get no flag.
+- A research idea is model-written, so it takes the `duplicate` status as the proposer's own ideas do: one whose
+  judged plugins were all filed as duplicates closes instead of spending its remaining trials on near-copies (human
+  and seeded ideas stay exempt, as the proposer spec's human-ideas amendment keeps them).
 - The cap ★: if the record already holds `research_open_cap` (6) or more open research-origin ideas with no judged
   proposal, the round adds none of its ideas (they're kept in the research row, marked "not added: cap") and still
   updates the stop list.
