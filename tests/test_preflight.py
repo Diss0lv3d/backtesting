@@ -305,6 +305,20 @@ def test_a_judged_mirror_is_refused_even_outside_the_top_10(cfg, plugins, tmp_pa
     assert report["mirror_of"] == ["donchian_atr@4h"] and report["ok"] is False
 
 
+def test_a_near_copy_is_listed_even_outside_the_top_10(cfg, plugins, tmp_path, monkeypatch):
+    # the orchestrator's idea rules read the listing as complete for near-copies (overlap >= overlap_max)
+    mirrors = {f"mirror{k:02d}": 60 + k for k in range(11)}         # eleven unjudged mirrors, all closer
+    for name in [*mirrors, "near"]:
+        add_plugin(plugins, name, BASE.replace('timeframes = ["1h", "4h"]', 'timeframes = ["4h"]')
+                   + f"\n# {name}\n")
+    stub_runs(monkeypatch, {**{(n, "4h"): held(c, side=-1) for n, c in mirrors.items()},
+                            ("cand", "4h"): held(100), ("near", "4h"): held(55)})
+    report = pf.preflight(cfg, stage(tmp_path, "cand", SOUND), "4h")
+    assert report["ok"] is True and cfg["proposer"]["overlap_max"] == 0.5
+    got = [(e["strategy"], e["overlap"], e["mirror"]) for e in report["overlap"]]
+    assert got == [(f"mirror{k:02d}", 0.0, (60 + k) / 100) for k in range(10, 0, -1)] + [("near", 0.55, 0.0)]
+
+
 def test_every_other_plugin_runs_at_each_timeframe_it_declares(cfg, plugins, tmp_path, monkeypatch):
     calls = stub_runs(monkeypatch, {})
     add_plugin(plugins, "sound", SOUND)                              # the file's own name: not compared

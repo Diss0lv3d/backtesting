@@ -384,6 +384,66 @@ def exam(judgement: Optional[int] = typer.Option(None, "--id", help="examine thi
 
 
 @app.command()
+def propose(days: float = typer.Option(7, help="stop after this many days"),
+            trials: Optional[int] = typer.Option(None, help="stop after this many trials (0: the start checks only)"),
+            config: Optional[str] = CfgOpt):
+    """Run a proposer session (the unattended strategy builder) until D days, N trials or a stop condition."""
+    from perp_lab.proposer import context, loop, settings
+    from perp_lab.proposer.record import Record
+    if Path.cwd().resolve() != Path(context.ROOT).resolve():
+        typer.secho(f"refused: run `lab propose` from the repo root ({context.ROOT})", fg="red", err=True)
+        raise typer.Exit(2)
+    try:
+        cfg = load_config(config)
+        pc = settings.load(cfg)
+        reason = loop.run_session(cfg, pc, days=days, trials=trials, repo=context.ROOT)
+    except settings.StartRefused as e:
+        typer.secho(f"refused: {e}", fg="red", err=True)
+        raise typer.Exit(2)
+    typer.echo(f"stopped: {reason}")
+    sid = Record(context.ROOT / pc.state_dir).last_session_id()
+    if sid is not None:
+        typer.echo(f"digest: {context.ROOT / pc.state_dir / 'sessions' / f'{sid}.md'}")
+
+
+@app.command()
+def ideas(config: Optional[str] = CfgOpt):
+    """Print the proposer's record by pile: passed, promoted, close call, signal before costs, open, closed."""
+    from perp_lab.proposer import context, piles, settings
+    from perp_lab.proposer.record import Record
+    try:
+        pc = settings.load(load_config(config))
+    except settings.StartRefused as e:
+        typer.secho(f"refused: {e}", fg="red", err=True)
+        raise typer.Exit(2)
+    state = context.ROOT / pc.state_dir
+    if not (state / "record.db").exists():
+        typer.echo("no record yet")
+        return
+    rec = Record(state)
+    rows = rec.ideas()
+    if not rows:
+        typer.echo("no record yet")
+        return
+    props = rec.proposals()
+    by_idea: dict[int, list[dict]] = {}
+    for p in props:
+        by_idea.setdefault(p["idea_id"], []).append(p)
+    groups: dict[str, list[str]] = {g: [] for g in piles.GROUPS}
+    for i in rows:
+        mine = by_idea.get(i["id"], [])
+        judged = [p for p in mine if p.get("judge_exit") is not None]
+        best = piles.best_pile([piles.pile(p.get("verdict")) for p in judged if p.get("duplicate_of") is None])
+        groups[piles.idea_group(i, mine)].append(
+            f"#{i['id']} {i['title']} \u2014 {i['timeframe']}, {i['status']}, {best or 'none'}, judged {len(judged)}")
+    for g in piles.GROUPS:
+        if groups[g]:
+            typer.echo(f"{g} ({len(groups[g])})")
+            for line in groups[g]:
+                typer.echo(f"  {line}")
+
+
+@app.command()
 def dashboard(port: int = 8501,
               address: str = typer.Option("localhost", help="bind address; 0.0.0.0 exposes the dashboard "
                                                              "(and its paper-approval button) to the network"),
