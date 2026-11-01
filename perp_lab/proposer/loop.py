@@ -212,6 +212,19 @@ def _exempt(record: Record, idea_id: int) -> set[int]:
     return assemble.port_group(ideas, idea_id, ideas[idea_id].get("port_of"))
 
 
+# What a verdict file says when the judge kills on its last transient attempt: PluginError.public_reason() for the
+# sandbox's TRANSIENT_KINDS (died, timeout, cpu_limit), which the proposer may not import; tests/test_judge.py pins
+# these against the judge's own verdict file.
+TRANSIENT_REASONS = ("plugin_error: died", "plugin_error: timeout", "plugin_error: cpu_limit")
+
+
+def transient_kill(verdict) -> bool:
+    """A kill for a failure the machine can cause, not only the plugin: an infrastructure error, not a result
+    (R48)."""
+    return (isinstance(verdict, dict) and verdict.get("decision") == "kill"
+            and any(str(r) in TRANSIENT_REASONS for r in verdict.get("reasons") or []))
+
+
 def _budget_spent(verdict) -> bool:
     return isinstance(verdict, dict) and verdict.get("holdout_reason") == "budget_spent"
 
@@ -654,10 +667,7 @@ class _Session:
         if code == 0:
             v = seed.read_verdict(seed.verdict_path(self.cfg, t.name, t.tf, t.hash))
             if v is not None:
-                self._infra(True)
-                self._file(t, v, done)
-                if _budget_spent(v):
-                    raise _Stop("budget_spent")
+                self._filed(t, v, done)
                 return
             self._close(t, "broken", "broken: the judge exited 0 without a verdict file", broken_reason="no_verdict",
                         pile="broken", **done)
@@ -669,6 +679,16 @@ class _Session:
         else:
             self._close(t, "broken", f"broken: judge exit {code}", broken_reason="judge_error", pile="broken", **done)
             self._infra(False)
+
+    def _filed(self, t: _Prop, verdict: dict, done: dict) -> None:
+        """File a judge's verdict, then count it. A kill on the judge's last transient attempt is an infrastructure
+        error, whatever the retries before it: the judge returns it instead of a 3rd exit 1, so a systemic sandbox
+        failure (memory pressure, a loaded host) would otherwise reset the count and never stop the session, each
+        proposal adding a trial (R48). Any other verdict is a result and resets it."""
+        self._file(t, verdict, done)
+        if _budget_spent(verdict):
+            raise _Stop("budget_spent")
+        self._infra(not transient_kill(verdict))
 
     def _file(self, t: _Prop, verdict: dict, done: dict) -> None:
         pile = piles.pile(verdict)
@@ -731,9 +751,7 @@ class _Session:
             at = datetime.fromtimestamp(path.stat().st_mtime, UTC)
         except OSError:
             at = self.deps.now()
-        self._file(t, verdict, {"judge_exit": 0, "judged_at": at})
-        if _budget_spent(verdict):
-            raise _Stop("budget_spent")
+        self._filed(t, verdict, {"judge_exit": 0, "judged_at": at})
 
 
 # -- the start

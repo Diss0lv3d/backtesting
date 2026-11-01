@@ -8,7 +8,8 @@ from typer.testing import CliRunner
 from perp_lab.cli import app
 from perp_lab.config import Config
 from perp_lab.sandbox import client
-from perp_lab.sandbox.errors import PluginError, SandboxUnavailable
+from perp_lab.sandbox.errors import TRANSIENT_KINDS, PluginError, SandboxUnavailable
+from perp_lab.proposer.loop import TRANSIENT_REASONS, transient_kill
 from perp_lab.judge.diagnostics import diagnostics
 from perp_lab.judge.judge import (VERDICT_KEYS, JudgeRefused, TransientFailure, judge, lookahead_failures,
                                   verdict_path)
@@ -615,6 +616,24 @@ def test_a_transient_failure_on_the_third_attempt_is_a_kill(cfg, plugins):
             judge(cfg, "donchian_atr", "4h", validate=run)
     j = judge(cfg, "donchian_atr", "4h", validate=run)
     assert j["decision"] == "kill" and j["reasons"] == ["plugin_error: timeout"]
+
+
+@pytest.mark.parametrize("kind", TRANSIENT_KINDS)
+def test_the_third_attempts_transient_kill_is_what_the_proposer_counts_as_infrastructure(cfg, plugins, kind):
+    """R48: the proposer can't import the sandbox, so it names the reasons itself: they must be the verdict's."""
+    run = _failing(StubValidate({}), "donchian_atr", PluginError(kind))
+    for _ in range(2):
+        with pytest.raises(TransientFailure):
+            judge(cfg, "donchian_atr", "4h", validate=run)
+    v = json.loads(Path(judge(cfg, "donchian_atr", "4h", validate=run)["verdict_path"]).read_text())
+    assert v["reasons"] == [f"plugin_error: {kind}"] and transient_kill(v)
+    assert set(TRANSIENT_REASONS) == {PluginError(k).public_reason() for k in TRANSIENT_KINDS}
+
+
+def test_a_plugins_own_error_is_not_a_transient_kill(cfg, plugins):
+    err = PluginError("exception", "ValueError", "boom")
+    j = judge(cfg, "donchian_atr", "4h", validate=_failing(StubValidate({}), "donchian_atr", err))
+    assert not transient_kill(json.loads(Path(j["verdict_path"]).read_text()))
 
 
 def test_a_transient_failure_then_a_clean_run_is_judged(cfg, plugins):

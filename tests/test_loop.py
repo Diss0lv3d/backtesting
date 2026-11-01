@@ -391,11 +391,35 @@ def test_a_quota_sleep_ends_at_the_session_deadline(lab):
 
 # -- stops
 def test_three_judge_infrastructure_errors_in_a_row_stop_the_session(lab):
-    # each infrastructure error is a judge that exited 1 three times (R45); a retry's exit 0 resets the count
+    # each infrastructure error here is a judge that exited 1 three times (R45), as a harness crash does; a
+    # retry's exit 0 with a real verdict resets the count (a transient kill doesn't, R48: tests below)
     lab.fake.judge_exits = [1, 1, 1] + [1, 1, 0] + [1, 1, 1] * 3
     assert run(lab) == "infra_errors"
     assert len(lab.fake.judges) == 15
     assert [p["state"] for p in props(lab)] == ["broken", "judged", "broken", "broken", "broken"]
+
+
+# A kill on the judge's 3rd transient attempt, as the real verdict file states it (pinned in test_judge.py).
+TRANSIENT_KILL = {**verdict(), "reasons": ["plugin_error: died"], "walkforward": None, "diagnostics": None}
+
+
+def test_three_transient_kills_in_a_row_stop_the_session(lab):
+    """R48: the real judge exits 1 on its first two transient attempts and returns a kill on the third, so the
+    loop sees [1, 1, 0]. That kill is an infrastructure error, or a systemic sandbox failure would never stop the
+    session and every proposal would add a trial."""
+    lab.fake.judge_exits = [1, 1, 0] * 3
+    lab.fake.verdict = TRANSIENT_KILL
+    assert run(lab, trials=4) == "infra_errors"
+    assert len(lab.fake.judges) == 9
+    assert [(p["state"], p["pile"]) for p in props(lab)] == [("judged", "broken")] * 3
+
+
+def test_a_real_verdict_after_a_retry_resets_the_infrastructure_count(lab):
+    lab.fake.judge_exits = [1, 1, 0] * 2 + [1, 0] + [1, 1, 0] * 3
+    lab.fake.verdict = lambda name: verdict() if name.endswith("idea_3") else TRANSIENT_KILL
+    assert run(lab) == "infra_errors"
+    assert len(lab.fake.judges) == 17
+    assert [p["pile"] for p in props(lab)] == ["broken", "broken", "no signal", "broken", "broken", "broken"]
 
 
 def test_preflight_infrastructure_errors_count_with_the_judges(lab):
