@@ -1,8 +1,12 @@
 """Every dashboard page renders against a populated store without exceptions."""
 
+import html
+import re
+
 import pytest
 import streamlit as st
 import yaml
+from markdown_it import MarkdownIt
 from streamlit.testing.v1 import AppTest
 
 from perp_lab.judge import budget
@@ -154,6 +158,23 @@ def _ideas_at():
     at.run()
     at.sidebar.radio(key="page").set_value("Ideas").run()
     return at
+
+
+# AppTest gives an element's markdown source; CommonMark, which Streamlit's markdown builds on, says what it shows.
+_MD = MarkdownIt("commonmark")
+
+
+def _tokens(src: str) -> list:
+    return [t for b in _MD.parse(src) for t in [b, *(b.children or [])]]
+
+
+def _shown(src: str) -> str:
+    """The text a markdown source shows: rendered, its tags dropped."""
+    return html.unescape(re.sub(r"<[^>]+>", "", _MD.render(src))).strip()
+
+
+def _hrefs(src: str) -> list[str]:
+    return [t.attrGet("href") for t in _tokens(src) if t.type == "link_open"]
 
 
 def test_ideas_page_without_a_record_says_so_and_creates_nothing(populated):
@@ -388,7 +409,7 @@ def test_try_next_is_offered_only_for_an_idea_a_proposal_could_work_on(populated
     assert not at.exception, [e.message for e in at.exception]
     keys = {b.key for b in at.button}
     assert f"try_next_{untested}" not in keys and f"try_next_{portable}" in keys
-    assert any(c.value.startswith(f"Try next: no proposal can work on idea #{untested} (LCE untested) now")
+    assert any(_shown(c.value).startswith(f"Try next: no proposal can work on idea #{untested} (LCE untested) now")
                for c in at.caption)
 
 
@@ -407,7 +428,7 @@ def test_ideas_page_shows_research_ideas_tagged_and_the_latest_research_notes(po
     assert not at.exception, [e.message for e in at.exception]
     assert any(c.value == f"idea {i} · research · 4h · open" for c in at.caption)
     (notes,) = [e for e in at.expander if e.label == "Research notes"]
-    text = " ".join(m.value for m in notes.markdown)
+    text = " ".join(_shown(m.value) for m in notes.markdown)
     assert "ok" in text and "5 trials" in text and "UTC" in text
     assert "Funding ideas look thin." in text
     assert "fading wicks on 5m" in text and "plain momentum" in text
@@ -462,7 +483,7 @@ def test_with_research_off_the_research_notes_say_the_research_stop_list_is_not_
     at = _ideas_at()
     assert not at.exception, [e.message for e in at.exception]
     (notes,) = [e for e in at.expander if e.label == "Research notes"]
-    text = " ".join(m.value for m in notes.markdown)
+    text = " ".join(_shown(m.value) for m in notes.markdown)
     assert "research is off: the research step's stop list is not in force" in text.lower()
     assert "fading wicks on 5m" not in text and "plain momentum" not in text
     assert "Funding ideas look thin." in text                  # the round's summary is still the human's to read
@@ -533,16 +554,17 @@ def test_research_notes_list_each_cards_verdict_with_its_sources_and_the_idea_it
     at = _ideas_at()
     assert not at.exception, [e.message for e in at.exception]
     lines, captions = _notes(at)
-    assert "**Referee** · 3 cards: 1 accepted, 1 revised, 1 rejected · with academic web access" in lines
-    assert (f"- Basis squeeze: **accepted** as #{i} · Consistent with the basis literature. · sources: "
-            f"[{ARXIV}]({ARXIV})") in lines
-    assert f"- Carry unwind: **revised** into #{j} Carry unwind, entry only · Its edge came from the exit." in lines
-    assert (f"- Round-number stops: **rejected** · Published evidence finds no effect. · sources: "
-            f"[{ARXIV_2}]({ARXIV_2})") in lines
+    shown = {_shown(x): x for x in lines}
+    assert "Referee · 3 cards: 1 accepted, 1 revised, 1 rejected · with academic web access" in shown
+    accepted = f"Basis squeeze: accepted as #{i} · Consistent with the basis literature. · sources: {ARXIV}"
+    revised = f"Carry unwind: revised into #{j} Carry unwind, entry only · Its edge came from the exit."
+    rejected = f"Round-number stops: rejected · Published evidence finds no effect. · sources: {ARXIV_2}"
+    assert {accepted, revised, rejected} <= set(shown)
+    assert (_hrefs(shown[accepted]), _hrefs(shown[revised]), _hrefs(shown[rejected])) == ([ARXIV], [], [ARXIV_2])
     # the fetches and denials, compact: a denied host is shown as text, never linked
-    assert (f"fetches (3): [{ARXIV}]({ARXIV}), {GECKO}, [{ARXIV_2}]({ARXIV_2}) · denied by the CLI (1): "
-            f"{GECKO}") in captions
-    assert not any(f"]({GECKO})" in x for x in lines + captions)
+    (fetched,) = [c for c in captions if c.startswith("fetches")]
+    assert _shown(fetched) == f"fetches (3): {ARXIV}, {GECKO}, {ARXIV_2} · denied by the CLI (1): {GECKO}"
+    assert _hrefs(fetched) == [ARXIV, ARXIV_2]
     assert not any("unreadable" in c for c in captions)
     metas = [c.value for c in at.caption]
     assert f"idea {i} · research · 4h · open · web-reviewed" in metas
@@ -553,8 +575,8 @@ def test_research_notes_say_when_the_referee_failed_and_no_card_was_added(popula
     r = _record(populated)
     _refereed(r, {"web": True, "fetches": [], "denied": [], "error": "fence: off-list fetch: api.coingecko.com"})
     lines, _ = _notes(_ideas_at())
-    assert ("**Referee failed** · with academic web access: fence: off-list fetch: api.coingecko.com. "
-            "No card from this round was added.") in lines
+    assert ("Referee failed · with academic web access: fence: off-list fetch: api.coingecko.com. "
+            "No card from this round was added.") in [_shown(x) for x in lines]
     assert "**Ideas added**" not in lines
 
 
@@ -566,8 +588,10 @@ def test_a_tool_less_referee_says_so_and_links_no_source_off_the_allowlist(popul
         titles=("Basis squeeze",), added=[i])
     at = _ideas_at()
     lines, captions = _notes(at)
-    assert "**Referee** · 1 card: 1 accepted, 0 revised, 0 rejected · without web access" in lines
-    assert f"- Basis squeeze: **accepted** as #{i} · r · sources: {GECKO}, javascript:alert\\(1\\)" in lines
+    shown = {_shown(x): x for x in lines}
+    assert "Referee · 1 card: 1 accepted, 0 revised, 0 rejected · without web access" in shown
+    line = shown[f"Basis squeeze: accepted as #{i} · r · sources: {GECKO}, javascript:alert(1)"]
+    assert _hrefs(line) == []
     assert not [c for c in captions if c.startswith("fetches")]
     assert f"idea {i} · research · 4h · open" in [c.value for c in at.caption]      # no web, no tag
 
@@ -595,8 +619,56 @@ def test_verdicts_that_do_not_pair_with_the_ideas_added_name_no_idea(populated):
     _refereed(r, {"web": True, "fetches": [], "denied": [], "verdicts": [
         {"title": "Basis squeeze", "decision": "accept", "reason": "r", "sources": []},
         {"title": "Carry unwind", "decision": "accept", "reason": "q", "sources": []}]}, added=[i])
+    shown = [_shown(x) for x in _notes(_ideas_at())[0]]
+    assert "Basis squeeze: accepted · r" in shown and "Carry unwind: accepted · q" in shown
+
+
+# What a page the referee read could have put in its text, and so in anything a model wrote: an image the viewer's
+# browser would fetch, a link, HTML, a bare URL GFM would link, and Streamlit's LaTeX and colour directives.
+EVIL = "![](https://evil.example/x) [a](https://evil.example) <img src=x> https://evil.example $x$ :red[r] *b* `c`"
+
+
+def _no_markup(texts: list[str]) -> None:
+    """No image, HTML or link off the allowlist anywhere in these sources; the code's own emphasis and code spans
+    may be there, so the shown text is what says the model's `*b*` and `c` stayed literal."""
+    marks = [t for x in texts for t in _tokens(x)]
+    assert not [t for t in marks if t.type in ("image", "html_inline", "html_block")]
+    assert {t.attrGet("href") for t in marks if t.type == "link_open"} <= {ARXIV}
+    assert not [x for x in texts if "://evil" in x or "$x$" in x or ":red[" in x]
+
+
+def test_model_written_text_shows_as_written_and_never_as_markup(populated):
+    r = _seeded(populated)
+    seed = r.add_idea(f"LCE {EVIL}", {}, "seed", "5m")              # no proposal can work on it: "Try next: ..."
+    i = r.add_idea(f"Basis {EVIL}", {"mechanism": EVIL}, "research", "4h")
+    r.add_proposal(idea_id=i, plugin="px_evil", timeframe="4h", kind="new", origin="proposer", state="broken",
+                   broken_reason=EVIL)
+    summary = f"{EVIL}\n# heading\n- item\n    code"
+    reply = {"ideas": [{"title": f"Basis {EVIL}", "builds_on": EVIL}], "stop": [EVIL], "summary": summary}
+    r.add_research(session_id=r.start_session(model="m"), trials_used=5, reply=reply, added=[i], tokens_in=1,
+                   tokens_out=1, outcome="ok", referee={"web": True, "fetches": [ARXIV], "denied": [], "verdicts": [
+                       {"title": EVIL, "decision": "accept", "reason": EVIL, "sources": [ARXIV]}]})
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    texts = [e.value for e in [*at.markdown, *at.caption, *at.error, *at.warning]]
+    _no_markup(texts)
+    shown = [_shown(x) for x in texts]
+    for line in (f"Basis {EVIL}", f"mechanism: {EVIL}", f"Summary: {EVIL}\n# heading\n- item\ncode", EVIL,
+                 f"#{i} Basis {EVIL} · builds on: {EVIL}",
+                 f"{EVIL}: accepted as #{i} · {EVIL} · sources: {ARXIV}"):
+        assert line in shown
+    assert any(x.startswith(f"Try next: no proposal can work on idea #{seed} (LCE {EVIL}) now") for x in shown)
+    assert any(x.endswith(f"px_evil @ 4h · Basis {EVIL} · {EVIL}") for x in shown)        # the broken attempt
+    verdict = next(x for x in texts if _shown(x).startswith(f"{EVIL}: accepted"))
+    assert _hrefs(verdict) == [ARXIV]                                  # the allowlisted source is still a link
+
+
+def test_a_referee_error_shows_as_written(populated):
+    _refereed(_record(populated), {"web": True, "fetches": [], "denied": [], "error": f"invalid: {EVIL}"})
     lines, _ = _notes(_ideas_at())
-    assert "- Basis squeeze: **accepted** · r" in lines and "- Carry unwind: **accepted** · q" in lines
+    _no_markup(lines)
+    assert (f"Referee failed · with academic web access: invalid: {EVIL}. No card from this round was added."
+            in [_shown(x) for x in lines])
 
 
 def test_a_promoted_web_reviewed_ideas_review_packet_carries_the_caveat(populated):
