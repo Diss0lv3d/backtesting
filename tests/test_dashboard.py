@@ -454,7 +454,7 @@ def test_a_round_the_running_session_has_under_way_shows_as_under_way(populated)
     assert _notes_head(_ideas_at()).endswith("· error: interrupted · at 5 trials")      # stopped: cut short
 
 
-def test_with_research_off_the_research_notes_say_no_stop_list_is_in_force(populated):
+def test_with_research_off_the_research_notes_say_the_research_stop_list_is_not_in_force(populated):
     raw = yaml.safe_load(populated.path.read_text())
     raw["proposer"]["research_every"] = 0
     populated.path.write_text(yaml.safe_dump(raw))
@@ -463,7 +463,7 @@ def test_with_research_off_the_research_notes_say_no_stop_list_is_in_force(popul
     assert not at.exception, [e.message for e in at.exception]
     (notes,) = [e for e in at.expander if e.label == "Research notes"]
     text = " ".join(m.value for m in notes.markdown)
-    assert "research is off: no stop list is in force" in text.lower()
+    assert "research is off: the research step's stop list is not in force" in text.lower()
     assert "fading wicks on 5m" not in text and "plain momentum" not in text
     assert "Funding ideas look thin." in text                  # the round's summary is still the human's to read
 

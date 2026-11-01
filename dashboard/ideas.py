@@ -283,8 +283,8 @@ def _research_body(record: Record, pc, row: dict, running: bool) -> None:
     note = note if isinstance(note, dict) else {}
     if ok and isinstance(note.get("summary"), str) and note["summary"]:
         st.markdown(f"**Summary:** {note['summary']}")
-    if pc.research_every == 0:                       # the loop's rule: research off, no list in force
-        st.markdown("**Research is off: no stop list is in force** (`proposer.research_every` is 0)")
+    if pc.research_every == 0:                       # the loop's rule: research off, no research stop list in force
+        st.markdown("**Research is off: the research step's stop list is not in force** (`proposer.research_every` is 0)")
     elif stop := _lines(note.get("stop")):
         st.markdown("**Stop list** (the builder is told to stop trying these)" if ok else
                     "**Stop list in force** (from the latest valid round)")
