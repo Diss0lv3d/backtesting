@@ -248,10 +248,13 @@ def test_one_idea_is_next_up_at_a_time_and_only_an_open_one(rec):
     assert rec.next_up()["id"] == b             # a refused flag leaves the flagged idea as it was
     rec.clear_next(a)                           # a's flag is already gone: b keeps its own
     assert rec.next_up()["id"] == b
+    with pytest.raises(TypeError):
+        rec.clear_next()                        # clearing names its idea: an empty list must not clear every flag
+    assert rec.next_up()["id"] == b
     rec.clear_next(b)
     assert rec.next_up() is None
     rec.flag_next(a)
-    rec.clear_next()
+    rec.clear_all_next()                        # the human's own "clear", whichever idea holds the flag
     assert rec.next_up() is None
 
 

@@ -190,7 +190,7 @@ def _controls(record: Record, idea: dict) -> None:
     if idea.get("next_up") is not None:
         c = st.columns([5, 1])
         c[0].markdown("**next up**: the builder's next round is asked to work on this idea")
-        c[1].button("Clear", key=f"clear_next_{i}", on_click=_act, args=(i, "Next up cleared", record.clear_next))
+        c[1].button("Clear", key=f"clear_next_{i}", on_click=_act, args=(i, "Next up cleared", record.clear_next, i))
     elif status == "open":
         st.button("Try next", key=f"try_next_{i}", on_click=_act,
                   args=(i, f"Idea #{i} is next up", record.flag_next, i))

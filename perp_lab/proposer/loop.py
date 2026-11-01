@@ -723,10 +723,9 @@ class _Session:
         own, and for a port the idea it ports. A dropped one doesn't: the request stands."""
         if t.idea_id is None:
             return
-        ids = [t.idea_id]
-        if t.kind == "port":
-            ids.append(self.record.idea(t.idea_id).get("port_of"))
-        self.record.clear_next(*(i for i in ids if i is not None))
+        self.record.clear_next(t.idea_id)
+        if t.kind == "port" and (src := self.record.idea(t.idea_id).get("port_of")) is not None:
+            self.record.clear_next(src)
 
     # -- crash recovery
     def _recover(self) -> None:

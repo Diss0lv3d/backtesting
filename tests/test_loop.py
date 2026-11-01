@@ -1120,3 +1120,16 @@ def test_a_judged_port_or_a_refused_refinement_answers_the_flag_too(lab, how):
     assert ASK.format(i) in lab.fake.calls[0].user
     assert all(ASK.format(i) not in c.user for c in lab.fake.calls[1:])
     assert lab.rec.next_up() is None and idea(lab, "Fade")["status"] == "open"
+
+
+def test_the_loop_never_clears_another_ideas_flag(lab):
+    flagged = lab.rec.add_idea("Flagged", card("Flagged"), "human", "1h")
+    other = lab.rec.add_idea("Other", card("Other"), "human", "1h")
+    lab.rec.add_proposal(idea_id=other, plugin="other_v1", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("signal before costs"), "lineage_id": "family:other_v1"})
+    lab.rec.flag_next(flagged)
+    lab.fake.replies = [refine(other), port(other)]          # a judged refinement and a judged port of another idea
+    lab.fake.verdict = verdict("signal before costs")
+    assert run(lab, trials=2) == "trials"
+    assert [(p["kind"], p["state"]) for p in props(lab)[1:]] == [("refinement", "judged"), ("port", "judged")]
+    assert lab.rec.next_up()["id"] == flagged

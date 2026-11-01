@@ -285,13 +285,15 @@ class Record:
             return f"there is no idea #{id}"
         return f"idea #{id} is {status}; {rule}"
 
-    def clear_next(self, *ids: int) -> None:
-        """Clear the flag: from any idea, or only from the ideas named."""
-        q = sa.update(ideas).where(ideas.c.next_up.is_not(None))
-        if ids:
-            q = q.where(ideas.c.id.in_(ids))
+    def clear_next(self, id: int) -> None:
+        """Clear the flag from this idea, if it holds it; never from another."""
         with self.engine.begin() as c:
-            c.execute(q.values(next_up=None))
+            c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.next_up.is_not(None)).values(next_up=None))
+
+    def clear_all_next(self) -> None:
+        """Clear the flag, whichever idea holds it: the human's own "clear"."""
+        with self.engine.begin() as c:
+            c.execute(sa.update(ideas).where(ideas.c.next_up.is_not(None)).values(next_up=None))
 
     def next_up(self) -> dict | None:
         """The flagged idea, whatever its status now."""

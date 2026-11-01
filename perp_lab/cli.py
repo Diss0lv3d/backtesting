@@ -514,7 +514,7 @@ def idea_next(idea: Optional[int] = typer.Argument(None, help="the idea's id"),
         _refuse("name an idea's id, or pass --clear")
     rec, _ = _proposer_record(config, "no proposer record yet")
     if clear:
-        rec.clear_next()
+        rec.clear_all_next()
         typer.echo("next up cleared")
         return
     try:
