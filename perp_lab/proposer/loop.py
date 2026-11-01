@@ -326,6 +326,8 @@ class _Session:
                     self.digest.header(self.pc.model, self.pc.model_training_cutoff, self.cli, self.harness.commit,
                                        self.harness.branch)
                     (sessions / f"{self.sid}.system.txt").write_text(self.system, encoding="utf-8")   # every call's
+                    if self.trials == 0:            # a dry run: a recovery judge can be a trial (M-6)
+                        raise _Stop("trials")
                     self._recover()
                     while True:
                         self._gate()

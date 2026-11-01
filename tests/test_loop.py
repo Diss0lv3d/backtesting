@@ -457,7 +457,7 @@ def test_a_pin_change_before_the_judge_leaves_the_copy_for_the_next_start(lab):
     assert run(lab) == "harness_changed"
     assert lab.fake.judges == [] and [p["state"] for p in props(lab)] == ["copied"]
     lab.fake.pin_error = None
-    assert run(lab, trials=0) == "trials"                # recovery judges it first
+    assert run(lab, trials=1) == "trials"                # recovery judges it first: the session's one trial
     assert [j[0] for j in lab.fake.judges] == ["px0001_a"] and props(lab)[0]["state"] == "judged"
 
 
@@ -719,9 +719,18 @@ def _copied(lab, seq=5, name="px0005_recovered", state="copied", text=None):
     return i
 
 
+def test_trials_0_is_a_dry_run_even_after_a_crash(lab):
+    """M-6: a recovery judge can be a trial, so --trials 0 stops right after the start checks, before recovery."""
+    _copied(lab)
+    assert run(lab, trials=0) == "trials"
+    assert lab.fake.judges == [] and lab.fake.calls == []
+    assert [p["state"] for p in props(lab)] == ["copied"]                  # left for the next start
+    assert lab.rec.session(1)["stop_reason"] == "trials" and "Stop reason: trials" in digest(lab)
+
+
 def test_recovery_rejudges_a_copied_proposal(lab):
     i = _copied(lab)
-    assert run(lab, trials=0) == "trials"
+    assert run(lab, trials=1) == "trials"                # the recovered trial is the session's one
     assert lab.fake.calls == [] and [j[0] for j in lab.fake.judges] == ["px0005_recovered"]
     (p,) = props(lab)
     assert (p["state"], p["judge_exit"], p["pile"], p["judged_at"]) == ("judged", 0, "no signal", T0)
@@ -764,15 +773,16 @@ def test_a_signal_during_recovery_stops_before_the_next_judge(lab):
 
 def test_recovery_judges_a_staged_proposal_whose_copy_was_made(lab):
     _copied(lab, state="staged")
-    assert run(lab, trials=0) == "trials"
+    assert run(lab, trials=1) == "trials"
     assert [j[0] for j in lab.fake.judges] == ["px0005_recovered"] and props(lab)[0]["state"] == "judged"
 
 
 def test_recovery_never_judges_other_bytes_under_the_name(lab):
     _copied(lab, text=b'"""edited by hand"""\n')
-    assert run(lab, trials=0) == "trials"
+    lab.fake.replies = []
+    assert run(lab) == "model_call"                      # recovery done, the first round finds no reply
     assert lab.fake.judges == []
-    assert [(p["state"], p["broken_reason"]) for p in props(lab)] == [("broken", "plugin_changed")]
+    assert [(p["state"], p["broken_reason"]) for p in props(lab)][0] == ("broken", "plugin_changed")
 
 
 # -- after-trial overlap
