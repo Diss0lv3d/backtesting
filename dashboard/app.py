@@ -1,7 +1,9 @@
 """Perp Lab dashboard. `lab dashboard` or `streamlit run dashboard/app.py`.
 
-Reads the results store + run artifacts. The only write it can perform is the
-human paper-approval gate (and retire). It cannot set anything to live.
+Reads the results store + run artifacts. The only write it can perform to the store is the
+human paper-approval gate (and retire). It cannot set anything to live. The Ideas page also
+writes the human's own changes to the proposer's record (record.db): an idea card, an
+exclusion, the "try next" flag.
 """
 
 from __future__ import annotations

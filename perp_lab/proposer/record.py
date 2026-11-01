@@ -16,6 +16,7 @@ import sqlalchemy as sa
 
 md = sa.MetaData()
 BUSY_TIMEOUT_MS = 30_000
+EXCLUDABLE = ("open", "exhausted", "dead")    # never passed or failed: an exam's outcome stays on the record
 
 
 def _pragmas(dbapi_conn, _record) -> None:
@@ -67,7 +68,7 @@ ideas = sa.Table(
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("title", sa.String(256), nullable=False),
     sa.Column("card", sa.JSON),
-    sa.Column("origin", sa.String(16), nullable=False),     # seed | proposer
+    sa.Column("origin", sa.String(16), nullable=False),     # seed | proposer | human
     sa.Column("timeframe", sa.String(8)),
     sa.Column("status", sa.String(16), nullable=False),
     sa.Column("port_of", sa.Integer, sa.ForeignKey("ideas.id")),
@@ -75,6 +76,8 @@ ideas = sa.Table(
     sa.Column("root_plugin", sa.String(128)),
     sa.Column("excluded_reason", sa.Text),
     sa.Column("created_at", UTCDateTime, nullable=False),
+    # When the human asked for the idea to be tried next; one idea at most. A time, so never in a prompt.
+    sa.Column("next_up", UTCDateTime),
     sa.Index("ux_ideas_title_nocase", sa.func.lower(sa.column("title")), unique=True),
 )
 
@@ -131,6 +134,28 @@ judge_calls = sa.Table(
 )
 
 
+# Columns added after a table first shipped: create_all never adds a column to an existing table, and the user's
+# record.db predates these.
+_ADDED_COLUMNS: list[tuple[str, str, str]] = [
+    ("ideas", "next_up", "DATETIME"),
+]
+
+
+def _has_column(eng: sa.Engine, table: str, column: str) -> bool:
+    return column in {c["name"] for c in sa.inspect(eng).get_columns(table)}
+
+
+def _add_columns(eng: sa.Engine) -> None:
+    for table, column, ddl in _ADDED_COLUMNS:
+        if not _has_column(eng, table, column):
+            try:
+                with eng.begin() as c:
+                    c.execute(sa.text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+            except sa.exc.OperationalError:
+                if not _has_column(eng, table, column):   # another process added it meanwhile: fine
+                    raise
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -153,6 +178,7 @@ class Record:
         self.engine = sa.create_engine(f"sqlite:///{self.state_dir / 'record.db'}", future=True)
         sa.event.listen(self.engine, "connect", _pragmas)
         md.create_all(self.engine)
+        _add_columns(self.engine)
         # High-water mark of reserved sequence numbers: above every recorded proposal and every transcript
         # already on disk, so a number handed out once is never handed out again, even after a crash.
         self._lock = threading.Lock()
@@ -200,16 +226,26 @@ class Record:
     # -- ideas
     def add_idea(self, title: str, card: dict, origin: str, timeframe: str, *,
                  port_of: int | None = None, status: str = "open") -> int:
+        return self.add_ideas([{"title": title, "card": card, "origin": origin, "timeframe": timeframe,
+                                "port_of": port_of, "status": status}])[0]
+
+    def add_ideas(self, rows: list[dict]) -> list[int]:
+        """Add the ideas in one transaction, all or none: a title any idea has, whatever the case, refuses them
+        all. Each row has title, card, origin and timeframe, and may have port_of and status (default open)."""
+        now, out = _now(), []
         with self.engine.begin() as c:
             taken = {t.casefold() for (t,) in c.execute(sa.select(ideas.c.title))}
-            if title.casefold() in taken:
-                raise ValueError(f"duplicate idea title: {title!r}")
-            try:
-                return c.execute(sa.insert(ideas).values(
-                    title=title, card=card, origin=origin, timeframe=timeframe, port_of=port_of,
-                    status=status, created_at=_now())).inserted_primary_key[0]
-            except sa.exc.IntegrityError as e:
-                raise ValueError(f"duplicate idea title: {title!r}") from e
+            for row in rows:
+                title = row["title"]
+                if title.casefold() in taken:
+                    raise ValueError(f"duplicate idea title: {title!r}")
+                taken.add(title.casefold())
+                try:
+                    out.append(c.execute(sa.insert(ideas).values(
+                        **{"port_of": None, "status": "open", **row}, created_at=now)).inserted_primary_key[0])
+                except sa.exc.IntegrityError as e:
+                    raise ValueError(f"duplicate idea title: {title!r}") from e
+        return out
 
     def ideas(self) -> list[dict]:
         with self.engine.connect() as c:
@@ -218,10 +254,64 @@ class Record:
     def idea(self, id: int) -> dict:
         return self._get(ideas, ideas.c.id, id)
 
+    def seeded(self) -> bool:
+        with self.engine.connect() as c:
+            return c.execute(sa.select(ideas.c.id).where(ideas.c.origin == "seed").limit(1)).first() is not None
+
     def set_idea(self, id: int, **f) -> None:
         if "title" in f:
             raise ValueError("an idea's title is fixed")
+        if f.get("status", "open") != "open":
+            f["next_up"] = None             # only an open idea can be tried next
         self._update(ideas, ideas.c.id, id, f)
+
+    def exclude_idea(self, id: int, reason: str) -> None:
+        """Close an open, exhausted or dead idea for good, by the human. The model reads the reason (prompt._why)."""
+        reason = (reason or "").strip()
+        if not reason:
+            raise ValueError("an exclusion needs a reason")
+        if len(reason.splitlines()) > 1:             # the idea's closed entry in the prompt is one line
+            raise ValueError("an exclusion reason must be one line")
+        with self.engine.begin() as c:              # the write first, as in flag_next
+            if c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.status.in_(EXCLUDABLE))
+                         .values(status="excluded", excluded_reason=reason, next_up=None)).rowcount:
+                return
+        raise ValueError(self._why_not(id, "only an open, exhausted or dead idea can be excluded"))
+
+    # -- the human's "try next"
+    def flag_next(self, id: int) -> None:
+        """Ask for an open idea to be tried next, in place of any other: one idea is flagged at a time."""
+        # The write first, conditional on the status: a session may write the record meanwhile, and SQLite opens
+        # no transaction on a read, so a status read first could be stale by the write.
+        with self.engine.begin() as c:
+            if c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.status == "open")
+                         .values(next_up=_now())).rowcount:
+                c.execute(sa.update(ideas).where(ideas.c.id != id, ideas.c.next_up.is_not(None)).values(next_up=None))
+                return
+        raise ValueError(self._why_not(id, "only an open idea can be tried next"))
+
+    def _why_not(self, id: int, rule: str) -> str:
+        try:
+            status = self.idea(id)["status"]
+        except KeyError:
+            return f"there is no idea #{id}"
+        return f"idea #{id} is {status}; {rule}"
+
+    def clear_next(self, id: int) -> None:
+        """Clear the flag from this idea, if it holds it; never from another."""
+        with self.engine.begin() as c:
+            c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.next_up.is_not(None)).values(next_up=None))
+
+    def clear_all_next(self) -> None:
+        """Clear the flag, whichever idea holds it: the human's own "clear"."""
+        with self.engine.begin() as c:
+            c.execute(sa.update(ideas).where(ideas.c.next_up.is_not(None)).values(next_up=None))
+
+    def next_up(self) -> dict | None:
+        """The flagged idea, whatever its status now."""
+        with self.engine.connect() as c:
+            row = c.execute(sa.select(ideas).where(ideas.c.next_up.is_not(None))).mappings().first()
+        return None if row is None else dict(row)
 
     # -- proposals
     def next_seq(self) -> int:

@@ -11,7 +11,7 @@ import pytest
 
 from perp_lab.dsr import sharpe_bar
 from perp_lab.proposer import prompt
-from perp_lab.proposer.record import Record
+from perp_lab.proposer.record import Record, ideas
 from tests.test_store import cfg  # noqa: F401  (a temp config and store)
 
 SENTINEL = "SENTINEL_TIME_2026-10-21T03:04:05"
@@ -134,6 +134,7 @@ def rec(tmp_path):
     c = r.add_idea("Sign flip of A", {"title": "Sign flip of A"}, "seed", "4h")
     r.set_idea(b, status="dead")
     r.set_idea(c, status="excluded", excluded_reason="it is A's sign flip")
+    r.set_idea(a, next_up=PLANTED)                       # the human's "try next": a time, never in a prompt
     planted = dict(session_id=sid, created_at=PLANTED, judged_at=PLANTED, hash="2029030405abcdef",
                    preflight={"at": SENTINEL})
     r.add_proposal(seq=1, idea_id=a, kind="new", plugin="flow_a", timeframe="1h", source=SOURCE, state="judged",
@@ -200,6 +201,24 @@ def test_it_ends_with_n_and_the_bar(rec):
 def test_the_instruction_asks_for_one_proposal():
     text = prompt.instruction()
     assert "one proposal" in text and "signal before costs" in text and "close call" in text
+
+
+def test_a_flagged_open_idea_adds_exactly_the_fixed_sentence_and_no_time(rec):
+    flagged = rec.next_up()
+    assert flagged["id"] == 1 and flagged["next_up"] == PLANTED
+    text = prompt.instruction(flagged)
+    assert text == prompt.INSTRUCTION + "\n\nThe human asks that this round's proposal work on idea #1."
+    whole = prompt.render_record(rec, 9, TFS) + text
+    for planted in ("2029", "05:06:07"):
+        assert planted not in whole, planted
+
+
+def test_no_flag_and_a_flagged_idea_no_longer_open_add_nothing(rec):
+    assert prompt.instruction() == prompt.instruction(None) == prompt.INSTRUCTION
+    with rec.engine.begin() as c:            # closed by a write that left its flag (set_idea would clear it)
+        c.execute(ideas.update().where(ideas.c.id == 1).values(status="exhausted"))
+    flagged = rec.next_up()
+    assert flagged["status"] == "exhausted" and prompt.instruction(flagged) == prompt.INSTRUCTION
 
 
 def test_a_fixup_holds_the_prompt_the_rejected_reply_and_the_errors():

@@ -1085,3 +1085,103 @@ def test_default_deps_run_the_allowed_lab_commands(lab, monkeypatch, default):
     assert ja == proc.lab_argv("judge", "px0001_a", "--tf", "1h", "--proposer", *extra)
     assert jkw["stderr"] is proc.STDOUT and jkw["start_new_session"] and jkw["stdout"].name == str(log)
     assert pkw["stdout"] is proc.PIPE and pkw["start_new_session"]
+
+
+# -- the human's "try next"
+ASK = "The human asks that this round's proposal work on idea #{}."
+
+
+def refine(idea_id, tf="1h"):
+    return {"kind": "refinement", "timeframe": tf, "hypothesis": "tighter", "source": SRC,
+            "refines": {"idea_id": idea_id, "change": "c"}}
+
+
+def test_the_flagged_idea_is_asked_for_until_a_proposal_on_it_is_judged(lab):
+    i = lab.rec.add_idea("Mine", card("Mine"), "human", "1h")
+    lab.rec.flag_next(i)
+    # judged on another idea; dropped after its fix-ups; judged on the flagged idea; then one more round
+    lab.fake.replies = [new("Other"), BAD, BAD, BAD, BAD, refine(i), new("Third")]
+    lab.fake.verdict = verdict("signal before costs")       # the flagged idea stays open after its trial
+    assert run(lab, trials=3) == "trials"
+    assert [ASK.format(i) in c.user for c in lab.fake.calls] == [True] * 6 + [False]
+    assert lab.rec.next_up() is None and idea(lab, "Mine")["status"] == "open"
+
+
+@pytest.mark.parametrize("how", ["port", "refused"])
+def test_a_judged_port_or_a_refused_refinement_answers_the_flag_too(lab, how):
+    i = lab.rec.add_idea("Fade", card("Fade"), "human", "1h")
+    lab.rec.add_proposal(idea_id=i, plugin="fade_v1", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("signal before costs"), "lineage_id": "family:fade_v1"})
+    lab.rec.flag_next(i)
+    lab.fake.replies = [port(i) if how == "port" else refine(i)]
+    lab.fake.judge_exits = [2] if how == "refused" else []
+    lab.fake.verdict = verdict("signal before costs")
+    run(lab, trials=1)                  # a refusal is no trial: the next round finds no reply
+    assert ASK.format(i) in lab.fake.calls[0].user
+    assert all(ASK.format(i) not in c.user for c in lab.fake.calls[1:])
+    assert lab.rec.next_up() is None and idea(lab, "Fade")["status"] == "open"
+
+
+def test_the_loop_never_clears_another_ideas_flag(lab):
+    flagged = lab.rec.add_idea("Flagged", card("Flagged"), "human", "1h")
+    other = lab.rec.add_idea("Other", card("Other"), "human", "1h")
+    lab.rec.add_proposal(idea_id=other, plugin="other_v1", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("signal before costs"), "lineage_id": "family:other_v1"})
+    lab.rec.flag_next(flagged)
+    lab.fake.replies = [refine(other), port(other)]          # a judged refinement and a judged port of another idea
+    lab.fake.verdict = verdict("signal before costs")
+    assert run(lab, trials=2) == "trials"
+    assert [(p["kind"], p["state"]) for p in props(lab)[1:]] == [("refinement", "judged"), ("port", "judged")]
+    assert lab.rec.next_up()["id"] == flagged
+
+
+def test_a_flag_no_proposal_could_answer_any_more_is_cleared_not_asked_for(lab):
+    """It can happen after the flag was set: a port whose copy hit name_taken still made its idea, with no judge,
+    so the human trial at 5m has no proposer timeframe left to be ported to."""
+    lce = lab.rec.add_idea("LCE", card("LCE"), "seed", "5m")
+    lab.rec.add_proposal(idea_id=lce, plugin="lce_atr", timeframe="5m", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("signal before costs"), "lineage_id": "family:lce_atr"})
+    for tf in ("15m", "1h"):
+        lab.rec.add_idea(f"LCE, {tf}", card(f"LCE, {tf}"), "proposer", tf, port_of=lce)
+    lab.rec.flag_next(lce)                                   # a port to 4h could still answer it
+    lab.rec.add_idea("LCE, 4h", card("LCE, 4h"), "proposer", "4h", port_of=lce)
+    assert run(lab, trials=1) == "trials"
+    assert ASK.format(lce) not in lab.fake.calls[0].user
+    assert lab.rec.next_up() is None and idea(lab, "LCE")["status"] == "open"
+
+
+@pytest.mark.parametrize("outcome", ["judge_error", "no_verdict", "interrupted"])
+def test_a_judge_that_reached_no_result_leaves_the_flag(lab, monkeypatch, outcome):
+    """Only a filed verdict or the judge's refusal answers the human: not three exits of 1, an exit 0 with no
+    verdict file, or a judge a second signal killed."""
+    i = lab.rec.add_idea("Mine", card("Mine"), "human", "1h")
+    lab.rec.flag_next(i)
+    lab.fake.replies = [refine(i)]
+    if outcome == "judge_error":
+        lab.fake.judge_exits = [1, 1, 1]
+    elif outcome == "no_verdict":
+        monkeypatch.setattr(loop.seed, "read_verdict", lambda path: None)
+    else:
+        def twice(fake):
+            signal.raise_signal(signal.SIGINT)
+            signal.raise_signal(signal.SIGTERM)
+        lab.fake.on_judge = twice
+    run(lab, trials=1)
+    (p,) = props(lab)
+    assert (p["broken_reason"], p["judge_exit"] is not None) == (outcome, True)
+    assert lab.rec.next_up()["id"] == i
+
+
+def test_a_transient_kill_leaves_the_flag_and_a_real_verdict_clears_it(lab):
+    """A kill on the judge's last transient attempt is an infrastructure outcome (R48), not an answer."""
+    i = lab.rec.add_idea("Mine", card("Mine"), "human", "1h")
+    lab.rec.flag_next(i)
+    lab.fake.replies = [refine(i), refine(i)]
+    lab.fake.verdict = lambda name: TRANSIENT_KILL if name.startswith("px0001") else verdict("signal before costs")
+    seen = []
+    lab.fake.on_judge = lambda fake: seen.append(lab.rec.next_up())
+    assert run(lab, trials=2) == "trials"
+    assert [p["verdict"]["reasons"] for p in props(lab)][0] == ["plugin_error: died"]
+    assert seen[1]["id"] == i                       # still flagged when the second refinement was judged
+    assert ASK.format(i) in lab.fake.calls[1].user
+    assert lab.rec.next_up() is None

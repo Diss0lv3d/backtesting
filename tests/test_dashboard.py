@@ -252,3 +252,128 @@ def test_session_state_probes_the_lock_and_reads_the_last_pause(tmp_path):
     assert ideas.sleeping_until(tmp_path, 1, now) is None    # work resumed after the pause
     (tmp_path / "sessions" / "1.md").write_text(pause(now - timedelta(hours=1)))
     assert ideas.sleeping_until(tmp_path, 1, now) is None
+
+
+# ---------------------------------------------------------------- the human's ideas on the Ideas page
+
+def _seeded(cfg):
+    r = _record(cfg)
+    r.add_idea("Seeded one", {"mechanism": "card of seeded one"}, "seed", "4h")    # what seeded() looks for
+    return r
+
+
+def _id(r, title):
+    return next(i["id"] for i in r.ideas() if i["title"] == title)
+
+
+def _fill(at, **over):
+    fields = {"title": "Basis squeeze", "mechanism": "m", "why_it_persists": "w", "signal": "s",
+              "likely_failure": "f", **over}
+    at.text_input(key="new_title").input(fields.pop("title"))
+    for name, text in fields.items():
+        at.text_area(key=f"new_{name}").input(text)
+
+
+def _submit(at):
+    (button,) = [b for b in at.get("form_submit_button") if b.label == "Add idea"]
+    return button.click().run()
+
+
+def test_the_add_form_adds_a_human_idea_to_a_seeded_record(populated):
+    from perp_lab.proposer import human
+    r = _seeded(populated)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert any(e.label == "Add an idea" for e in at.expander)
+    assert human.WARNING in [w.value for w in at.warning]
+    _fill(at)
+    at.number_input(key="new_trades_per_coin_per_year").set_value(12.0)
+    at.multiselect(key="new_columns").select("close").select("funding_last")
+    at.selectbox(key="new_timeframe").set_value("1h")
+    _submit(at)
+    assert not at.exception, [e.message for e in at.exception]
+    x = r.idea(_id(r, "Basis squeeze"))
+    assert (x["origin"], x["status"], x["timeframe"]) == ("human", "open", "1h")
+    assert x["card"]["columns"] == ["close", "funding_last"] and x["card"]["trades_per_coin_per_year"] == 12.0
+    assert f"Added idea #{x['id']}" in [s.value for s in at.success]
+    assert "#### Basis squeeze" in [m.value for m in at.markdown]
+    assert at.text_input(key="new_title").value == ""                # a fresh form for the next one
+
+
+def test_the_add_form_shows_every_error_and_adds_nothing(populated):
+    r = _seeded(populated)
+    n = len(r.ideas())
+    at = _ideas_at()
+    _fill(at, title="open one", mechanism="")
+    _submit(at)
+    errors = [e.value for e in at.error]
+    assert "mechanism: must be a non-empty string" in errors
+    assert "trades_per_coin_per_year: must be a finite number" in errors          # left empty
+    assert "title: an idea titled 'open one' is already in the record" in errors
+    assert len(r.ideas()) == n and at.text_input(key="new_title").value == "open one"   # kept, to fix
+
+
+def test_the_add_form_waits_for_the_seed(populated):
+    from perp_lab.proposer import human
+    _record(populated)                          # the proposer's ideas only: no seed
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert human.NOT_SEEDED in [i.value for i in at.info]
+    assert not [b for b in at.get("form_submit_button") if b.label == "Add idea"]
+
+
+def test_without_a_record_the_add_form_says_to_seed_first(populated):
+    from perp_lab.proposer import human
+    at = _ideas_at()
+    assert human.NOT_SEEDED in [i.value for i in at.info]
+    assert not (populated.path.parent / "no_proposer_state").exists()
+
+
+def test_exclude_closes_an_idea_with_the_humans_reason(populated):
+    from perp_lab.proposer import human
+    r = _seeded(populated)
+    i, passed = _id(r, "open one"), _id(r, "passed one")
+    at = _ideas_at()
+    keys = {c.key for c in at.checkbox}
+    assert f"exclude_open_{i}" in keys and f"exclude_open_{_id(r, 'closed one')}" in keys
+    assert f"exclude_open_{passed}" not in keys                     # never a passed idea
+    at.checkbox(key=f"exclude_open_{i}").check().run()
+    assert human.WARNING in [w.value for w in at.warning]
+    at.button(key=f"exclude_{i}").click().run()                      # no reason yet
+    assert "an exclusion needs a reason" in [e.value for e in at.error] and r.idea(i)["status"] == "open"
+    at.text_input(key=f"exclude_reason_{i}").input("its mechanism is the seeded one's")
+    at.button(key=f"exclude_{i}").click().run()
+    assert not at.exception, [e.message for e in at.exception]
+    assert (r.idea(i)["status"], r.idea(i)["excluded_reason"]) == ("excluded", "its mechanism is the seeded one's")
+    assert f"Excluded idea #{i}" in [t.value for t in at.toast]
+
+
+def test_try_next_flags_one_open_idea_and_clear_unflags_it(populated):
+    r = _seeded(populated)
+    a, b, dead = _id(r, "open one"), _id(r, "close one"), _id(r, "closed one")
+    at = _ideas_at()
+    assert f"try_next_{dead}" not in {x.key for x in at.button}      # open ideas only
+    at.button(key=f"try_next_{a}").click().run()
+    assert r.next_up()["id"] == a and f"clear_next_{a}" in {x.key for x in at.button}
+    assert any("next up" in m.value for m in at.markdown)
+    at.button(key=f"try_next_{b}").click().run()
+    assert r.next_up()["id"] == b and f"try_next_{a}" in {x.key for x in at.button}
+    at.button(key=f"clear_next_{b}").click().run()
+    assert not at.exception, [e.message for e in at.exception]
+    assert r.next_up() is None
+
+
+def test_try_next_is_offered_only_for_an_idea_a_proposal_could_work_on(populated):
+    r = _seeded(populated)
+    untested = r.add_idea("LCE untested", {}, "seed", "5m")          # ports only, and no pile a port needs
+    portable = r.add_idea("LCE signal", {}, "seed", "5m")
+    r.add_proposal(idea_id=portable, plugin="lce_atr", timeframe="5m", kind="new", state="judged", judge_exit=0,
+                   verdict={"decision": "kill", "reasons": [], "holdout_status": "n/a", "diagnostics": {
+                       "gates": {"net_sharpe": -1, "random_p95": 0, "oos_trades": 100, "min_oos_trades": 64},
+                       "before_costs": {"sharpe": 0.5, "random_p95": 0.1}}})
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    keys = {b.key for b in at.button}
+    assert f"try_next_{untested}" not in keys and f"try_next_{portable}" in keys
+    assert any(c.value.startswith(f"Try next: no proposal can work on idea #{untested} (LCE untested) now")
+               for c in at.caption)

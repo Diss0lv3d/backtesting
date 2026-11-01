@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from perp_lab.proposer.contract import (
-    BLOCK_FOR_KIND, FIELD_DOCS, ContractError, IdeaCard, Ports, Proposal, Refines, describe, parse, schema,
+    BLOCK_FOR_KIND, FIELD_DOCS, ContractError, IdeaCard, Ports, Proposal, Refines, describe, parse, parse_card,
+    schema,
 )
 
 TFS = ("15m", "1h", "4h")
@@ -181,3 +182,18 @@ def test_the_kind_rule_is_the_only_thing_parse_adds(obj):
     jsonschema.validate(obj, schema(TFS))                # the schema lets a kind without its block through
     with pytest.raises(ContractError, match="required when kind is"):
         parse(obj, TFS)
+
+
+def test_parse_card_checks_a_card_as_parse_checks_a_new_ideas():
+    """The human's cards (human.py) pass the model's own card checks: the same errors, without the idea. path."""
+    assert parse_card(CARD) == parse(good(), TFS).idea
+    bad = {**CARD, "mechanism": "", "trades_per_coin_per_year": "many", "columns": "close", "extra": 1}
+    del bad["signal"]
+    with pytest.raises(ContractError) as as_card:
+        parse_card(bad)
+    with pytest.raises(ContractError) as in_proposal:
+        parse(good(idea=bad), TFS)
+    assert in_proposal.value.errors == ["idea." + e for e in as_card.value.errors]
+    assert len(as_card.value.errors) == 5
+    with pytest.raises(ContractError, match="must be an object"):
+        parse_card(["not", "a", "card"])

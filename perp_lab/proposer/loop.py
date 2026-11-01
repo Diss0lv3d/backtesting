@@ -469,7 +469,7 @@ class _Session:
     def _propose(self, t: _Prop) -> bool:
         """Calls and checks until the proposal passes preflight (True), or it is dropped (False)."""
         base = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes) + "\n"
-                + prompt.instruction() + "\n")
+                + prompt.instruction(self._next_up()) + "\n")
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
             raw = self._call(t.seq, user).proposal
@@ -484,6 +484,16 @@ class _Session:
         if self.stuck >= STUCK_MAX:
             raise _Stop("stuck")
         return False
+
+    def _next_up(self) -> dict | None:
+        """The idea the human flagged, while some proposal could work on it. A flag none could answer any more (a
+        port that hit name_taken still made its idea, with no judge) is cleared: asked for, every attempt would be
+        refused, and five drops in a row stop the session."""
+        idea = self.record.next_up()
+        if idea is not None and assemble.answerable(idea, self.record, self.pc) is not None:
+            self.record.clear_next(idea["id"])
+            return None
+        return idea
 
     def _call(self, seq: int, user: str) -> model.Reply:
         transcript = self.record.transcript_path(seq)
@@ -680,6 +690,7 @@ class _Session:
         elif code == 2:
             self._close(t, "broken", "broken: refused by the judge (exit 2)", broken_reason="refused", pile="broken",
                         **done)
+            self._answered(t)
             self._infra(True)
         else:
             self._close(t, "broken", f"broken: judge exit {code}", broken_reason="judge_error", pile="broken", **done)
@@ -691,6 +702,8 @@ class _Session:
         failure (memory pressure, a loaded host) would otherwise reset the count and never stop the session, each
         proposal adding a trial (R48). Any other verdict is a result and resets it."""
         self._file(t, verdict, done)
+        if not transient_kill(verdict):        # an infrastructure outcome answers no "try next" either
+            self._answered(t)
         if _budget_spent(verdict):
             raise _Stop("budget_spent")
         self._infra(not transient_kill(verdict))
@@ -715,6 +728,17 @@ class _Session:
         t.closed = True
         settle(self.record, self.pc)
         self.digest.line(t.seq, t.name, t.tf, t.kind, t.title, ("recovered: " if t.recovered else "") + outcome)
+
+    def _answered(self, t: _Prop) -> None:
+        """A filed verdict, whatever its pile, or the judge's refusal answers the human's "try next" for the idea
+        the proposal worked on: its own, and for a port the idea it ports. A judge that reached no result (exit 1
+        after its retries, exit 0 with no verdict file, killed by a second signal, a kill on its last transient
+        attempt) doesn't, nor does a proposal dropped before its judge: the request stands."""
+        if t.idea_id is None:
+            return
+        self.record.clear_next(t.idea_id)
+        if t.kind == "port" and (src := self.record.idea(t.idea_id).get("port_of")) is not None:
+            self.record.clear_next(src)
 
     # -- crash recovery
     def _recover(self) -> None:

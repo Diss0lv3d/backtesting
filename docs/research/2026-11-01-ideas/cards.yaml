@@ -1,0 +1,173 @@
+# New idea cards for the strategy builder, 2026-11-01, ranked (1 = test first).
+# Each item has exactly contract.IdeaCard's fields plus the timeframe. No statistic from the lab's
+# real bars, runs or verdicts appears in any card; numbers are parameters, literature years and the
+# trade-count estimate. Rationale, evidence and kill criteria: README.md next to this file.
+# Add them all (or none, if any fails its checks) with `lab idea add docs/research/2026-11-01-ideas/cards.yaml`.
+
+- title: Perp-flow divergence
+  mechanism: >-
+    A coin's price can be moved by traders who do not show up as aggressive orders on the perp: spot and ETF
+    demand carried over by index arbitrage, or a large patient trader working resting limit orders on the perp
+    itself. When price rises over a day while the perp's takers are net sellers by more than is normal for that
+    coin (or price falls while they are net buyers), the perp's aggressive traders are leaning against a move
+    that someone else is making. That someone has more capital or better information: practitioner flow
+    analysis reads spot-led moves as more durable than perp-led ones, and the microstructure literature finds
+    that informed traders often trade through limit orders and at times of apparent liquidity (Kaniel and Liu
+    2006; Collin-Dufresne and Fos 2015), so the passive side, not the aggressor, tends to be right. The perp
+    takers on the wrong side pay when they cover, and the move continues for a day or more.
+  why_it_persists: >-
+    Perp traders see their own venue's flow in real time, but the flow that is moving price arrives through
+    arbitrage or hidden limit orders and is only visible afterwards, as a disagreement between price and taker
+    flow. The aggressive perp traders are short-horizon and leveraged, so their covering is forced by stops and
+    margin rather than chosen. The patient side trades this way on purpose to hide its size, so the pattern
+    recurs as long as informed and spot-based capital exists.
+  signal: >-
+    On each 4h close: move = (close - close 6 bars earlier) / ATR(14). imb = the sum over the last 6 bars of
+    (2 x taker_buy_volume - volume), divided by the sum of volume over the same 6 bars: the net taker share of
+    the last 24 hours, between -1 and 1. Perp taker share is not centred exactly on one half and drifts over
+    time, so standardise it against the coin's own history: z = (imb - the mean of imb over the previous 180
+    bars) / the std of imb over the previous 180 bars. Long when move >= move_k and z <= -z_thr (price up while
+    perp takers are unusually net selling); short when move <= -move_k and z >= z_thr. Fill at the next open.
+    Exits ignore the trigger, so random entries earn nothing from them: a symmetric bracket, stop and target
+    both bracket_k x ATR from the signal close, plus a time exit after hold_bars bars. Defaults move_k 1.0,
+    z_thr 0.75, bracket_k 3.0, hold_bars 12. Grid: z_thr [0.5, 1.0], hold_bars [6, 12, 18].
+  trades_per_coin_per_year: 25
+  likely_failure: >-
+    Perp taker flow and price usually move together, so divergent days are few and may be noise: trade
+    classification quirks, liquidation orders, or a market maker absorbing flow it lays off later, in which case
+    price goes back toward the takers. Then the trigger is just a random subset of large daily moves, and
+    following a daily move on its own is worth about a random entry. Spot-led moves are often market-wide, so the
+    coins may give few independent bets.
+  columns: [close, high, low, volume, taker_buy_volume]
+  timeframe: 4h
+
+- title: Signed-jump reversal
+  mechanism: >-
+    Speculative traders overpay for assets that have just shown lottery-like upside: a few explosive up-moves
+    attract attention and leveraged buying from investors who like positive skew (Barberis and Huang 2008). The
+    asset is then priced too high and drifts down over the following week as the attention fades. Measured
+    from intraday returns, a high share of realised variance coming from up-moves rather than down-moves
+    (relative signed jump variation) predicts lower returns over the next week in stocks (Bollerslev, Li and
+    Zhao 2020) and in cryptocurrencies, where the effect sits mainly in positive jumps and in retail-heavy coins
+    (Lee and Wang 2025). The late lottery buyers pay. The literature puts the evidence mostly on the up-jump
+    side; the down-jump side (weeks whose variance came from sharp drops, followed by higher returns) is the
+    weaker half.
+  why_it_persists: >-
+    Skewness preference is a stable trait of retail traders, who are a large share of perp flow. Shorting a
+    coin that has just jumped is uncomfortable and squeeze-prone, which limits arbitrage. The mispricing is small
+    per day and pays only over about a week, too slowly for intraday liquidity providers to compete it away.
+  signal: >-
+    On each 1h close, take the log returns r of the last 168 bars (one week). up = the sum of r squared over the
+    bars with r > 0; down = the sum of r squared over the bars with r < 0; rsj = (up - down) / (up + down),
+    between -1 and 1. rank = the share of the previous 1440 bars (60 days) whose rsj was at or below the
+    current rsj. Short when rank >= 1 - q; long when rank <= q. Fill at the next open; no new entry while a
+    position is open. Exits ignore the trigger: a symmetric bracket, stop and target both bracket_k x ATR(14) x
+    sqrt(24) from the signal close (about bracket_k daily ranges), plus a time exit after hold_bars bars.
+    Defaults q 0.1, bracket_k 2.0, hold_bars 120. Grid: q [0.1, 0.2], hold_bars [72, 120, 168].
+  trades_per_coin_per_year: 18
+  likely_failure: >-
+    The evidence is cross-sectional: jumpy coins underperform other coins, which need not mean a coin
+    underperforms its own history. On a single large coin the effect may be swamped by the market's common
+    moves, and these large coins carry less retail lottery demand than the small coins where the effect is
+    strongest. rsj also leans with the week's own return, so the trade can collapse into a plain weekly fade
+    of the move, and fading price moves on their own has not paid in this lab. A one-week hold leaves few
+    independent bets per coin.
+  columns: [close, high, low]
+  timeframe: 1h
+
+- title: Absorbed liquidation sweep
+  mechanism: >-
+    A stop or liquidation cascade is a burst of price-insensitive market orders, and it usually drags the close
+    with it. Sometimes it runs into a large resting buyer instead: the hour shows heavy net taker selling and a
+    long lower wick, yet the close recovers most of the drop. Then the forced selling that sat below the market
+    has been used up (those stops and liquidations no longer exist), and the passive side has shown its size and
+    conviction at that price. Over the following hours price tends to move away from the absorbed level, in the
+    passive side's direction. The forced sellers, who sold at the worst prices, pay; the passive buyer earns,
+    and so does whoever buys after it. Mirrored for absorbed buying in short squeezes. This is the complement of
+    a flow shock that did move the close: the same kind of forced flow, with the opposite price outcome.
+  why_it_persists: >-
+    Liquidation is mechanical and stops cluster below obvious lows, so sweeps recur. How much resting
+    liquidity sits at a level is unknown until a sweep tests it, so the information exists only after the bar
+    closes and cannot be traded away in advance. Forced sellers cannot wait for a better price.
+  signal: >-
+    On 1h bar t: flow = (2 x taker_buy_volume - volume) / the median volume of the previous 168 bars; a = ATR(14)
+    at t-1; lower_wick = (min(open, close) - low) / a; upper_wick = (high - max(open, close)) / a; body =
+    (close - open) / a. Long when flow <= -flow_x and lower_wick >= wick_k and body >= -0.25 (the selling did
+    not take the close down). Short when flow >= flow_x and upper_wick >= wick_k and body <= 0.25. Fill at the
+    next open. Exits ignore the trigger bar (no stop at the wick, which would give random entries different
+    exits): a symmetric bracket, stop and target both bracket_k x ATR from the signal close, plus a time exit
+    after hold_bars bars. Defaults flow_x 0.3, wick_k 0.5, bracket_k 3.0, hold_bars 12; the defaults are loose
+    so that the judge's synthetic bars, whose wicks are small, still produce signals. Grid: wick_k [0.5, 1.0],
+    hold_bars [12, 24].
+  trades_per_coin_per_year: 40
+  likely_failure: >-
+    The wick may be ordinary noise in a volatile hour rather than absorption, and the absorber may be a market
+    maker who sells the inventory back within the hour, leaving nothing after the next open. Cascades come in
+    waves, so a second leg can run through the stop. Hourly bars cannot say whether the low came before or after
+    the recovery. And fading forced flow already failed in this lab when the flow moved the close, which lowers
+    the prior for any fade of forced flow.
+  columns: [open, high, low, close, volume, taker_buy_volume]
+  timeframe: 1h
+
+- title: Serial-dependence switch
+  mechanism: >-
+    Whether recent moves continue or reverse is not fixed in crypto. Tests of the adaptive-markets hypothesis
+    find that Bitcoin's return predictability switches on and off over time (Lo 2004; Khuntia and Pattanayak
+    2018), and microstructure measures on Binance predict the sign of changes in serial correlation (Easley,
+    O'Hara, Yang and Zhang 2024). Which state holds depends on who is active: trend-chasing leveraged flow makes
+    moves continue, and liquidity providers with spare balance sheet make them reverse. A rule that follows
+    daily moves while the coin's recent serial dependence is positive and fades them while it is negative earns
+    in both states, whereas a fixed trend rule or a fixed fade rule earns in one state and gives it back in the
+    other. Whoever is on the wrong side of the prevailing state pays: late faders in persistent markets, late
+    chasers in mean-reverting ones.
+  why_it_persists: >-
+    The state depends on the mix of participants (retail leverage cycles, market-maker capacity), which shifts
+    over months. It can last long enough to measure but never settles into a fixed rule that could be
+    arbitraged once and for all.
+  signal: >-
+    On each 4h close, from the previous 540 bars (90 days) of 4h log returns r: vr = the variance of the
+    overlapping 6-bar (24h) sums of r divided by 6 x the variance of r (the variance ratio: above 1 means moves
+    have been continuing, below 1 that they have been reversing). move = (close - close 6 bars earlier) /
+    ATR(14). If vr >= 1 + band and |move| >= move_k, enter in the direction of move. If vr <= 1 - band and
+    |move| >= move_k, enter against it. Otherwise no trade. Fill at the next open. Exits ignore the trigger: a
+    symmetric bracket, stop and target both bracket_k x ATR from the signal close, plus a time exit after
+    hold_bars bars. Defaults band 0.1, move_k 1.0, bracket_k 3.0, hold_bars 6. Grid: band [0.1, 0.2],
+    hold_bars [6, 12].
+  trades_per_coin_per_year: 60
+  likely_failure: >-
+    Over a few hundred bars the variance ratio is mostly sampling noise, and the true serial dependence of
+    daily crypto returns is small, so the switch may pick a side at random. Even a real state may change faster
+    than a 90-day window can see. If neither state persists, the rule is half a trend rule and half a fade
+    rule, and each of those on its own is worth about a random entry.
+  columns: [close, high, low]
+  timeframe: 4h
+
+- title: Small-ticket frenzy fade
+  mechanism: >-
+    Attention-driven retail traders arrive in bursts: many small orders in a coin that is already moving. On the
+    perp this shows as a jump in the number of trades together with a fall in the average ticket (USDT per
+    trade). Herding by retail traders into a stock is followed by negative returns over the next days and weeks
+    as attention fades (Barber and Odean 2008; Barber, Huang, Odean and Schwarz 2022), and crypto retail traders
+    chase price moves (Kogan, Makarov, Niessner and Schoar 2024). So a day's move made on a small-ticket frenzy
+    is price pressure from uninformed traders, and it unwinds. The frenzied buyers, or panic sellers, pay;
+    whoever takes the other side after the burst earns.
+  why_it_persists: >-
+    Attention and extrapolation are stable traits of retail traders, who are a large share of perp flow. The
+    bursts come with high volatility, exactly when liquidity providers' risk limits bind, so the pressure is
+    not fully absorbed at the time.
+  signal: >-
+    On each 4h close, over the last 6 bars (24h): n = the sum of trades; ticket = the sum of quote_volume / n.
+    n_ratio = n / the median of the same 6-bar sum over the previous 180 bars; t_ratio = ticket / the median of
+    the 6-bar ticket over the previous 180 bars. move = (close - close 6 bars earlier) / ATR(14). Short when
+    move >= move_k and n_ratio >= n_x and t_ratio <= t_x; long when move <= -move_k and n_ratio >= n_x and
+    t_ratio <= t_x. Fill at the next open. Exits ignore the trigger: a symmetric bracket, stop and target both
+    bracket_k x ATR from the signal close, plus a time exit after hold_bars bars. Defaults move_k 1.0, n_x 1.5,
+    t_x 0.85, bracket_k 3.0, hold_bars 12. Grid: n_x [1.5, 2.0], hold_bars [6, 12, 18].
+  trades_per_coin_per_year: 15
+  likely_failure: >-
+    Average ticket size is a crude retail proxy: algorithms slice large orders into small fills, and changes in
+    tick size or quote size shift it. Crypto retail chases moves, and chasing can carry a move further for days
+    before any reversal, so the fade may come too early. Fades of large moves have not paid in this lab, so the
+    composition of who traded has to carry the whole effect.
+  columns: [close, high, low, trades, quote_volume]
+  timeframe: 4h

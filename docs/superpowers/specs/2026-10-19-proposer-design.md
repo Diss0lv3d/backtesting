@@ -989,3 +989,51 @@ The record shows the right piles and the digest is written.
 ## Amendments, 2026-11-01
 
 Amended during the build (controller rulings R26, R29, R42–R47); see the build ledger.
+
+## Human ideas (2026-11-01)
+
+Added after the build at the user's request, approved in conversation: the human steers the
+proposer from the Ideas page and from `lab idea`, with structured cards and buttons, not free text.
+
+- **Origin `human`.** An idea's origin is `seed`, `proposer` or `human`; proposals keep `seed` and
+  `proposer`. A human idea is an open idea like any other: the model refines it (its first
+  refinement is a root, with no `PARENT`) or ports it. The `duplicate` status stays the model's
+  own, so a human idea, like a seeded one, is never filed as one.
+- **Its card is checked in code** by the rules a model's new idea meets: the contract's card
+  checks (`contract.parse_card`, the ones `parse` gives a new idea's card), a one-line title no idea
+  in the record has, whatever the case, and a timeframe from `proposer.timeframes`. Its columns must be
+  bar columns a plugin may read: the static context's bar table, but `slippage`
+  (`context.PLUGIN_COLUMNS`). Every error comes back at once, as a list of strings. The page's
+  form is built from the `IdeaCard` fields.
+- **The seed comes first.** `seed()` adds nothing to a record that holds any idea, so a human idea
+  is refused until the record holds a seeded one. The refusal says to run `lab propose --trials 0`.
+- **Exclude.** The human closes an open, exhausted or dead idea for good, with a reason: status
+  `excluded` and `excluded_reason`, as candidate E is seeded. Never a passed, failed, duplicate or
+  excluded one. The model reads the reason on the idea's closed entry, which is one line, so the
+  reason must be one line too, as a human card's title must.
+- **Try next.** `ideas.next_up` holds when the human asked for an idea to be tried next. One idea
+  holds it at most, and setting it clears it from any other. Only an open idea some proposal could
+  work on now takes it: a refinement at its own timeframe, or a port under the port rules
+  (`assemble.answerable`, built from the same per-kind refusals `check_idea_rules` raises, so the
+  two can't disagree). A flag no proposal could answer would be asked for every round, each attempt
+  refused, until five drops in a row stop the session as `stuck`. For the same reason the loop
+  clears a flag that no proposal could answer any more (a port whose copy hit `name_taken` still
+  made its idea, with no judge) instead of asking for it. While the
+  flagged idea is open, the round's instruction ends with one fixed sentence, "The human asks that
+  this round's proposal work on idea #<id>.", and nothing else: never the flag's time, never the
+  human's words. It is a request, and the idea rules don't change. The flag clears when a proposal
+  that refines or ports the idea answers it, with a filed verdict (whatever its pile) or the
+  judge's refusal (exit 2), and when the idea's status leaves open. A judge that reached no result
+  (exit 1 after its retries, exit 0 with no verdict file, a kill by a second signal, or a kill on
+  its last transient attempt, an infrastructure outcome by R48) leaves it, and
+  so does a proposal dropped before its judge.
+- **What the model must not see.** A human card and an exclusion reason reach the model as
+  written. Code can't check prose for real-data results, so the page and the CLI warn wherever the
+  human writes one: describe the mechanism and the rule only, with no Sharpe ratios, returns,
+  backtest figures or dates of runs (anti-goal 2).
+- **The record.** `record.db` gains the nullable column `ideas.next_up`. `create_all` never alters
+  an existing table, so `Record` adds any missing column with `ALTER TABLE` when it opens a record,
+  as the judge store does, and a record made before this change keeps its rows.
+- **Writes.** The page and `lab idea` write only `record.db`, never `perp_lab/`, `config/` or
+  `strategies/`, so a running session's harness pin holds. The session reads the record each
+  round, so a new idea, an exclusion or a flag reaches the model at its next round.

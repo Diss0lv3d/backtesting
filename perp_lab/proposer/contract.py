@@ -247,6 +247,16 @@ def _check_object(cls, obj, path, timeframes, errors):
     return None if bad else cls(**kwargs)
 
 
+def parse_card(obj: dict) -> IdeaCard:
+    """An idea card alone, by the checks `parse` gives a new idea's card: the human's own cards meet the model's
+    rules (human.py)."""
+    errors: list[str] = []
+    card = _check_object(IdeaCard, obj, "", (), errors)
+    if errors or card is None:
+        raise ContractError(errors)
+    return card
+
+
 def parse(obj: dict, timeframes) -> Proposal:
     timeframes = tuple(timeframes)
     errors: list[str] = []
