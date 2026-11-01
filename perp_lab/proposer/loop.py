@@ -385,6 +385,7 @@ class _Session:
         self.infra = self.stuck = 0
         self.tokens = [0, 0]
         self.handled: list[int] = []
+        self.referees: list[dict] = []          # this session's referee reviews (each a research row's), in order
 
     # -- start and end
     def run(self, days: float | None, trials: int | None) -> str:
@@ -455,7 +456,8 @@ class _Session:
             best = _best(self.record, i["id"])
             if best in PROGRESS and piles.RANK[best] > piles.RANK.get(self.best0.get(i["id"]), -1):
                 progress.append(f"#{i['id']} {i['title']}: {best}")
-        self.digest.finish(counts, progress, f"{reason}: {detail}" if detail else reason, *self.tokens)
+        stop = f"{reason}: {detail}" if detail else reason
+        self.digest.finish(counts, progress, stop, *self.tokens, self.referees)
 
     # -- before each round: stops, then the day's quotas
     def _gate(self) -> None:
@@ -1033,6 +1035,8 @@ class _Session:
                                     tokens_out=r.tokens[1], outcome=outcome, referee=r.referee)
         stop, summary = (len(r.note.stop), r.note.summary) if r.note is not None else (0, None)
         referee = r.referee
+        if referee is not None:
+            self.referees.append(referee)
         if r.referee_why:
             referee = {**referee, "error": f"{referee['error']}: {r.referee_why}"}
         self.digest.research(r.added, stop, outcome, summary, detail, r.held, referee=referee)

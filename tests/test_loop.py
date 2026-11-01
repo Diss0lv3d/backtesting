@@ -2038,6 +2038,22 @@ def test_a_fence_breach_fails_the_referee_closed_once_and_the_session_goes_on(la
     assert f"research: +0 ideas; stop list 1 item; referee error: {error}" in digest(lab)
 
 
+def test_the_sessions_end_counts_its_referee_verdicts_and_failures(lab):
+    """M5: a week of rejections or fence breaches shows in one place, the digest's finish block."""
+    lab.fake.notes = [note("Basis squeeze", "Carry unwind"), note("Funding fade")]
+    lab.fake.reports = [report(v("Basis squeeze"), v("Carry unwind", "reject", "R")),
+                        FenceBreach("off-list fetch: evil.example: its tool_result is not an error")]
+    assert run(lab, refereed(lab, research_every=1), trials=3) == "trials"
+    assert order(lab) == "PRVPRVP"
+    end = digest(lab).split("## End")[1].splitlines()
+    assert "- Referee: 2 rounds, 2 cards: 1 accepted, 0 revised, 1 rejected; failed: fence 1" in end
+
+
+def test_a_session_with_no_referee_review_says_so_at_its_end(lab):
+    assert run(lab, trials=1) == "trials"
+    assert "- Referee: none" in digest(lab).split("## End")[1].splitlines()
+
+
 def test_a_model_config_error_in_the_referee_stops_the_session_and_adds_nothing(lab):
     nothing_answerable(lab)
     lab.fake.notes = [note("Basis squeeze")]

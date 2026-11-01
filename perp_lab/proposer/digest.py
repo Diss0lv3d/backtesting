@@ -15,6 +15,8 @@ from typing import Callable, Iterable
 # Progress first, then the rest; anything else after these, by name.
 ORDER = ("passed", "promoted", "close call", "signal before costs", "no signal", "broken", "unknown", "duplicate",
          "dropped")
+# A failed referee's kinds, as its error starts (loop._referee): these first, then any other (a stop's), by name.
+REFEREE_FAILURES = ("model_call", "fence", "invalid")
 
 
 def _utc(t: datetime) -> datetime:
@@ -28,6 +30,32 @@ def _when(t: datetime) -> str:
 def _one_line(x) -> str:
     """The model writes idea titles: a newline in one must not start a markdown line of its own."""
     return " ".join(str(x).split()) if x is not None else "—"
+
+
+def _plural(n: int, what: str) -> str:
+    return f"{n} {what}" + ("" if n == 1 else "s")
+
+
+def _referees(reviews: list) -> str:
+    """The session's referee reviews (each a research row's referee JSON) in one line: the rounds it reviewed, their
+    cards by verdict, and the reviews that failed by kind (the error's code, before any detail)."""
+    reviews = [r for r in reviews if isinstance(r, dict)]
+    if not reviews:
+        return "- Referee: none"
+    n = dict.fromkeys(("accept", "revise", "reject"), 0)
+    failed: dict[str, int] = {}
+    for r in reviews:
+        if r.get("error") is not None:
+            kind = _one_line(str(r["error"]).split(":", 1)[0]) or "?"
+            failed[kind] = failed.get(kind, 0) + 1
+        for v in r.get("verdicts") if isinstance(r.get("verdicts"), list) else ():
+            if isinstance(v, dict) and v.get("decision") in n:
+                n[v["decision"]] += 1
+    rank = {k: i for i, k in enumerate(REFEREE_FAILURES)}
+    kinds = sorted(failed.items(), key=lambda kv: (rank.get(kv[0], len(rank)), kv[0]))
+    return (f"- Referee: {_plural(len(reviews), 'round')}, {_plural(sum(n.values()), 'card')}: {n['accept']} "
+            f"accepted, {n['revise']} revised, {n['reject']} rejected; failed: "
+            + (", ".join(f"{k} {c}" for k, c in kinds) or "none"))
 
 
 class Digest:
@@ -97,7 +125,9 @@ class Digest:
         self._write(f"- {_utc(self.now()):%H:%M} · paused: {_one_line(reason)}; until {_when(until)}")
 
     def finish(self, counts_by_pile: dict[str, int], new_progress_ideas: Iterable[str], stop_reason: str,
-               tokens_in: int, tokens_out: int) -> None:
+               tokens_in: int, tokens_out: int, referees: list | None = None) -> None:
+        """The session's end. `referees`, the session's referee reviews in order (each its research row's referee
+        JSON), are summed on one line, so a week of rejections or fence breaches shows in one place."""
         rank = {p: k for k, p in enumerate(ORDER)}
         counts = sorted(counts_by_pile.items(), key=lambda kv: (rank.get(kv[0], len(ORDER)), kv[0]))
         ideas = [f"  - {_one_line(i)}" for i in new_progress_ideas]
@@ -106,4 +136,5 @@ class Digest:
                     f"- Stop reason: {_one_line(stop_reason)}",
                     "- Proposals by pile: " + (", ".join(f"{p} {n}" for p, n in counts) or "none"),
                     "- New ideas in the progress piles:" + ("" if ideas else " none"), *ideas,
+                    *([_referees(referees)] if referees is not None else []),
                     f"- Tokens: {tokens_in:,} in, {tokens_out:,} out")

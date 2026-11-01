@@ -145,3 +145,38 @@ def test_a_referee_that_failed_says_why_and_the_round_keeps_its_stop_list_and_su
     assert d.path.read_text().splitlines() == [
         "- 10:05 · research: +0 ideas; stop list 2 items; referee error: model_call: claude exited 1; stderr: x",
         "  Carry is next."]
+
+
+# M5: the finish block sums the session's referee reviews, so a week of rejections or breaches shows in one place
+def _end_lines(d) -> list[str]:
+    text = d.path.read_text()
+    return text[text.index("## End"):].splitlines()
+
+
+def test_the_finish_block_counts_the_sessions_referee_verdicts_and_failures_by_kind(tmp_path):
+    d = _digest(tmp_path)
+    reviews = [{"web": True, "verdicts": [_verdict("A", "accept"), _verdict("B", "reject"),
+                                          _verdict("C", "reject")]},
+               {"web": True, "error": "fence: off-list fetch: evil.example: its tool_result is not an error"},
+               {"web": True, "error": "invalid: verdicts: 1 for 2 cards"},
+               {"web": True, "verdicts": [_verdict("D", "revise")]},
+               {"web": True, "error": "fence: a stream line after the result"},
+               {"web": True, "error": "signal"},
+               {"web": True, "error": "model_call"}]
+    d.finish({}, [], "signal", 10, 1, reviews)
+    assert "- Referee: 7 rounds, 4 cards: 1 accepted, 1 revised, 2 rejected; failed: model_call 1, fence 2, " \
+           "invalid 1, signal 1" in _end_lines(d)
+
+
+def test_a_finish_block_whose_reviews_all_passed_says_none_failed(tmp_path):
+    d = _digest(tmp_path)
+    d.finish({}, [], "trials", 10, 1, [{"web": False, "verdicts": [_verdict("A", "accept")]}])
+    assert "- Referee: 1 round, 1 card: 1 accepted, 0 revised, 0 rejected; failed: none" in _end_lines(d)
+
+
+def test_a_session_with_no_review_says_so(tmp_path):
+    d = _digest(tmp_path)
+    d.finish({}, [], "trials", 10, 1, [])
+    assert "- Referee: none" in _end_lines(d)
+    d.finish({}, [], "trials", 10, 1)                    # a caller with no reviews to give: no line
+    assert sum(ln.startswith("- Referee") for ln in d.path.read_text().splitlines()) == 1
