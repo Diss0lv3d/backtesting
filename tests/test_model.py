@@ -380,6 +380,10 @@ ARXIV = "https://export.arxiv.org/abs/1707.06221"
 GECKO = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?days=120"
 DENIED = ("Permission for this tool use was denied. It requires approval, and this session has no approval "
           "surface — nobody can answer a permission prompt here — so it was denied automatically.")
+# the other denial path's text (probe of 2026-11-02, a preapproved host under CLAUDE_CODE_EVAL_CONFINED): the texts
+# differ, so only is_error and permission_denials decide (R-RF4)
+DENIED_RULE = ("Permission to use WebFetch has been denied. IMPORTANT: You *may* attempt to accomplish this action "
+               "using other tools that might naturally be used to accomplish this goal.")
 NO_CONTENT = object()
 
 
@@ -389,12 +393,31 @@ def _fetch(tid: str, url) -> str:
     return json.dumps({**m, "message": {**m["message"], "content": [item]}})
 
 
-def _fetched(tid: str, content=f"Paper {ARXIV}: no round-number effect survives costs.") -> str:
+def _fetched(tid: str, content=f"Paper {ARXIV}: no round-number effect survives costs.", **flags) -> str:
     m = {k: v for k, v in _msg(USER).items() if k not in ("tool_use_result", "tool_result_meta")}
-    item = {"tool_use_id": tid, "type": "tool_result"}
+    item = {"tool_use_id": tid, "type": "tool_result", **flags}
     if content is not NO_CONTENT:
         item["content"] = content
     return json.dumps({**m, "message": {**m["message"], "content": [item]}})
+
+
+def _denied(tid: str, text: str = DENIED) -> list[str]:
+    """The CLI's refusal as the stream shows it: a permission_denied notice, then an error tool_result."""
+    notice = {"type": "system", "subtype": "permission_denied", "tool_name": "WebFetch", "tool_use_id": tid,
+              "decision_reason_type": "asyncAgent", "message": text}
+    return [json.dumps(notice), _fetched(tid, text, is_error=True)]
+
+
+def _said(*blocks) -> str:
+    """An assistant message with these content blocks."""
+    m = _msg(ASSISTANT)
+    return json.dumps({**m, "message": {**m["message"], "content": list(blocks)}})
+
+
+def _told(content) -> str:
+    """A user message with this content."""
+    m = {k: v for k, v in _msg(USER).items() if k not in ("tool_use_result", "tool_result_meta")}
+    return json.dumps({**m, "message": {**m["message"], "content": content}})
 
 
 def _result(*denied: tuple[str, str], tool: str = "WebFetch") -> str:
@@ -500,37 +523,61 @@ def test_a_tool_less_call_refuses_an_init_with_webfetch(fake, pc, transcript):
     assert _gone(fake.seen["pid"])
 
 
-@pytest.mark.parametrize("denial", [DENIED, DENIED + " Ask the user.", [{"type": "text", "text": DENIED}]],
-                         ids=["text", "longer-text", "one-text-block"])
-def test_a_denied_off_list_fetch_is_recorded_and_harmless(fake, pc, transcript, denial):
+@pytest.mark.parametrize("text", [DENIED, DENIED_RULE, [{"type": "text", "text": DENIED}], ""],
+                         ids=["no-approval-surface", "permission-rule", "one-text-block", "no-text"])
+def test_a_denied_off_list_fetch_is_recorded_and_harmless(fake, pc, transcript, text):
+    """R-RF4: denied means an error tool_result and a permission_denials entry, whatever the text says."""
     fake.scenario([*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a"), _fetch("toolu_b", GECKO),
-                         _fetched("toolu_b", denial)), _result(("toolu_b", GECKO))])
+                         *_denied("toolu_b", text)), _result(("toolu_b", GECKO))])
     reply = model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
     assert reply.proposal == {"ok": True}
     assert reply.fetches == [ARXIV, GECKO] and reply.denied == [GECKO]
 
 
-def test_a_denied_off_list_fetch_whose_tool_result_never_shows_is_harmless(fake, pc, transcript):
-    fake.scenario([*_web(_fetch("toolu_b", GECKO)), _result(("toolu_b", GECKO))])
+def test_an_on_list_fetch_that_errs_is_harmless(fake, pc, transcript):
+    fake.scenario([*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a", "HTTP 503", is_error=True)), _result()])
     reply = model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
-    assert reply.fetches == [GECKO] and reply.denied == [GECKO]
+    assert reply.fetches == [ARXIV] and reply.denied == []
 
 
-@pytest.mark.parametrize("content", [
-    "Bitcoin closed at 67,000 on 2026-08-01.",
-    "",
-    NO_CONTENT,
-    "Note: " + DENIED,
-    " " + DENIED,
-    [{"type": "text", "text": DENIED}, {"type": "text", "text": "Bitcoin closed at 67,000."}],
-    [{"type": "text", "text": "Bitcoin closed at 67,000."}],
-    [{"type": "image", "source": {"type": "base64", "data": "AAAA"}}],
-    {"text": DENIED},
-], ids=["page", "empty", "no-content", "denial-not-first", "leading-space", "denial-then-page", "text-block",
-        "image-block", "an-object"])
-def test_an_off_list_fetch_that_ran_kills_the_call_at_once(fake, pc, transcript, content):
-    head = [OK[UI], INIT_WEB, _fetch("toolu_b", GECKO), _fetched("toolu_b", content)]
-    # listed as denied in the result too: the tool_result is what the model reads, so it alone decides
+def test_an_off_list_fetch_listed_as_denied_whose_tool_result_never_shows_is_a_breach(fake, pc, transcript):
+    fake.scenario([*_web(_fetch("toolu_b", GECKO)), _result(("toolu_b", GECKO)), 30])
+    start = time.monotonic()
+    with pytest.raises(model.FenceBreach, match="off-list fetch: api.coingecko.com: no error tool_result"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+def test_an_off_list_fetch_with_no_tool_result_at_the_end_of_the_stream_is_a_breach(fake, pc, transcript):
+    fake.scenario([OK[UI], INIT_WEB, _fetch("toolu_b", GECKO)])  # no result: the stream just ends
+    with pytest.raises(model.FenceBreach, match="off-list fetch: api.coingecko.com: no error tool_result"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+
+
+def test_a_stream_that_ends_after_a_denial_is_an_ordinary_call_error(fake, pc, transcript):
+    fake.scenario([OK[UI], INIT_WEB, _fetch("toolu_b", GECKO), *_denied("toolu_b")])
+    with pytest.raises(model.ModelCallError, match="without a result"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+
+
+@pytest.mark.parametrize("content,flags", [
+    ("Bitcoin closed at 67,000 on 2026-08-01.", {}),
+    ("", {}),
+    (NO_CONTENT, {}),
+    (DENIED, {}),
+    (DENIED_RULE, {}),
+    ([{"type": "text", "text": DENIED}], {}),
+    ([{"type": "image", "source": {"type": "base64", "data": "AAAA"}}], {}),
+    (DENIED, {"is_error": False}),
+    (DENIED, {"is_error": "true"}),
+    (DENIED, {"is_error": 1}),
+    (DENIED, {"is_error": None}),
+], ids=["page", "empty", "no-content", "denial-text-alone", "rule-text-alone", "denial-block-alone", "image-block",
+        "is-error-false", "is-error-a-string", "is-error-one", "is-error-null"])
+def test_an_off_list_fetch_that_ran_kills_the_call_at_once(fake, pc, transcript, content, flags):
+    head = [OK[UI], INIT_WEB, _fetch("toolu_b", GECKO), _fetched("toolu_b", content, **flags)]
+    # listed as denied in the result too: the tool_result is what the model reads, so it is checked as it comes
     fake.scenario([*head, 30, *OK[ASSISTANT:RESULT], _result(("toolu_b", GECKO))])
     start = time.monotonic()
     with pytest.raises(model.FenceBreach, match="off-list fetch: api.coingecko.com"):
@@ -548,7 +595,7 @@ def test_an_off_list_fetch_that_ran_kills_the_call_at_once(fake, pc, transcript,
 ], ids=["none-denied", "another-denied", "other-tool", "no-key", "an-object", "bare-ids"])
 def test_an_off_list_fetch_the_result_does_not_list_as_denied_kills_the_call(fake, pc, transcript, result):
     fake.scenario([*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a"), _fetch("toolu_b", GECKO),
-                         _fetched("toolu_b", DENIED)), result, 30])
+                         *_denied("toolu_b")), result, 30])
     start = time.monotonic()
     with pytest.raises(model.FenceBreach, match="off-list fetch: api.coingecko.com"):
         model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
@@ -570,6 +617,54 @@ def test_an_unreadable_fetch_url_that_was_not_denied_kills_the_call(fake, pc, tr
     fake.scenario([*_web(_fetch("toolu_b", url), _fetched("toolu_b", "a page")), _result()])
     with pytest.raises(model.FenceBreach, match="off-list fetch"):
         model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+
+
+SRV_FETCH = {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_fetch", "input": {"url": GECKO}}
+
+
+@pytest.mark.parametrize("lines", [
+    [_fetched("toolu_x", "Bitcoin closed at 67,000.")],
+    [_fetched("toolu_x", DENIED, is_error=True)],
+    [_fetched("toolu_b", DENIED, is_error=True), _fetch("toolu_b", GECKO)],
+    [_told("Bitcoin closed at 67,000.")],
+    [_told([{"type": "text", "text": "Bitcoin closed at 67,000."}])],
+    [_told(None)],
+    [_told(["a string block"])],
+    [_said(SRV_FETCH)],
+    [_said({"type": "web_fetch_tool_result", "tool_use_id": "srvtoolu_1", "content": {"url": GECKO}})],
+    [_said({"type": "image", "source": {"type": "base64", "data": "AAAA"}})],
+    [_said("a string block")],
+    [_said({"type": "tool_use", "id": "toolu_c", "name": "WebSearch", "input": {"query": "bitcoin price"}})],
+    [_said({"type": "tool_use", "id": "toolu_c", "name": "Bash", "input": {"command": "curl coingecko.com"}})],
+    [_said({"type": "tool_use", "name": "WebFetch", "input": {"url": ARXIV}})],
+    [_fetch("toolu_a", ARXIV), _fetched("toolu_a"), _fetch("toolu_a", GECKO)],
+    [_fetch("toolu_a", ARXIV), _fetched("toolu_a"), _fetched("toolu_a", "Bitcoin closed at 67,000.")],
+    [json.dumps({**_msg(ASSISTANT), "message": {**_msg(ASSISTANT)["message"], "content": "Bitcoin at 67,000."}})],
+    [json.dumps({"type": "assistant"})],
+], ids=["result-for-an-unrecorded-id", "error-for-an-unrecorded-id", "result-before-its-tool-use",
+        "user-string-content", "user-text-block", "user-no-content", "user-string-block", "server-tool-use",
+        "web-fetch-tool-result", "assistant-image", "assistant-string-block", "websearch", "bash", "tool-use-no-id",
+        "tool-use-id-reused", "a-second-result", "assistant-string-content", "assistant-no-message"])
+def test_a_web_stream_shape_the_fence_cannot_vouch_for_is_a_breach(fake, pc, transcript, lines):
+    """R-RF4: fail closed on any shape that could carry fetched content past the audit."""
+    fake.scenario([OK[UI], INIT_WEB, *lines, 30, *OK[ASSISTANT:]])
+    start = time.monotonic()
+    with pytest.raises(model.FenceBreach):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+def test_text_and_thinking_pass_in_a_web_call(fake, pc, transcript):
+    blocks = [{"type": "thinking", "thinking": "Check arXiv first.", "signature": "c2ln"},
+              {"type": "redacted_thinking", "data": "cmVkYWN0ZWQ="}, {"type": "text", "text": "Fetching the paper."}]
+    fake.scenario([*_web(_said(*blocks), _fetch("toolu_a", ARXIV), _fetched("toolu_a")), _result()])
+    assert model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS).fetches == [ARXIV]
+
+
+def test_the_shape_checks_are_for_web_calls_only(fake, pc, transcript):
+    fake.scenario([OK[UI], OK[INIT], _told("a note"), _said(SRV_FETCH), _fetched("toolu_x"), *OK[ASSISTANT:]])
+    assert model.call(pc, "s", "u", SCHEMA, transcript).proposal == {"ok": True}
 
 
 def test_a_webfetch_in_a_tool_less_call_is_a_config_error_at_once(fake, pc, transcript):

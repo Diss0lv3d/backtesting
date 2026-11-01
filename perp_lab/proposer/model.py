@@ -23,10 +23,11 @@ the CLI otherwise fetches with no rule (about 90 documentation sites; probe of 2
 `--permission-prompts none` it denies the rest. That variable is undocumented, so the layer can't be relied on:
 the code fence is the guarantee. Init must list exactly `StructuredOutput` and `WebFetch` with `permissionMode`
 "default", every WebFetch the model issues is recorded, and one off the allowlist is harmless only if the CLI
-denied it: its tool_result, which the model reads next, must be the CLI's denial, and the result's
-`permission_denials` must list it. Anything else is a FenceBreach: the call is killed before its result is used,
-and it is not retried; the caller fails closed for that call and goes on (R-RF5). An init that fails the check is
-still a ModelConfigError, and so is a WebFetch in a tool-less call: the CLI did not hold `--tools ""`.
+denied it: its tool_result, which the model reads next, must be an error, and the result's `permission_denials`
+must list it; a stream shape the audit can't vouch for fails closed the same way (`_Fence`). Anything else is a
+FenceBreach: the call is killed before its result is used, and it is not retried; the caller fails closed for that
+call and goes on (R-RF5). An init that fails the check is still a ModelConfigError, and so is a WebFetch in a
+tool-less call: the CLI did not hold `--tools ""`.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ from perp_lab.proposer import proc
 TOOLS = ["StructuredOutput"]  # the --json-schema mechanism; --tools "" removes every built-in
 CONFINED = {"CLAUDE_CODE_EVAL_CONFINED": "1"}  # a web call's env: no preapproved hosts (undocumented; R-RF3)
 WEB_TOOLS = ["StructuredOutput", "WebFetch"]  # a call with web domains: in any order, nothing else
-DENIAL = "Permission for this tool use was denied."  # how the CLI's tool_result for a fetch it refused begins
+ASSISTANT_BLOCKS = ("text", "thinking", "redacted_thinking", "tool_use")  # in a web call; any other is a breach
 # An allowed domain: two labels or more, nothing else. re.A, as in NETLOC: with re.I alone, [a-z] also matches
 # four non-ASCII letters (U+0130, U+0131, U+017F, U+212A).
 DOMAIN = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", re.I | re.A)
@@ -254,55 +255,89 @@ def _items(msg: dict, kind: str) -> list[dict]:
     return [c for c in content if isinstance(c, dict) and c.get("type") == kind]
 
 
-def _is_denial(content) -> bool:
-    """The CLI's denial is plain text; one text block holding it is the same. Anything more is not a denial."""
-    if isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict):
-        content = content[0].get("text") if content[0].get("type") == "text" else None
-    return isinstance(content, str) and content.startswith(DENIAL)
-
-
-def _id(v) -> str | None:
-    return v if isinstance(v, str) and v else None
+def _blocks(msg: dict, kind: str) -> list[dict]:
+    """A web call's message content, which must be a list of blocks: any other shape could carry what the audit
+    never sees."""
+    body = msg.get("message")
+    content = body.get("content") if isinstance(body, dict) else None
+    if not isinstance(content, list) or not all(isinstance(c, dict) for c in content):
+        raise FenceBreach(f"an {kind} message whose content is not a list of blocks")
+    return content
 
 
 class _Fence:
-    """One call's fetch audit: what the model fetched, and proof that each fetch off the allowlist was denied."""
+    """One call's fetch audit (R-RF4). In a tool-less call a WebFetch means the CLI did not hold its flags. In a
+    web call every assistant block must be text, thinking or a tool_use of StructuredOutput or WebFetch, and every
+    user block a tool_result answering, once, a tool_use already issued. A fetch off the allowlist is harmless only
+    if the CLI refused it: its tool_result is an error (checked as it arrives, since the model reads it next) and
+    the result lists it in permission_denials. The texts of the CLI's denials differ by path, so none is read."""
 
     def __init__(self, domains: tuple[str, ...]):
         self.domains = domains
-        self.fetches: list[tuple[str | None, str]] = []  # (tool_use id, URL)
-        self.off: dict[str | None, str] = {}  # tool_use id -> the host, for each fetch off the allowlist
+        self.uses: dict[str, str] = {}  # tool_use id -> tool name, for every tool_use the model issued
+        self.answered: set[str] = set()  # the tool_use ids a tool_result has answered
+        self.fetches: list[tuple[str, str]] = []  # (tool_use id, URL), in order
+        self.off: dict[str, str] = {}  # tool_use id -> the host, for each fetch off the allowlist
+        self.refused: set[str] = set()  # off-list fetches whose tool_result was an error
         self.denials: set[str] = set()  # the tool_use ids of the WebFetches the results list as denied
 
     def see(self, kind: str, msg: dict) -> None:
-        if kind == "assistant":
-            for item in _items(msg, "tool_use"):
-                if item.get("name") == "WebFetch":
-                    if not self.domains:
-                        raise ModelConfigError('a WebFetch in a tool-less call: --tools "" did not hold')
-                    self._fetch(item)
+        if not self.domains:
+            if kind == "assistant" and any(i.get("name") == "WebFetch" for i in _items(msg, "tool_use")):
+                raise ModelConfigError('a WebFetch in a tool-less call: --tools "" did not hold')
+        elif kind == "assistant":
+            for block in _blocks(msg, "assistant"):
+                if block.get("type") not in ASSISTANT_BLOCKS:
+                    raise FenceBreach(f"an assistant block of type {block.get('type')!r}")
+                if block.get("type") == "tool_use":
+                    self._use(block)
         elif kind == "user":
-            for item in _items(msg, "tool_result"):
-                tid = _id(item.get("tool_use_id"))
-                if tid in self.off and not _is_denial(item.get("content")):
-                    raise FenceBreach(f"off-list fetch: {self.off[tid]}: its tool_result is not the denial")
+            for block in _blocks(msg, "user"):
+                self._answer(block)
         elif kind == "result":
             denials = msg.get("permission_denials")
             for d in denials if isinstance(denials, list) else ():
-                if isinstance(d, dict) and d.get("tool_name") == "WebFetch" and _id(d.get("tool_use_id")):
-                    self.denials.add(d["tool_use_id"])
+                tid = d.get("tool_use_id") if isinstance(d, dict) and d.get("tool_name") == "WebFetch" else None
+                if isinstance(tid, str):
+                    self.denials.add(tid)
+            self.end()
             for tid, host in self.off.items():
                 if tid not in self.denials:
                     raise FenceBreach(f"off-list fetch: {host}: not in the result's permission_denials")
 
-    def _fetch(self, item: dict) -> None:
-        tid, inp = _id(item.get("id")), item.get("input")
-        url = inp.get("url") if isinstance(inp, dict) else None
-        if not isinstance(url, str):
-            url = json.dumps(url)
-        self.fetches.append((tid, url))
-        if not on_allowlist(url, self.domains):
-            self.off.setdefault(tid, _host(url) or repr(url)[:STDERR_TAIL])
+    def end(self) -> None:
+        """At a result and at the end of the stream: each off-list fetch's refusal was seen."""
+        for tid, host in self.off.items():
+            if tid not in self.refused:
+                raise FenceBreach(f"off-list fetch: {host}: no error tool_result")
+
+    def _use(self, block: dict) -> None:
+        tid, name = block.get("id"), block.get("name")
+        if not (isinstance(tid, str) and tid) or tid in self.uses:
+            raise FenceBreach(f"a tool_use whose id is missing or reused: {tid!r}")
+        if name not in WEB_TOOLS:
+            raise FenceBreach(f"a tool_use of {name!r}")
+        self.uses[tid] = name
+        if name == "WebFetch":
+            inp = block.get("input")
+            url = inp.get("url") if isinstance(inp, dict) else None
+            if not isinstance(url, str):
+                url = json.dumps(url)
+            self.fetches.append((tid, url))
+            if not on_allowlist(url, self.domains):
+                self.off[tid] = _host(url) or repr(url)[:STDERR_TAIL]
+
+    def _answer(self, block: dict) -> None:
+        tid = block.get("tool_use_id")
+        if block.get("type") != "tool_result":
+            raise FenceBreach(f"a user block of type {block.get('type')!r}")
+        if not isinstance(tid, str) or tid not in self.uses or tid in self.answered:
+            raise FenceBreach(f"a tool_result for no tool_use, or answered before: {tid!r}")
+        self.answered.add(tid)
+        if tid in self.off:
+            if block.get("is_error") is not True:
+                raise FenceBreach(f"off-list fetch: {self.off[tid]}: its tool_result is not an error")
+            self.refused.add(tid)
 
     def urls(self) -> list[str]:
         return [u for _, u in self.fetches]
@@ -345,6 +380,7 @@ def _read(pc, lines, log, fence: _Fence) -> tuple[bool, dict | None]:
             fence.see(kind, msg)
             if kind == "result":
                 result = msg
+    fence.end()
     return init, result
 
 
