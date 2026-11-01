@@ -8,7 +8,7 @@ goes back to the model as a fix-up, at most `fixups_per_proposal` per proposal, 
 The model sees only its own refused proposal and the check errors: never the judge's output, never the CLI's
 error text (R35), never a time.
 
-Every `research_every` proposer trials, or when no open idea is answerable, a research round runs before the next
+Every `research_every` proposer trials, or when no idea is answerable, a research round runs before the next
 proposal (research-round spec): one call of the same kind, on the record and a fixed instruction, whose new idea
 cards enter the record (unless untried research ideas are at their cap) and whose stop list goes into every later
 proposal's prompt. A failed round is recorded and skipped; only a stop (model_config, a signal, the deadline)
