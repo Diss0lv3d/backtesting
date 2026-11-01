@@ -202,7 +202,8 @@ STOP_HEADING = "Directions the research step recommends avoiding:"
 
 
 def stop_section(stop: list[str]) -> str:
-    """The latest valid research round's stop list, for every later proposal; "" when it has none."""
+    """The stop list in force (the latest valid research round's), for every later proposal and research round;
+    "" when it has none."""
     if not stop:
         return ""
     # one line each, whatever the row holds: an item must not start a markdown line of its own
@@ -223,14 +224,23 @@ filter added to a closed idea's entry; an idea whose edge would come from its ex
 A stop with no target earns on trends whatever the entry, so an exit alone can make an entry look like an edge. \
 Say in each card how its exits stay neutral, so that its result measures its entry.
 
-A card must not cite numbers from the record: mechanism, literature and rule only.
+A card must not cite numbers from the record: mechanism, literature and rule only."""
 
+# Only when a stop list is in force: the prompt shows it (stop_section) between the record and this instruction.
+REVISE_STOP = """\
+The stop list above is the one in force. Revise it: keep what still holds, drop what the record has since \
+answered, and add what it now shows."""
+
+RESEARCH_RETURN = """\
 Return at most {max_ideas} idea cards (none, when the record points nowhere new), a stop list of at most {stop} \
 one-line directions the builder should stop trying (each later round sees it, in place of the last one), and a \
 summary for the human. This round's reply contract is the one below, not the one under "Your reply":"""
 
 
-def research_instruction(pc) -> str:
-    """A research round's instruction: fixed text and the research contract, from the config alone."""
-    return (RESEARCH_INSTRUCTION.format(max_ideas=pc.research_max_ideas, stop=contract.STOP_MAX_ITEMS) + "\n\n"
-            + contract.describe_research(pc.timeframes, pc.research_max_ideas))
+def research_instruction(pc, *, revising: bool = False) -> str:
+    """A research round's instruction: fixed text and the research contract, from the config alone. `revising`,
+    when a stop list is in force, asks the round to revise it."""
+    ret = RESEARCH_RETURN.format(max_ideas=pc.research_max_ideas, stop=contract.STOP_MAX_ITEMS)
+    parts = [RESEARCH_INSTRUCTION, REVISE_STOP if revising else None, ret,
+             contract.describe_research(pc.timeframes, pc.research_max_ideas)]
+    return "\n\n".join(x for x in parts if x)

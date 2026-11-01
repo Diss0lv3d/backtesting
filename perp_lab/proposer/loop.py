@@ -9,10 +9,10 @@ The model sees only its own refused proposal and the check errors: never the jud
 error text (R35), never a time.
 
 Every `research_every` proposer trials, or when no idea is answerable, a research round runs before the next
-proposal (research-round spec): one call of the same kind, on the record and a fixed instruction, whose new idea
-cards enter the record (unless untried research ideas are at their cap) and whose stop list goes into every later
-proposal's prompt. A failed round is recorded and skipped; only a stop (model_config, a signal, the deadline)
-ends the session.
+proposal (research-round spec): one call of the same kind, on the record, the stop list in force and a fixed
+instruction, whose new idea cards enter the record (unless untried research ideas are at their cap) and whose stop
+list goes into every later prompt in place of the last one. A failed round is recorded and skipped; only a stop
+(model_config, a signal, the deadline) ends the session.
 
 Everything that touches the world is a `Deps` callable, so the loop runs in tests with fakes and a fake clock.
 
@@ -835,9 +835,12 @@ class _Session:
     def _research_note(self, r: _Research) -> tuple[str, str | None]:
         """(the outcome, a detail for the digest): calls and checks until a note is valid and written (ok, or
         capped), or it is refused after the fix-ups (invalid, with its last attempt's first error, as a dropped
-        proposal's line has). The prompt is the record and the research instruction: nothing else."""
-        base = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes) + "\n"
-                + prompt.research_instruction(self.pc) + "\n")
+        proposal's line has). The prompt is the record, the stop list in force (as a proposal sees it) and the
+        research instruction, which asks the round to revise that list: nothing else."""
+        stop = self._stop_list()
+        parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
+                 prompt.stop_section(stop), prompt.research_instruction(self.pc, revising=bool(stop)))
+        base = "\n".join(x for x in parts if x) + "\n"
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
             reply = self._call(None, user, self.research_schema, r.transcript)

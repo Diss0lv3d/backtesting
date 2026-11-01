@@ -261,6 +261,20 @@ def test_the_research_instruction_says_what_the_round_is_for_and_ends_with_its_c
     assert not DATE.search(text)
 
 
+REVISE = "keep what still holds, drop what the record has since answered, and add what it now shows"
+
+
+def test_a_research_round_with_a_stop_list_in_force_is_asked_to_revise_it(cfg):
+    pc = settings.load(cfg)
+    first, later = prompt.research_instruction(pc), prompt.research_instruction(pc, revising=True)
+    words = " ".join(later.split())
+    assert "The stop list above is the one in force" in words and REVISE in words
+    assert later.endswith(contract.describe_research(pc.timeframes, pc.research_max_ideas))
+    # a first round has no list to revise: its instruction says nothing of one, and is the later one less that
+    assert "in force" not in first and REVISE not in " ".join(first.split())
+    assert later.replace(prompt.REVISE_STOP + "\n\n", "", 1) == first
+
+
 def test_the_research_instruction_follows_the_configured_limit(cfg):
     pc = settings.load(cfg)
     text = prompt.research_instruction(replace(pc, research_max_ideas=2))

@@ -1358,6 +1358,19 @@ def test_an_ok_round_adds_its_ideas_and_the_next_proposal_carries_its_stop_list(
     assert lines[k + 1:k + 3] == ["  The fades died on costs.", "  Carry is next."]
 
 
+def test_a_round_sees_the_stop_list_in_force_and_is_asked_to_revise_it(lab):
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    for outcome, stop in (("ok", ["Old direction"]), ("capped", ["Exit-only changes"]), ("invalid", ["Refused"])):
+        lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome=outcome,
+                             reply={"ideas": [], "stop": stop, "summary": "SUMMARY"})
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=1), trials=1) == "trials"
+    assert order(lab) == "RP"
+    # the record, the list in force (the latest valid round's) and the instruction to revise it, in that order
+    assert research_calls(lab)[0].user == (record + "\n" + f"{STOP_HEADING}\n- Exit-only changes\n" + "\n"
+                                           + prompt.research_instruction(lab.pc, revising=True) + "\n")
+
+
 def test_a_later_valid_round_replaces_the_stop_list_and_a_failed_one_keeps_it(lab):
     lab.fake.notes = [note(stop=["Stop A"]), *[{"bad": 1}] * 4, note(stop=["Stop B"])]
     assert run(lab, replace(lab.pc, research_every=1), trials=4) == "trials"
