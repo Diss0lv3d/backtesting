@@ -389,8 +389,9 @@ class Record:
             row = c.execute(q).mappings().first()
         return None if row is None else dict(row)
 
-    def last_research(self) -> dict | None:
-        return self._latest_research()
+    def last_research(self, *, skip: tuple[str, ...] = ()) -> dict | None:
+        """The latest round, except those whose outcome is in `skip`."""
+        return self._latest_research(research.c.outcome.not_in(skip)) if skip else self._latest_research()
 
     def last_ok_research(self) -> dict | None:
         """The latest round with a valid stop list: ok, or capped (its ideas were held back, its stop list kept)."""

@@ -378,3 +378,11 @@ def test_a_research_row_is_written_first_and_updated_at_its_rounds_end(rec):
     assert (r["id"], r["outcome"], r["added"], r["reply"], r["trials_used"]) == (rid, "ok", [3], {"stop": []}, 5)
     with pytest.raises(KeyError):
         rec.update_research(rid + 1, outcome="ok")
+
+
+def test_last_research_can_skip_outcomes(rec):
+    ran = _research(rec, "invalid")
+    cut = _research(rec, "error: signal")
+    assert rec.last_research()["id"] == cut
+    assert rec.last_research(skip=("error: signal", "error: days"))["id"] == ran
+    assert rec.last_research(skip=("invalid", "error: signal")) is None
