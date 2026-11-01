@@ -1133,3 +1133,18 @@ def test_the_loop_never_clears_another_ideas_flag(lab):
     assert run(lab, trials=2) == "trials"
     assert [(p["kind"], p["state"]) for p in props(lab)[1:]] == [("refinement", "judged"), ("port", "judged")]
     assert lab.rec.next_up()["id"] == flagged
+
+
+def test_a_flag_no_proposal_could_answer_any_more_is_cleared_not_asked_for(lab):
+    """It can happen after the flag was set: a port whose copy hit name_taken still made its idea, with no judge,
+    so the human trial at 5m has no proposer timeframe left to be ported to."""
+    lce = lab.rec.add_idea("LCE", card("LCE"), "seed", "5m")
+    lab.rec.add_proposal(idea_id=lce, plugin="lce_atr", timeframe="5m", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("signal before costs"), "lineage_id": "family:lce_atr"})
+    for tf in ("15m", "1h"):
+        lab.rec.add_idea(f"LCE, {tf}", card(f"LCE, {tf}"), "proposer", tf, port_of=lce)
+    lab.rec.flag_next(lce)                                   # a port to 4h could still answer it
+    lab.rec.add_idea("LCE, 4h", card("LCE, 4h"), "proposer", "4h", port_of=lce)
+    assert run(lab, trials=1) == "trials"
+    assert ASK.format(lce) not in lab.fake.calls[0].user
+    assert lab.rec.next_up() is None and idea(lab, "LCE")["status"] == "open"

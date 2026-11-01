@@ -1015,7 +1015,9 @@ proposer from the Ideas page and from `lab idea`, with structured cards and butt
   work on now takes it: a refinement at its own timeframe, or a port under the port rules
   (`assemble.answerable`, built from the same per-kind refusals `check_idea_rules` raises, so the
   two can't disagree). A flag no proposal could answer would be asked for every round, each attempt
-  refused, until five drops in a row stop the session as `stuck`. While the
+  refused, until five drops in a row stop the session as `stuck`. For the same reason the loop
+  clears a flag that no proposal could answer any more (a port whose copy hit `name_taken` still
+  made its idea, with no judge) instead of asking for it. While the
   flagged idea is open, the round's instruction ends with one fixed sentence, "The human asks that
   this round's proposal work on idea #<id>.", and nothing else: never the flag's time, never the
   human's words. It is a request, and the idea rules don't change. The flag clears when a proposal

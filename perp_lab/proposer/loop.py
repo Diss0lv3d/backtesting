@@ -469,7 +469,7 @@ class _Session:
     def _propose(self, t: _Prop) -> bool:
         """Calls and checks until the proposal passes preflight (True), or it is dropped (False)."""
         base = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes) + "\n"
-                + prompt.instruction(self.record.next_up()) + "\n")
+                + prompt.instruction(self._next_up()) + "\n")
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
             raw = self._call(t.seq, user).proposal
@@ -484,6 +484,16 @@ class _Session:
         if self.stuck >= STUCK_MAX:
             raise _Stop("stuck")
         return False
+
+    def _next_up(self) -> dict | None:
+        """The idea the human flagged, while some proposal could work on it. A flag none could answer any more (a
+        port that hit name_taken still made its idea, with no judge) is cleared: asked for, every attempt would be
+        refused, and five drops in a row stop the session."""
+        idea = self.record.next_up()
+        if idea is not None and assemble.answerable(idea, self.record, self.pc) is not None:
+            self.record.clear_next(idea["id"])
+            return None
+        return idea
 
     def _call(self, seq: int, user: str) -> model.Reply:
         transcript = self.record.transcript_path(seq)
