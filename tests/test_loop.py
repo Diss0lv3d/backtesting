@@ -1418,7 +1418,8 @@ def test_a_note_still_refused_after_its_fixups_is_invalid_and_the_session_goes_o
     assert order(lab) == "P" * 5 + "R" * 4 + "P" * 5 + "R" * 4 + "P"
     assert [(r["trials_used"], r["outcome"], r["added"], r["reply"]) for r in rounds(lab)] == [
         (5, "invalid", [], {"bad": 1}), (10, "invalid", [], {"bad": 1})]
-    assert digest(lab).count("research: invalid after fix-ups") == 2
+    # why, for the human: the last attempt's first error, as a dropped proposal's line gives it
+    assert digest(lab).count("research: invalid after fix-ups: bad: unknown field\n") == 2
     assert [i for i in lab.rec.ideas() if i["origin"] == "research"] == []
 
 

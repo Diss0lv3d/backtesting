@@ -815,9 +815,8 @@ class _Session:
         rid = self.record.add_research(session_id=self.sid, at=self.deps.now(),
                                        trials_used=self.record.trials_used(), outcome="error: interrupted")
         r = _Research(id=rid, transcript=self.record.state_dir / "transcripts" / f"research-{rid}.jsonl")
-        detail = None
         try:
-            outcome = self._research_note(r)
+            outcome, detail = self._research_note(r)
         except _CallFailed as e:
             # the CLI's text goes to the digest only (R35): a failure only research meets (a timeout on its bigger
             # reply) must not hide behind its code, round after round
@@ -830,9 +829,10 @@ class _Session:
             raise
         self._research_end(r, outcome, detail)
 
-    def _research_note(self, r: _Research) -> str:
-        """Calls and checks until a note is valid and written (ok, or capped), or it is refused after the fix-ups
-        (invalid). The prompt is the record and the research instruction: nothing else."""
+    def _research_note(self, r: _Research) -> tuple[str, str | None]:
+        """(the outcome, a detail for the digest): calls and checks until a note is valid and written (ok, or
+        capped), or it is refused after the fix-ups (invalid, with its last attempt's first error, as a dropped
+        proposal's line has). The prompt is the record and the research instruction: nothing else."""
         base = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes) + "\n"
                 + prompt.research_instruction(self.pc) + "\n")
         user = base
@@ -845,16 +845,16 @@ class _Session:
             if not errors:
                 if note.ideas and self.record.untried_research_ideas() >= self.pc.research_open_cap:
                     r.note = note
-                    return "capped"
+                    return "capped", None
                 try:
                     r.added = self.record.add_ideas([research.row(i) for i in note.ideas])
                 except ValueError as e:         # a title added since the check (the human's form, meanwhile)
                     errors = [str(e)]
                 else:
                     r.note = note
-                    return "ok"
+                    return "ok", None
             user = prompt.fixup(base, reply.proposal, errors, what="research note")
-        return "invalid"
+        return "invalid", _short(errors[0])
 
     def _check_note(self, raw: dict) -> tuple[contract.ResearchNote | None, list[str]]:
         """(the note, []) once it passes the contract and every idea passes the human-card rules; else the errors

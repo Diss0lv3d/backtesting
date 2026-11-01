@@ -61,7 +61,8 @@ class Digest:
     def research(self, added_ids: list[int], stop_count: int, outcome: str, summary: str | None,
                  detail: str | None = None, held: int = 0) -> None:
         """One line per research round, and the note's summary indented under it (research-round spec). `detail`,
-        the CLI's error text for a failed call, goes on the line; `held`, the ideas a capped round held back."""
+        the CLI's error text for a failed call or a refused note's first error, goes on the line; `held`, the ideas
+        a capped round held back."""
         if outcome in ("ok", "capped"):
             if outcome == "capped":
                 ideas = f"{held} {'idea' if held == 1 else 'ideas'} not added (cap)"
