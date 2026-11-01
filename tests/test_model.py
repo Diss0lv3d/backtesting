@@ -219,6 +219,11 @@ def test_the_overage_status_is_not_the_limit(fake, pc, transcript):
     assert model.call(pc, "s", "u", SCHEMA, transcript).proposal == {"ok": True}
 
 
+def test_an_allowed_warning_still_serves_the_call(fake, pc, transcript):
+    fake.scenario([*OK[:RATE], _rate(status="allowed_warning", resetsAt=1793539200), OK[RESULT]])
+    assert model.call(pc, "s", "u", SCHEMA, transcript).proposal == {"ok": True}
+
+
 @pytest.mark.parametrize("lines,exit", [
     (["not json", *OK], 0),
     ([OK[UI], OK[INIT], "not json", 30, *OK[ASSISTANT:]], 0),

@@ -10,7 +10,9 @@ the transcript as is.
 
 The stream's shape is the real CLI's (2.1.316; tests/fixtures/claude_stream_ok.jsonl, ruling R26): system
 messages such as `ui_invalidate` may come before init, and a rate limit is read from
-`rate_limit_event.rate_limit_info` (`status`, `resetsAt` in epoch seconds), never from `overageStatus`.
+`rate_limit_event.rate_limit_info` (`status`, `resetsAt` in epoch seconds), never from `overageStatus`. Only a
+status other than `allowed` and `allowed_warning` is a limit (R29): the warning is a near-limit notice on a call
+that is still served.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from perp_lab.proposer import proc
 
 TOOLS = ["StructuredOutput"]  # the --json-schema mechanism; --tools "" removes every built-in
 EMPTY_IN_INIT = ("mcp_servers", "skills", "slash_commands")  # checked where present; plugins/agents aren't (R26)
+SERVED = ("allowed", "allowed_warning")  # rate_limit_info statuses that are not a usage limit (R29)
 BACKOFF_S = (30, 60, 120, 240)  # between the 5 tries
 VERSION_TIMEOUT_S = 60
 PROBE_SYSTEM = "Answer as JSON."
@@ -198,7 +201,7 @@ def _read(pc, lines, log) -> tuple[bool, dict | None]:
         elif kind == "rate_limit_event":
             info = msg.get("rate_limit_info")
             info = info if isinstance(info, dict) else {}
-            if info.get("status") != "allowed":
+            if info.get("status") not in SERVED:
                 raise UsageLimit(_resets_at(info.get("resetsAt")))
         elif kind == "result":
             result = msg
