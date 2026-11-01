@@ -443,6 +443,87 @@ def ideas(config: Optional[str] = CfgOpt):
                 typer.echo(f"  {line}")
 
 
+idea_app = typer.Typer(add_completion=False, no_args_is_help=True,
+                       help="Your own changes to the proposer's record: add, exclude or flag an idea.")
+app.add_typer(idea_app, name="idea")
+
+
+def _refuse(msg: str):
+    typer.secho(f"refused: {msg}", fg="red", err=True)
+    raise typer.Exit(2)
+
+
+def _proposer_record(config: Optional[str], missing: str):
+    """The record and the proposer's settings; a refusal, never a new record, when record.db doesn't exist."""
+    from perp_lab.proposer import context, settings
+    from perp_lab.proposer.record import Record
+    try:
+        pc = settings.load(load_config(config))
+    except settings.StartRefused as e:
+        _refuse(str(e))
+    state = context.ROOT / pc.state_dir
+    if not (state / "record.db").exists():
+        _refuse(missing)
+    return Record(state), pc
+
+
+@idea_app.command("add")
+def idea_add(file: Path = typer.Argument(..., help="a YAML file: the card's fields (title, mechanism, "
+                                         "why_it_persists, signal, trades_per_coin_per_year, likely_failure, "
+                                         "columns) and timeframe"),
+             config: Optional[str] = CfgOpt):
+    """Add your own idea card. It is checked as the model's new ideas are, and waits for the seed."""
+    import yaml
+
+    from perp_lab.proposer import human
+    typer.secho(human.WARNING, fg="yellow")
+    rec, pc = _proposer_record(config, human.NOT_SEEDED)
+    try:
+        entry = yaml.safe_load(file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        _refuse(f"can't read {file}: {e}")
+    try:
+        i = human.add(rec, pc, entry)
+    except human.Refused as e:
+        _refuse("\n  ".join(["the idea was not added:", *e.errors]))
+    typer.echo(f"added idea #{i}")
+
+
+@idea_app.command("exclude")
+def idea_exclude(idea: int = typer.Argument(..., help="the idea's id"),
+                 reason: str = typer.Option(..., help="why: the model reads it on the idea's closed line"),
+                 config: Optional[str] = CfgOpt):
+    """Close an open, exhausted or dead idea for good."""
+    from perp_lab.proposer import human
+    typer.secho(human.WARNING, fg="yellow")
+    rec, _ = _proposer_record(config, "no proposer record yet")
+    try:
+        rec.exclude_idea(idea, reason)
+    except ValueError as e:
+        _refuse(str(e))
+    typer.echo(f"excluded idea #{idea}")
+
+
+@idea_app.command("next")
+def idea_next(idea: Optional[int] = typer.Argument(None, help="the idea's id"),
+              clear: bool = typer.Option(False, "--clear", help="clear the request instead"),
+              config: Optional[str] = CfgOpt):
+    """Ask that the builder's next proposal work on an open idea (one idea at a time), or --clear the request.
+    It is a request: the idea rules don't change. It stands until a proposal on the idea is judged or it closes."""
+    if clear == (idea is not None):
+        _refuse("name an idea's id, or pass --clear")
+    rec, _ = _proposer_record(config, "no proposer record yet")
+    if clear:
+        rec.clear_next()
+        typer.echo("next up cleared")
+        return
+    try:
+        rec.flag_next(idea)
+    except ValueError as e:
+        _refuse(str(e))
+    typer.echo(f"idea #{idea} is next up")
+
+
 @app.command()
 def dashboard(port: int = 8501,
               address: str = typer.Option("localhost", help="bind address; 0.0.0.0 exposes the dashboard "

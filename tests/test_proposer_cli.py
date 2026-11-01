@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
 from perp_lab.cli import app
-from perp_lab.proposer import context, piles
+from perp_lab.proposer import context, human, piles
 from perp_lab.proposer.record import Record
 from tests.conftest import REPO
 
@@ -122,3 +123,95 @@ def test_last_session_id(tmp_path):
     assert rec.last_session_id() is None
     rec.start_session(model="m")
     assert rec.last_session_id() == 1
+
+
+# -- lab idea: the human's own changes to the record
+ENTRY = {"title": "Basis squeeze", "mechanism": "m", "why_it_persists": "w", "signal": "s",
+         "trades_per_coin_per_year": 12, "likely_failure": "f", "columns": ["close"], "timeframe": "1h"}
+
+
+def _seeded(tmp_path):
+    rec = Record(tmp_path / "proposer")
+    rec.add_idea("Seeded", {}, "seed", "4h")
+    return rec
+
+
+def _file(tmp_path, text=None, **over):
+    p = tmp_path / "idea.yaml"
+    p.write_text(text if text is not None else yaml.safe_dump({**ENTRY, **over}))
+    return str(p)
+
+
+def _idea_cmd(tmp_path, *args):
+    return runner.invoke(app, ["idea", *args, "--config", _config(tmp_path)])
+
+
+def test_idea_add_adds_a_human_idea_and_warns(tmp_path):
+    rec = _seeded(tmp_path)
+    r = _idea_cmd(tmp_path, "add", _file(tmp_path))
+    assert r.exit_code == 0, r.output
+    (x,) = [i for i in rec.ideas() if i["origin"] == "human"]
+    assert (x["title"], x["timeframe"], x["status"]) == ("Basis squeeze", "1h", "open")
+    assert f"added idea #{x['id']}" in r.output and human.WARNING in r.output
+
+
+def test_idea_add_prints_every_error_and_exits_2(tmp_path):
+    rec = _seeded(tmp_path)
+    r = _idea_cmd(tmp_path, "add", _file(tmp_path, title="seeded", timeframe="5m", mechanism=""))
+    assert r.exit_code == 2
+    for e in ("mechanism: must be a non-empty string", "title: an idea titled 'seeded' is already in the record",
+              "timeframe: must be one of ['15m', '1h', '4h'], got '5m'"):
+        assert e in r.output, e
+    assert len(rec.ideas()) == 1
+
+
+@pytest.mark.parametrize("text", ["title: [unclosed", "- a list\n"])
+def test_idea_add_refuses_a_file_that_is_no_card(tmp_path, text):
+    rec = _seeded(tmp_path)
+    r = _idea_cmd(tmp_path, "add", _file(tmp_path, text))
+    assert r.exit_code == 2 and "refused" in r.output and len(rec.ideas()) == 1
+
+
+def test_idea_add_waits_for_the_seed(tmp_path):
+    r = _idea_cmd(tmp_path, "add", _file(tmp_path))
+    assert r.exit_code == 2 and human.NOT_SEEDED in r.output.replace("\n", " ")
+    assert not (tmp_path / "proposer").exists()                       # a missing record is not created
+    Record(tmp_path / "proposer").add_idea("Mine", {}, "proposer", "1h")
+    r = _idea_cmd(tmp_path, "add", _file(tmp_path))
+    assert r.exit_code == 2 and human.NOT_SEEDED in r.output.replace("\n", " ")
+
+
+def test_idea_exclude_closes_an_idea_with_its_reason(tmp_path):
+    rec = _seeded(tmp_path)
+    passed = rec.add_idea("Passed", {}, "seed", "4h", status="passed")
+    r = _idea_cmd(tmp_path, "exclude", "1", "--reason", "it is B's sign flip")
+    assert r.exit_code == 0, r.output
+    assert "excluded idea #1" in r.output and human.WARNING in r.output
+    assert (rec.idea(1)["status"], rec.idea(1)["excluded_reason"]) == ("excluded", "it is B's sign flip")
+    for args in ([str(passed), "--reason", "why"], ["1", "--reason", "again"], ["9", "--reason", "why"],
+                 [str(passed), "--reason", " "], [str(passed)]):
+        r = _idea_cmd(tmp_path, "exclude", *args)
+        assert r.exit_code == 2, (args, r.output)
+    assert rec.idea(passed)["status"] == "passed"
+
+
+def test_idea_next_flags_one_open_idea_and_clear_unflags_it(tmp_path):
+    rec = _seeded(tmp_path)
+    other = rec.add_idea("Other", {}, "seed", "1h")
+    dead = rec.add_idea("Dead", {}, "seed", "1h", status="dead")
+    r = _idea_cmd(tmp_path, "next", "1")
+    assert r.exit_code == 0 and "idea #1 is next up" in r.output and rec.next_up()["id"] == 1
+    assert _idea_cmd(tmp_path, "next", str(other)).exit_code == 0 and rec.next_up()["id"] == other
+    r = _idea_cmd(tmp_path, "next", str(dead))
+    assert r.exit_code == 2 and "only an open idea" in r.output and rec.next_up()["id"] == other
+    for args in ([], ["1", "--clear"]):                               # an id or --clear, not both or neither
+        assert _idea_cmd(tmp_path, "next", *args).exit_code == 2
+    r = _idea_cmd(tmp_path, "next", "--clear")
+    assert r.exit_code == 0 and "next up cleared" in r.output and rec.next_up() is None
+
+
+def test_idea_exclude_and_next_on_a_missing_record_exit_2(tmp_path):
+    for args in (["exclude", "1", "--reason", "why"], ["next", "1"], ["next", "--clear"]):
+        r = _idea_cmd(tmp_path, *args)
+        assert r.exit_code == 2 and "refused: no proposer record yet" in r.output, (args, r.output)
+    assert not (tmp_path / "proposer").exists()
