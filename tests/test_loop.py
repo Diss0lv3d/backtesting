@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from perp_lab.plugins import blob_hash, parse_meta
-from perp_lab.proposer import loop, piles, proc, settings
+from perp_lab.proposer import loop, piles, proc, prompt, settings
 from perp_lab.proposer.model import ModelCallError, ModelConfigError, Reply, UsageLimit
 from perp_lab.proposer.pin import Pin, PinError
 from perp_lab.proposer.record import Record
@@ -1185,3 +1185,28 @@ def test_a_transient_kill_leaves_the_flag_and_a_real_verdict_clears_it(lab):
     assert seen[1]["id"] == i                       # still flagged when the second refinement was judged
     assert ASK.format(i) in lab.fake.calls[1].user
     assert lab.rec.next_up() is None
+
+
+# -- the research step's stop list in the proposal prompt
+STOP_HEADING = "Directions the research step recommends avoiding:"
+
+
+def test_with_no_research_round_the_proposal_prompt_is_the_record_and_the_instruction(lab):
+    want = prompt.render_record(lab.rec, 0, lab.pc.timeframes) + "\n" + prompt.instruction() + "\n"
+    assert run(lab, trials=1) == "trials"
+    assert lab.fake.calls[0].user == want and STOP_HEADING not in want
+
+
+def test_the_latest_valid_research_rounds_stop_list_and_nothing_else_of_it_reaches_the_proposal_prompt(lab):
+    planted = datetime(2029, 3, 4, 5, 6, 7, tzinfo=UTC)
+    for outcome, stop in (("ok", ["Old direction"]), ("capped", ["Exit-only changes", "Sign flips of dead fades"]),
+                          ("invalid", ["Refused direction"]), ("error: model_call", None)):
+        lab.rec.add_research(session_id=None, at=planted, trials_used=0, added=[], outcome=outcome,
+                             reply=None if stop is None else {"ideas": [], "stop": stop, "summary": "SUMMARY"})
+    record = prompt.render_record(lab.rec, 0, lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=0), trials=1) == "trials"
+    user = lab.fake.calls[0].user
+    section = f"{STOP_HEADING}\n- Exit-only changes\n- Sign flips of dead fades\n"
+    assert user == record + "\n" + section + "\n" + prompt.instruction() + "\n"     # between record and instruction
+    for gone in ("Old direction", "Refused direction", "SUMMARY", "2029", "05:06"):
+        assert gone not in user, gone

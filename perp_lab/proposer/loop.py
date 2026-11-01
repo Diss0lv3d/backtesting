@@ -468,8 +468,10 @@ class _Session:
 
     def _propose(self, t: _Prop) -> bool:
         """Calls and checks until the proposal passes preflight (True), or it is dropped (False)."""
-        base = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes) + "\n"
-                + prompt.instruction(self._next_up()) + "\n")
+        # The record, the research step's stop list (none before a valid round) and the instruction.
+        parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
+                 prompt.stop_section(self._stop_list()), prompt.instruction(self._next_up()))
+        base = "\n".join(x for x in parts if x) + "\n"
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
             raw = self._call(t.seq, user).proposal
@@ -484,6 +486,14 @@ class _Session:
         if self.stuck >= STUCK_MAX:
             raise _Stop("stuck")
         return False
+
+    def _stop_list(self) -> list[str]:
+        """The stop list of the latest research round that returned a valid note (ok or capped): it replaces the
+        one before. Only its lines reach the prompt, never the round's time or summary."""
+        last = self.record.last_ok_research()
+        reply = last.get("reply") if last is not None else None
+        stop = reply.get("stop") if isinstance(reply, dict) else None
+        return [s for s in stop if isinstance(s, str)] if isinstance(stop, list) else []
 
     def _next_up(self) -> dict | None:
         """The idea the human flagged, while some proposal could work on it. A flag none could answer any more (a
