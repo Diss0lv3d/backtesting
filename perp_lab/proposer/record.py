@@ -244,6 +244,10 @@ class Record:
     def idea(self, id: int) -> dict:
         return self._get(ideas, ideas.c.id, id)
 
+    def seeded(self) -> bool:
+        with self.engine.connect() as c:
+            return c.execute(sa.select(ideas.c.id).where(ideas.c.origin == "seed").limit(1)).first() is not None
+
     def set_idea(self, id: int, **f) -> None:
         if "title" in f:
             raise ValueError("an idea's title is fixed")

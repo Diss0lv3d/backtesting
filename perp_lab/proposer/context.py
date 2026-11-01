@@ -104,6 +104,16 @@ lab stores no open-interest history, so a plugin must not depend on them. The ch
 so a plugin that needs them passes preflight and then trades nothing on real bars."""
 
 
+def _plugin_columns(table: str) -> tuple[str, ...]:
+    """The names in the table's first column, but slippage: it is there only to say a plugin can't read it."""
+    cells = [ln.split("|")[1] for ln in table.splitlines() if ln.startswith("| ")][1:]     # [0] is the header
+    return tuple(n for cell in cells for n in (x.strip() for x in cell.split(",")) if n != "slippage")
+
+
+# The columns a human's card may list (human.py, the Ideas page's form): read from the table the model reads.
+PLUGIN_COLUMNS = _plugin_columns(BAR_COLUMNS)
+
+
 def _api() -> str:
     return "\n\n".join([
         "## The plugin API",

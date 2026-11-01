@@ -118,3 +118,12 @@ def test_lessons_open_with_the_label_and_drop_lesson_six_and_section_references(
                  "no target and a time exit. Its OOS Sharpe sat at p68", "on top of a 21k gross loss."):
         assert kept in text, kept
     assert not re.search(r"^6\. ", text, re.M)
+
+
+def test_the_columns_a_plugin_may_read_are_the_bar_tables_but_slippage():
+    assert context.PLUGIN_COLUMNS == (
+        "open_time", "close_time", "open", "high", "low", "close", "volume", "quote_volume", "trades",
+        "taker_buy_volume", "taker_buy_quote_volume", "funding_charge", "funding_last", "funding_interval_h", "oi",
+        "oi_value", "regime", "regime_adx")
+    from perp_lab.proposer.seed import load_seed
+    assert {c for e in load_seed() for c in e["card"]["columns"]} <= set(context.PLUGIN_COLUMNS)
