@@ -36,6 +36,9 @@ class ProposerConfig:
     max_input_tokens_per_day: int
     max_output_tokens_per_day: int
     call_timeout_s: int
+    research_every: int             # proposer trials between research rounds; 0 turns research off
+    research_max_ideas: int
+    research_open_cap: int
 
 
 def _cutoff(v) -> date:
@@ -49,6 +52,13 @@ def _cutoff(v) -> date:
         except ValueError:
             pass
     raise StartRefused(f"proposer.model_training_cutoff is missing or not a date: {v!r}")
+
+
+def _count(raw: dict, key: str, least: int) -> int:
+    v = raw.get(key)
+    if isinstance(v, bool) or not isinstance(v, int) or v < least:
+        raise StartRefused(f"proposer.{key} must be an integer of at least {least}, not {v!r}")
+    return v
 
 
 def load(cfg) -> ProposerConfig:
@@ -76,4 +86,6 @@ def load(cfg) -> ProposerConfig:
         max_input_tokens_per_day=int(raw["max_input_tokens_per_day"]),
         max_output_tokens_per_day=int(raw["max_output_tokens_per_day"]),
         call_timeout_s=int(raw["call_timeout_s"]),
+        research_every=_count(raw, "research_every", 0), research_max_ideas=_count(raw, "research_max_ideas", 1),
+        research_open_cap=_count(raw, "research_open_cap", 1),
     )
