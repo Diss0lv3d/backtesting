@@ -406,3 +406,27 @@ def test_ideas_page_has_no_research_notes_without_a_research_row(populated):
     at = _ideas_at()
     assert not at.exception, [e.message for e in at.exception]
     assert not [e for e in at.expander if e.label == "Research notes"]
+
+
+@pytest.mark.parametrize("reply,added", [({"stop": 5}, []), ({"stop": "abc"}, []), ("x", []), (None, "x"),
+                                         ({"stop": ["a"], "summary": 3}, [None, "y", True])])
+def test_ideas_page_survives_a_malformed_research_row(populated, reply, added):
+    r = _record(populated)
+    r.add_research(trials_used=5, reply=reply, added=added, tokens_in=1, tokens_out=1, outcome="invalid")
+    r.add_research(trials_used=6, reply=reply, added=added, tokens_in=1, tokens_out=1, outcome="ok")
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert [e for e in at.expander if e.label == "Research notes"]
+
+
+def test_research_notes_show_the_stop_list_in_force_not_a_refused_rounds(populated):
+    r = _record(populated)
+    r.add_research(trials_used=5, reply={"stop": ["in force line"], "summary": "good"}, added=[], tokens_in=1,
+                   tokens_out=1, outcome="ok")
+    r.add_research(trials_used=10, reply={"stop": ["refused line"], "summary": "bad"}, added=[], tokens_in=1,
+                   tokens_out=1, outcome="invalid")
+    at = _ideas_at()
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    text = " ".join(m.value for m in notes.markdown)
+    assert "invalid" in text and "in force line" in text and "in force" in text.lower()
+    assert "refused line" not in text and "bad" not in text

@@ -218,25 +218,43 @@ def _idea(cfg, record: Record, pc, idea: dict, props: list[dict], wf: set[tuple[
             _proposal(cfg, p, wf)
 
 
+def _lines(x) -> list[str]:
+    """A list of one-line strings from a stored reply field; anything else (an invalid round keeps the raw reply)
+    reads as empty."""
+    return [str(v) for v in x] if isinstance(x, list) else []
+
+
+def _research_body(record: Record, row: dict) -> None:
+    ok = row.get("outcome") in ("ok", "capped")      # only a valid note's list reaches the builder
+    st.markdown(f"**{row['at']:%Y-%m-%d %H:%M} UTC** · {row['outcome']} · at {row['trials_used']} trials")
+    note = row.get("reply") if ok else (record.last_ok_research() or {}).get("reply")
+    note = note if isinstance(note, dict) else {}
+    if ok and isinstance(note.get("summary"), str) and note["summary"]:
+        st.markdown(f"**Summary:** {note['summary']}")
+    if stop := _lines(note.get("stop")):
+        st.markdown("**Stop list** (the builder is told to stop trying these)" if ok else
+                    "**Stop list in force** (from the latest valid round)")
+        for line in stop:
+            st.markdown(f"- {line}")
+    added = row.get("added") if ok else None
+    if ids := [i for i in added if isinstance(i, int) and not isinstance(i, bool)] if isinstance(added, list) else []:
+        titles = {i["id"]: i["title"] for i in record.ideas()}
+        st.markdown("**Ideas added**")
+        for i in ids:
+            st.markdown(f"- #{i} {titles.get(i, '?')}")
+
+
 def _research_notes(record: Record) -> None:
-    """The latest research round (spec: research-round-design, Where the human sees it); absent before the first."""
+    """The latest research round (spec: research-round-design, Where the human sees it); absent before the first.
+    A refused round keeps the model's raw reply, so nothing in it is trusted to have a shape."""
     row = record.last_research()
     if row is None:
         return
-    reply = row.get("reply") or {}
-    titles = {i["id"]: i["title"] for i in record.ideas()}
     with st.expander("Research notes"):
-        st.markdown(f"**{row['at']:%Y-%m-%d %H:%M} UTC** · {row['outcome']} · at {row['trials_used']} trials")
-        if reply.get("summary"):
-            st.markdown(f"**Summary:** {reply['summary']}")
-        if reply.get("stop"):
-            st.markdown("**Stop list** (the builder is told to stop trying these)")
-            for line in reply["stop"]:
-                st.markdown(f"- {line}")
-        if row.get("added"):
-            st.markdown("**Ideas added**")
-            for i in row["added"]:
-                st.markdown(f"- #{i} {titles.get(i, '?')}")
+        try:
+            _research_body(record, row)
+        except Exception:                                # noqa: BLE001 - a bad note must not take the page down
+            st.caption("Research notes unreadable")
 
 
 def _wf_runs(cfg) -> set[tuple[str, str]]:
