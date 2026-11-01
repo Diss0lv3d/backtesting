@@ -1,0 +1,236 @@
+# The record's starting ideas: the spec's Seed (The record), with the LCE idea of ruling R18.
+#
+# seed.py adds them to an empty record, in this order. An idea's plugins are listed as the human judged them,
+# at the idea's timeframe; their proposals take seq 1, 2, ... in file order. The first plugin of an idea is a
+# new idea's plugin (or the port, for an idea with port_of), and the rest are refinements. Piles, families and
+# statuses are not written here: seed.py takes them from the verdicts, mechanically.
+#
+# A card has exactly contract.IdeaCard's fields. Its text comes from the plugin docstrings; for flow_shock_fade
+# and candidates B-E from docs/research/2026-10-18-strategy-research.md, sections 3 and 5; for LCE from
+# docs/superpowers/specs/2026-10-23-lce-model-design.md. trades_per_coin_per_year: for the six baselines, their
+# OOS trades in the research note's section 1 table over 8 coins and 4 years (2022-07 to 2026-07, the old
+# data); for A-E, the frequency in section 3 (for D, one-week holds, close to continuous; for E, its
+# trigger-bar rate, an upper bound, since section 3 gives no trade count); for LCE, lce_pct's 0.976 trades per
+# coin per weekday (docs/research/2026-10-23-lce/README.md, section 4) over 261 weekdays. A source that argues
+# nothing for a field is quoted as such, not filled in.
+
+ideas:
+  - timeframe: 4h
+    plugins: [donchian_atr, donchian_atr_wide]
+    card: &donchian
+      title: Donchian breakout
+      mechanism: >-
+        Crypto perps trend persistently enough that a close beyond the prior n-bar Donchian range, held with an
+        ATR chandelier trail, earns more than it loses after fees, slippage and funding.
+      why_it_persists: >-
+        Not argued: the plugin is the lab's trend baseline, with no target and no regime filter on purpose.
+      signal: >-
+        Long on a close above the prior n-bar high, short on a close below the prior n-bar low. Initial stop and
+        trail: the best close since entry -/+ atr_mult x ATR(atr_n). No target. Grid: n 20, 40, 80; atr_mult 2,
+        3, 4.
+      trades_per_coin_per_year: 43
+      likely_failure: >-
+        False breakouts: the break doesn't run, and the trail stops the trade out. Random entries with the same
+        trail also earn from trends, so the breakout's timing has to add something the trail doesn't (research
+        note, sections 1 and 3B).
+      columns: [high, low, close]
+
+  - timeframe: 1h
+    port_of: Donchian breakout
+    plugins: [donchian_atr]
+    card:
+      <<: *donchian
+      title: Donchian breakout, 1h
+      trades_per_coin_per_year: 150
+
+  - timeframe: 15m
+    plugins: [bb_vwap_reversion]
+    card: &bb_vwap
+      title: BB–VWAP reversion
+      mechanism: >-
+        When price closes outside a Bollinger band with RSI at an extreme, it reverts toward the rolling VWAP
+        within a bounded number of bars, enough to pay costs.
+      why_it_persists: >-
+        Not argued: the plugin is the lab's range baseline.
+      signal: >-
+        Long when the close is below the lower Bollinger band (bb_n, bb_k), RSI(rsi_n) < rsi_lo and the rolling
+        VWAP(vwap_n) is above the close; short mirrored. Target: the rolling VWAP, a resting limit re-pegged each
+        bar while it is still on the profitable side, and a market exit once price has crossed it. Stop
+        stop_atr x ATR; time stop after max_bars bars. Grid: bb_k 2, 2.5, 3; stop_atr 1.5, 2.5.
+      trades_per_coin_per_year: 264
+      likely_failure: >-
+        A stretched price can keep going: the trigger names no one who is forced to trade, so the reversion may
+        be absent, or too small to pay a 14 bp round trip, which is a third of a median bar's range at 15m and
+        0.15 of one at 1h (research note, sections 1 and 2).
+      columns: [high, low, close, volume]
+
+  - timeframe: 1h
+    port_of: BB–VWAP reversion
+    plugins: [bb_vwap_reversion]
+    card:
+      <<: *bb_vwap
+      title: BB–VWAP reversion, 1h
+      trades_per_coin_per_year: 117
+
+  - timeframe: 1h
+    plugins: [funding_fade]
+    card:
+      title: Funding fade
+      mechanism: >-
+        An extreme funding settlement marks crowded positioning: the settled rate says which side is paying to
+        hold leverage. Fading the crowded side right after it earns the unwind move plus the funding carry.
+      why_it_persists: >-
+        Not argued: the plugin is the lab's perps-specific baseline.
+      signal: >-
+        On each settlement bar, z-score the settled rate against the previous z_k settlements (std floored at
+        1 bp). z > z_thr and rate > 0: short; z < -z_thr and rate < 0: long. Exit after hold_bars bars or at a
+        stop stop_atr x ATR from the close; no target. Grid: z_thr 1.5, 2, 2.5, 3; hold_bars 8, 24, 48.
+      trades_per_coin_per_year: 17
+      likely_failure: >-
+        The crowd stays crowded past the hold. And a rare trigger (it can fire only on a settlement bar) with a
+        12-combination grid lets the six-month training windows pick noise (research note, section 1, lesson
+        5).
+      columns: [funding_charge, high, low, close]
+
+  - timeframe: 1h
+    plugins: [flow_shock_fade]
+    card:
+      title: Flow-shock fade
+      mechanism: >-
+        An hour of extreme one-sided taker flow that moves price marks forced or impatient trading (liquidation
+        and stop cascades). Market makers widen or pull quotes in the burst, so price overshoots and recovers
+        part of the way once the forced flow stops. The forced, price-insensitive seller (or buyer, in a short
+        squeeze) pays; the liquidity provider who takes the other side afterwards earns.
+      why_it_persists: >-
+        Perps are traded with high leverage, and liquidation is mechanical. Liquidity providers have risk limits
+        that bind exactly when the burst arrives. The premium is pay for warehousing risk at the worst moment,
+        not a mispricing that a cleverer trader can remove at no risk.
+      signal: >-
+        flow = (taker buys - taker sells) on the bar / the median bar volume of the previous vol_n bars; mv =
+        (close - open) / ATR at t-1. Long when flow <= -flow_x and mv <= -move_k; short when flow >= flow_x and
+        mv >= move_k; filled at the next open. Stop stop_atr x ATR from the close, no target, exit after
+        hold_bars bars. Grid: flow_x 0.5, 1.0; hold_bars 6, 12, 24.
+      trades_per_coin_per_year: 105
+      likely_failure: >-
+        The flow is informed (news, or a large trader with information), so price continues and the fade loses.
+        Or fast market makers capture the reversion inside the shock hour, or deleveraging lasts hours and runs
+        through the stop. About two thirds of the triggers are longs, so a crash year hits the long side on
+        every coin at once.
+      columns: [open, high, low, close, volume, taker_buy_volume]
+
+  - timeframe: 5m
+    plugins: [lce_pct, lce_atr]
+    card:
+      title: "LCE: EMA cloud at volume-profile levels"
+      mechanism: >-
+        A day-trading system sold online (Tradewriter's LCE, taught on ES futures): during US equity hours,
+        trades that follow a six-branch flowchart of higher- and lower-timeframe EMA clouds at volume-profile
+        levels earn more than random entries with the same exits, net of costs. lce_pct sizes ES's distances as
+        fixed percentages of price, lce_atr as multiples of daily ATR.
+      why_it_persists: >-
+        Not argued by its source. The published evidence is single-week replays told with the outcome known,
+        with no trade count, win rate or drawdown.
+      signal: >-
+        5m bars; entries on signal-bar closes 09:40-15:45 New York, Mon-Fri; flat at the 15:55 close. Clouds:
+        EMA ema_fast against ema_slow of close at 5m, 15m, 30m, 1h and 2h lengths, each bullish, bearish or flat
+        by a slope threshold theta; the higher timeframe reads 30m, 1h and 2h, the lower 5m and 15m. Levels:
+        redrawn at each 18:00 New York session-day start from the last vp_days days' volume profile, anchored
+        where high-volume nodes meet session points of control, about step units apart, zones zone units wide.
+        Six branches: with both timeframes bullish, a dip into the cloud at a zone goes long (bearish mirrored);
+        otherwise a 5m cloud flip after a zone touch, with the higher timeframe's trend or, when it is ranging,
+        against the lower timeframe's. Stop halfway between the base level and the next one beyond it, target
+        the next zone's near edge, stop to breakeven at be_frac of the way, at most max_trades fills and one win
+        per session day. Grid: vp_days 5, 10; theta 0.01, 0.02.
+      trades_per_coin_per_year: 255
+      likely_failure: >-
+        No intraday trend edge before costs on these coins: donchian_atr at 1h had none, and LCE is intraday
+        trend-following gated by volume levels. And the code translates a discretionary ES method: levels
+        redrawn daily from 5m volume instead of drawn by eye, one numeric slope threshold for a "mature" cloud,
+        market entries at the next open, and ES distances mapped to crypto.
+      columns: [open_time, open, high, low, close, volume]
+
+  - timeframe: 4h
+    card:
+      title: Volatility-compression breakout
+      mechanism: >-
+        Volatility clusters and mean-reverts. In a quiet stretch market makers quote tight and range traders
+        fade the edges, with stops just outside the range. A break of the range fires those stops, and the
+        expansion that follows runs one way for a while. The range faders and short-volatility liquidity
+        providers pay: the Bollinger "squeeze".
+      why_it_persists: >-
+        Volatility clustering is one of the most robust stylized facts, and stops cluster at obvious levels.
+      signal: >-
+        A Bollinger width in the bottom 10% of its trailing 180 bars, then a break of the 20-bar range, traded
+        in the break's direction. The claim is that breakouts from compression run further, in units of the ATR
+        at entry, than moves from random times.
+      trades_per_coin_per_year: 27.5
+      likely_failure: >-
+        False breakouts. It is the Donchian mechanism with a filter added: with a trailing exit it must beat a
+        random benchmark already lifted by trend capture, and with a time exit it becomes a claim of
+        directional continuation, where the Donchian runs put breakout direction at about a coin flip.
+      columns: [high, low, close]
+
+  - timeframe: 4h
+    card:
+      title: Weekend-move reversal
+      mechanism: >-
+        From Friday's US close to Sunday evening, the capital tied to traditional markets is offline: CME
+        futures basis traders, and the authorised participants of the US spot ETFs. Weekend flow meets thinner
+        books, so weekend moves carry more temporary price pressure, corrected when that capital returns. The
+        weekend trader who takes liquidity from a thin book pays; whoever provides liquidity across the gap
+        earns.
+      why_it_persists: >-
+        Market hours are institutional facts. A caution, from memory and unverified: CME planned to move its
+        crypto futures to 24/7 trading in early 2026; if that happened, part of the mechanism disappears in the
+        holdout.
+      signal: >-
+        Fade the weekend's move at a fixed weekly time; exits are an ATR stop and a 24-hour time exit. It has to
+        trade almost every weekend: only 2-7% of weekends move more than one 2-day ATR.
+      trades_per_coin_per_year: 52
+      likely_failure: >-
+        Breadth: every coin moves together at weekends, so it is close to one bet a week, which caps the Sharpe
+        near 1 even for a real effect. Weekend news (hacks, regulatory action) is information, and price
+        continues after it. "CME gaps fill" is well-worn folklore, so a real effect would be crowded.
+      columns: [open_time, open, high, low, close]
+
+  - timeframe: 4h
+    card:
+      title: Time-series momentum with a funding filter
+      mechanism: >-
+        Past returns predict future returns over weeks, through underreaction and trend-chasing flows
+        (time-series momentum, also reported in crypto). Skipping a trend trade when that side's funding is
+        high avoids the crowded, carry-paying trend most exposed to a liquidation reversal. Late, leveraged
+        trend chasers pay, through funding and through liquidations.
+      why_it_persists: >-
+        Underreaction and leverage cycles are behavioural and institutional.
+      signal: >-
+        The side is the sign of the past N-day return; skip the trade when that side's funding is high. A time
+        exit with no trail, so a random 50/50 entry is worth about zero. Close to continuous, with one-week
+        holds.
+      trades_per_coin_per_year: 52
+      likely_failure: >-
+        Crypto trends are market-wide, so the coins are about two independent bets, and breakout direction was
+        already measured as no better than random. The filter rarely binds: funding is above 2 bp on only 3-5%
+        of bars, and BNB's settled rate is exactly 0 at 55% of settlements.
+      columns: [close, funding_last]
+
+  - timeframe: 4h
+    excluded_reason: >-
+      A's sign flip; choosing it after A's result would pick the sign from an OOS outcome (research note sections
+      4 and 10)
+    card:
+      title: Taker-flow persistence
+      mechanism: >-
+        Informed traders split their orders, so persistent net taker buying over a day reveals accumulation
+        that isn't fully priced yet. The liquidity providers who sell to them are adversely selected and pay.
+      why_it_persists: >-
+        An informed trader always splits orders, to limit price impact.
+      signal: >-
+        The side is the sign of the 24-hour net taker imbalance; a time exit. The imbalance is beyond 5% either
+        way on 5-14% of 4h bars, about 110-300 bars a coin a year, an upper bound on trades.
+      trades_per_coin_per_year: 200
+      likely_failure: >-
+        Its sign is A's reversed, on the same data: persistent taker buying can just as well be retail chasing
+        that reverts. Perp taker share leans below 0.5 (median 0.49), a level bias to remove first. Market
+        makers see the same flow and price it at once.
+      columns: [taker_buy_volume, volume]

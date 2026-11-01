@@ -223,6 +223,22 @@ class Record:
         with self.engine.connect() as c:
             return [dict(r) for r in c.execute(q).mappings()]
 
+    # -- the seed
+    def add_seed(self, idea_rows: list[dict], proposal_rows: list[dict]) -> bool:
+        """Add the seed's rows in one transaction, and only to a record with no ideas. A seed that fails part way
+        leaves nothing behind, so the next start seeds again instead of running on half a record. Rows carry their
+        own idea ids and seq numbers. False, with nothing added, when the record already has an idea."""
+        now = _now()
+        with self._lock, self.engine.begin() as c:
+            if c.execute(sa.select(sa.func.count()).select_from(ideas)).scalar():
+                return False
+            for row in idea_rows:
+                c.execute(sa.insert(ideas).values(created_at=now, **row))
+            for row in proposal_rows:
+                c.execute(sa.insert(proposals).values(created_at=now, **row))
+            self._seq = max([self._seq, *(row["seq"] for row in proposal_rows)])
+        return True
+
     # -- calls
     def add_call(self, **f) -> None:
         f.setdefault("at", _now())

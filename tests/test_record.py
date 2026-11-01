@@ -167,3 +167,14 @@ def test_add_proposal_uses_reserved_seq(rec):
     assert rec.add_proposal(seq=seq, plugin="p", state="staged") == seq
     assert [p["seq"] for p in rec.proposals()] == [seq]
     assert rec.next_seq() == seq + 2
+
+
+def test_add_seed_is_one_transaction_and_only_into_a_record_with_no_ideas(rec):
+    idea = {"id": 1, "title": "A", "card": {}, "origin": "seed", "timeframe": "1h", "status": "open"}
+    prop = {"seq": 1, "idea_id": 1, "origin": "seed", "plugin": "p", "timeframe": "1h", "state": "judged"}
+    with pytest.raises(Exception):
+        rec.add_seed([idea], [prop, {**prop, "plugin": "q"}])    # the second row's seq is taken: nothing stays
+    assert rec.ideas() == [] and rec.proposals() == []
+    assert rec.add_seed([idea], [prop]) is True
+    assert [i["title"] for i in rec.ideas()] == ["A"] and rec.next_seq() == 2
+    assert rec.add_seed([{**idea, "id": 2, "title": "B"}], []) is False and len(rec.ideas()) == 1
