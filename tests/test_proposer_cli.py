@@ -63,24 +63,37 @@ def _judged(rec, idea, seq, verdict):
 PROMOTED = {"decision": "promote"}
 CLOSE = {"diagnostics": {"gates": {"oos_trades": 50, "min_oos_trades": 10, "net_sharpe": 1.0,
                                    "random_p95": 0.5}}}
+SIGNAL = {"diagnostics": {"gates": {"oos_trades": 50, "min_oos_trades": 10, "net_sharpe": -0.2, "random_p95": 0.5},
+                          "before_costs": {"sharpe": 1.0, "random_p95": 0.5}}}
 
 
 def test_ideas_prints_groups_in_the_spec_order(tmp_path, monkeypatch):
     monkeypatch.chdir(context.ROOT)
     rec = Record(tmp_path / "proposer")
-    closed = _idea(rec, "closed one", "dead")
-    opened = _idea(rec, "open one", "open")
+    _idea(rec, "closed one", "dead")
+    _idea(rec, "open one", "open")
     close = _idea(rec, "close one", "open")
     prom = _idea(rec, "promo one", "open")
-    passed = _idea(rec, "passed one", "passed")
+    _idea(rec, "passed one", "passed")
     _judged(rec, close, 1, CLOSE)
     _judged(rec, prom, 2, PROMOTED)
+    sig = _idea(rec, "signal one", "open")
+    _judged(rec, sig, 3, SIGNAL)
     r = runner.invoke(app, ["ideas", "--config", _config(tmp_path)])
     assert r.exit_code == 0, r.output
-    heads = [ln.split(" (")[0] for ln in r.output.splitlines() if not ln.startswith(" ")]
-    assert heads == ["passed", "promoted", "close call", "open", "closed"]
-    assert f"#{prom} promo one — 1h, open, promoted, judged 1" in r.output
-    assert opened and closed and passed
+    blocks: dict[str, str] = {}
+    for ln in r.output.splitlines():
+        if not ln.startswith(" "):
+            head = ln.split(" (")[0]
+            blocks[head] = ""
+        else:
+            blocks[head] += ln + "\n"
+    assert list(blocks) == ["passed", "promoted", "close call", "signal before costs", "open", "closed"]
+    for head, title in [("passed", "passed one"), ("promoted", "promo one"), ("close call", "close one"),
+                        ("signal before costs", "signal one"), ("open", "open one"), ("closed", "closed one")]:
+        assert title in blocks[head] and blocks[head].count("#") == 1, (head, blocks[head])
+    assert f"#{prom} promo one \u2014 1h, open, promoted, judged 1" in blocks["promoted"]
+    assert f"#{sig} signal one \u2014 1h, open, signal before costs, judged 1" in blocks["signal before costs"]
 
 
 def test_ideas_on_a_missing_record(tmp_path, monkeypatch):
@@ -98,6 +111,8 @@ def test_idea_group_rule():
     assert g({"status": "open"}, []) == "open"
     assert g({"status": "exhausted"}, []) == "closed"
     assert g({"status": "exhausted"}, [{"judge_exit": 0, "verdict": CLOSE}]) == "close call"
+    assert g({"status": "open"}, [{"judge_exit": 0, "verdict": SIGNAL}]) == "signal before costs"
+    assert g({"status": "exhausted"}, [{"judge_exit": 0, "verdict": SIGNAL}]) == "signal before costs"
     dup = {"judge_exit": 0, "verdict": PROMOTED, "duplicate_of": 3}
     assert g({"status": "open"}, [dup]) == "open"
 
