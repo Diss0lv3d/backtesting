@@ -168,6 +168,10 @@ class Record:
         f.setdefault("ended_at", _now())
         self._update(sessions, sessions.c.id, sid, {**f, "stop_reason": stop_reason})
 
+    def last_session_id(self) -> int | None:
+        with self.engine.connect() as c:
+            return c.execute(sa.select(sa.func.max(sessions.c.id))).scalar()
+
     def session(self, sid: int) -> dict:
         return self._get(sessions, sessions.c.id, sid)
 

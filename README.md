@@ -132,6 +132,17 @@ Spec: `docs/superpowers/specs/2026-10-17-plugin-sandbox-design.md`.
 - Needs Linux, Landlock ABI 6 or later, `libseccomp.so.2` and glibc 2.39 or later (older glibc makes `fstat` with a call the seal denies); without them plugin code does not run. No flag bypasses it.
 - Tests that need the real sandbox carry `@pytest.mark.sandbox`; run them alone with `pytest -m sandbox`.
 
+## The proposer (Phase 3b-2)
+
+Spec: `docs/superpowers/specs/2026-10-19-proposer-design.md`.
+
+- `lab propose [--days 7] [--trials N]` runs an unattended session: a model proposes strategy plugins and the harness judges them, until D days, N trials or a stop condition. Run it from the repo root. A refused start (lock held, bad config, dirty pin, missing or logged-out CLI, seed not refreshed, trials cap, holdout budget spent) prints the reason and exits 2. Otherwise it prints the stop reason and the path of the session digest.
+- `lab propose --trials 0` is the dry start check: it passes every start check, including one real probe call to the model, and stops with `trials`.
+- `lab ideas` prints the record by pile: passed, promoted, close call, signal before costs, the other open ideas, then the closed ones. It only reads the record, so it works while a session runs.
+- State lives in `proposer/` (git-ignored): `record.db`, `staging/`, `logs/`, `transcripts/`, `sessions/<id>.md` (the digest, one line per proposal) and `cache/`.
+- What the human does: run the seven `lab verdict-refresh STRATEGY --tf TF` commands that `check_seed` lists (once, to refresh the seed's diagnostics), then `lab propose`, then read the Ideas page and run `lab exam --id N` on a promotion worth the holdout read. The proposer never runs exams.
+- Model calls go through the Claude Code CLI, logged in as you, so they share your Claude Code usage limits. A usage limit makes the session sleep until it resets.
+
 ## Rules the code enforces
 
 | Rule | Where |

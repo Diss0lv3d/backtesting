@@ -97,3 +97,20 @@ def champion(proposals: list[dict]) -> dict | None:
     if pending:
         return max(pending, key=lambda p: p["seq"])
     return max(cands, key=lambda p: (RANK[_pile_of(p)], _net_sharpe(p)))
+
+
+# The Ideas page and `lab ideas` share this rule: progress first, then the rest, the closed ones last.
+GROUPS = ("passed", "promoted", "close call", "signal before costs", "open", "closed")
+_PROGRESS = ("promoted", "close call", "signal before costs")
+
+
+def idea_group(idea: dict, proposals: list[dict]) -> str:
+    status = idea["status"]
+    if status == "passed":
+        return "passed"
+    if status in ("failed", "duplicate", "excluded", "dead"):
+        return "closed"
+    best = best_pile([_pile_of(p) for p in _judged(proposals) if p.get("duplicate_of") is None])
+    if best in _PROGRESS:
+        return best
+    return "open" if status == "open" else "closed"
