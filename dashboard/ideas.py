@@ -5,6 +5,10 @@ card of their own, an exclusion, or the "try next" flag, each checked in code in
 does), and once more on its first load of a record made before the next_up column, when opening the record runs the
 column migration (Record). It never creates the state dir. The grouping is `piles.idea_group`, the rule `lab ideas`
 prints by.
+
+A research round's referee could read academic papers, some maybe published after the model's training cutoff
+(referee-and-human-stops spec, "Anti-goals"): an idea it reviewed carries a "web-reviewed" tag, and a promoted one's
+review packet says its exam is weaker evidence.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from pathlib import Path
 import streamlit as st
 
 from perp_lab import dsr
-from perp_lab.proposer import context, contract, human, piles, settings
+from perp_lab.proposer import context, contract, human, model, piles, settings
 from perp_lab.proposer.record import EXCLUDABLE, Record
 from perp_lab.store import db
 
@@ -28,6 +32,11 @@ _TITLES = {"passed": "Passed", "promoted": "Promoted", "close call": "Close call
 # The digest's own line shape (digest.pause): top level, so a model-written summary indented under a research line
 # can't match.
 _PAUSE = re.compile(r"^- \d\d:\d\d · paused: .*; until (\d{4}-\d\d-\d\d \d\d:\d\d) UTC\s*$")
+WEB_REVIEWED_CAVEAT = ("A web-informed referee reviewed this card: academic papers published after the model's "
+                       "training cutoff may discuss the holdout period, so treat its exam as weaker evidence.")
+_DECIDED = {"accept": "accepted", "revise": "revised", "reject": "rejected"}
+_MD_TEXT = re.compile(r"([\\`*_\[\]()<>#!|~])")     # what markdown would read in a URL shown as text
+_MD_DEST = re.compile(r"([()<>\\])")               # what would end or break a link's destination
 
 
 def state_dir(pc) -> Path:
@@ -100,7 +109,7 @@ def _broken(p: dict) -> bool:
     return p.get("state") == "broken" or (p.get("judge_exit") is not None and piles.pile(p.get("verdict")) == "broken")
 
 
-def _proposal(cfg, p: dict, wf: set[tuple[str, str]]) -> None:
+def _proposal(cfg, p: dict, wf: set[tuple[str, str]], web_reviewed: bool = False) -> None:
     verdict = p.get("verdict")
     pile = piles.pile(verdict) if p.get("judge_exit") is not None else p.get("state", "?")
     dup = f" · duplicate of {p['duplicate_of']}" if p.get("duplicate_of") is not None else ""
@@ -117,11 +126,13 @@ def _proposal(cfg, p: dict, wf: set[tuple[str, str]]) -> None:
     if (plugin, tf) in wf:
         st.button("Walk-forward run detail", key=f"detail_{p['seq']}", on_click=_go_to_detail, args=(plugin, tf))
     if pile == "promoted":
-        _review_packet(cfg, p)
+        _review_packet(cfg, p, web_reviewed)
 
 
-def _review_packet(cfg, p: dict) -> None:
+def _review_packet(cfg, p: dict, web_reviewed: bool = False) -> None:
     st.markdown("**Review packet**")
+    if web_reviewed:
+        st.warning(WEB_REVIEWED_CAVEAT)
     for name, value in review_checks(p.get("verdict")).items():
         st.markdown(f"- {name}: {value}")
     j = db.get_judgement(cfg, p["hash"], p["timeframe"]) if p.get("hash") and p.get("timeframe") else None
@@ -261,14 +272,16 @@ def _controls(record: Record, pc, idea: dict) -> None:
 
 def _idea(cfg, record: Record, pc, idea: dict, props: list[dict], wf: set[tuple[str, str]]) -> None:
     st.markdown(f"#### {idea['title']}")
+    web = bool(idea.get("web_reviewed"))
     st.caption(f"idea {idea['id']} · {idea['origin']} · {idea.get('timeframe') or '?'} · {idea['status']}"
+               + (" · web-reviewed" if web else "")
                + (f" · excluded: {idea['excluded_reason']}" if idea.get("excluded_reason") else ""))
     _controls(record, pc, idea)
     for k, v in (idea.get("card") or {}).items():
         st.markdown(f"**{k}:** {v}")
     for p in props:
         if not _broken(p):
-            _proposal(cfg, p, wf)
+            _proposal(cfg, p, wf, web)
 
 
 def _lines(x) -> list[str]:
@@ -297,8 +310,11 @@ def _research_body(record: Record, pc, row: dict, running: bool) -> None:
         for line in stop:
             st.markdown(f"- {line}")
     added = row.get("added") if ok else None
-    if ids := [i for i in added if isinstance(i, int) and not isinstance(i, bool)] if isinstance(added, list) else []:
-        titles = {i["id"]: i["title"] for i in record.ideas()}
+    ids = [i for i in added if isinstance(i, int) and not isinstance(i, bool)] if isinstance(added, list) else []
+    titles = {i["id"]: i["title"] for i in record.ideas()} if ids else {}
+    if isinstance(row.get("referee"), dict):
+        _referee(row["referee"], ids, titles, pc)
+    if ids:
         # what each builds on, for the human only: in the round's reply, by the title the record keeps it under
         cards = note.get("ideas") if isinstance(note.get("ideas"), list) else []
         builds = {c["title"].strip().casefold(): " ".join(c["builds_on"].split()) for c in cards
@@ -308,6 +324,53 @@ def _research_body(record: Record, pc, row: dict, running: bool) -> None:
             title = titles.get(i, "?")
             on = builds.get(title.casefold())
             st.markdown(f"- #{i} {title}" + (f" · builds on: {on}" if on else ""))
+
+
+def _one(x) -> str:
+    return " ".join(x.split()) if isinstance(x, str) else "?"
+
+
+def _link(url: str, pc) -> str:
+    """A URL the referee named or fetched: a link only when its host is on the referee's allowlist (the fence's rule,
+    model.on_allowlist), plain text otherwise, so the page links no host the referee was not allowed to read."""
+    text = _MD_TEXT.sub(r"\\\1", " ".join(url.split()))
+    if not model.on_allowlist(url, pc.referee_domains):
+        return text
+    dest = _MD_DEST.sub(r"\\\1", url)
+    return f"[{text}]({dest})"
+
+
+def _referee(ref: dict, ids: list[int], titles: dict[int, str], pc) -> None:
+    """The referee's review of the round's cards (referee-and-human-stops spec, "Ideas page"): each card's verdict
+    with its reason and sources, and the idea an accepted or revised card became; or its error, when no card was
+    added (it fails closed). Then the fetches its calls issued and those the CLI denied. The verdicts pair in order
+    with the round's added ids (loop._referee_row); when their counts differ, no verdict names an idea. Like the
+    reply, nothing in the row is trusted to have a shape."""
+    web = "with academic web access" if ref.get("web") is True else "without web access"
+    if ref.get("error") is not None:
+        st.markdown(f"**Referee failed** · {web}: {_one(ref['error'])}. No card from this round was added.")
+    elif isinstance(ref.get("verdicts"), list):
+        verdicts = [v for v in ref["verdicts"] if isinstance(v, dict)]
+        n = {d: sum(v.get("decision") == d for v in verdicts) for d in _DECIDED}
+        st.markdown(f"**Referee** · {len(verdicts)} {'card' if len(verdicts) == 1 else 'cards'}: "
+                    f"{n['accept']} accepted, {n['revise']} revised, {n['reject']} rejected · {web}")
+        kept = sum(v.get("decision") in ("accept", "revise") for v in verdicts)
+        pair = iter(ids) if kept == len(ids) else None
+        for v in verdicts:
+            d = v.get("decision")
+            line = f"- {_one(v.get('title'))}: **{_DECIDED.get(d, '?') if isinstance(d, str) else '?'}**"
+            if pair is not None and d in ("accept", "revise"):
+                i = next(pair)
+                line += f" as #{i}" if d == "accept" else f" into #{i} {titles.get(i, '?')}"
+            if isinstance(v.get("reason"), str):
+                line += f" · {_one(v['reason'])}"
+            if sources := _lines(v.get("sources")):
+                line += " · sources: " + ", ".join(_link(u, pc) for u in sources)
+            st.markdown(line)
+    lists = (("fetches", _lines(ref.get("fetches"))), ("denied by the CLI", _lines(ref.get("denied"))))
+    parts = [f"{what} ({len(urls)}): " + ", ".join(_link(u, pc) for u in urls) for what, urls in lists if urls]
+    if parts:
+        st.caption(" · ".join(parts))
 
 
 def _research_notes(record: Record, pc, running: bool) -> None:

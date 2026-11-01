@@ -499,6 +499,121 @@ def test_research_notes_show_the_stop_list_in_force_not_a_refused_rounds(populat
     assert "refused line" not in text and "bad" not in text
 
 
+# ---------------------------------------------------------------- the referee's verdicts
+
+ARXIV = "https://arxiv.org/abs/1707.06221"
+ARXIV_2 = "https://export.arxiv.org/abs/2501.01234"
+GECKO = "https://api.coingecko.com/api/v3/coins/bitcoin"
+
+
+def _notes(at):
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    return [m.value for m in notes.markdown], [c.value for c in notes.caption]
+
+
+def _refereed(r, referee, titles=("Basis squeeze", "Carry unwind", "Round-number stops"), added=None):
+    reply = {"ideas": [{"title": t, "builds_on": "b"} for t in titles], "stop": [], "summary": "s"}
+    return r.add_research(session_id=r.start_session(model="m"), trials_used=5, reply=reply,
+                          added=[] if added is None else added, tokens_in=1, tokens_out=1, outcome="ok",
+                          referee=referee)
+
+
+def test_research_notes_list_each_cards_verdict_with_its_sources_and_the_idea_it_became(populated):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    j = r.add_idea("Carry unwind, entry only", {"mechanism": "m"}, "research", "4h")
+    for k in (i, j):
+        r.set_idea(k, web_reviewed=True)
+    _refereed(r, {"web": True, "fetches": [ARXIV, GECKO, ARXIV_2], "denied": [GECKO], "verdicts": [
+        {"title": "Basis squeeze", "decision": "accept", "reason": "Consistent with the basis literature.",
+         "sources": [ARXIV]},
+        {"title": "Carry unwind", "decision": "revise", "reason": "Its edge came from the exit.", "sources": []},
+        {"title": "Round-number stops", "decision": "reject", "reason": "Published evidence finds no effect.",
+         "sources": [ARXIV_2]}]}, added=[i, j])
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    lines, captions = _notes(at)
+    assert "**Referee** · 3 cards: 1 accepted, 1 revised, 1 rejected · with academic web access" in lines
+    assert (f"- Basis squeeze: **accepted** as #{i} · Consistent with the basis literature. · sources: "
+            f"[{ARXIV}]({ARXIV})") in lines
+    assert f"- Carry unwind: **revised** into #{j} Carry unwind, entry only · Its edge came from the exit." in lines
+    assert (f"- Round-number stops: **rejected** · Published evidence finds no effect. · sources: "
+            f"[{ARXIV_2}]({ARXIV_2})") in lines
+    # the fetches and denials, compact: a denied host is shown as text, never linked
+    assert (f"fetches (3): [{ARXIV}]({ARXIV}), {GECKO}, [{ARXIV_2}]({ARXIV_2}) · denied by the CLI (1): "
+            f"{GECKO}") in captions
+    assert not any(f"]({GECKO})" in x for x in lines + captions)
+    assert not any("unreadable" in c for c in captions)
+    metas = [c.value for c in at.caption]
+    assert f"idea {i} · research · 4h · open · web-reviewed" in metas
+    assert f"idea {j} · research · 4h · open · web-reviewed" in metas
+
+
+def test_research_notes_say_when_the_referee_failed_and_no_card_was_added(populated):
+    r = _record(populated)
+    _refereed(r, {"web": True, "fetches": [], "denied": [], "error": "fence: off-list fetch: api.coingecko.com"})
+    lines, _ = _notes(_ideas_at())
+    assert ("**Referee failed** · with academic web access: fence: off-list fetch: api.coingecko.com. "
+            "No card from this round was added.") in lines
+    assert "**Ideas added**" not in lines
+
+
+def test_a_tool_less_referee_says_so_and_links_no_source_off_the_allowlist(populated):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    _refereed(r, {"web": False, "fetches": [], "denied": [], "verdicts": [
+        {"title": "Basis squeeze", "decision": "accept", "reason": "r", "sources": [GECKO, "javascript:alert(1)"]}]},
+        titles=("Basis squeeze",), added=[i])
+    at = _ideas_at()
+    lines, captions = _notes(at)
+    assert "**Referee** · 1 card: 1 accepted, 0 revised, 0 rejected · without web access" in lines
+    assert f"- Basis squeeze: **accepted** as #{i} · r · sources: {GECKO}, javascript:alert\\(1\\)" in lines
+    assert not [c for c in captions if c.startswith("fetches")]
+    assert f"idea {i} · research · 4h · open" in [c.value for c in at.caption]      # no web, no tag
+
+
+@pytest.mark.parametrize("referee", [
+    "x", 5, [], {}, {"verdicts": "x", "fetches": "abc", "denied": 3},
+    {"web": "yes", "verdicts": [None, 7, {"decision": 3}, {"title": ["t"], "decision": "accept", "reason": None,
+                                                          "sources": "https://arxiv.org/abs/1"}]},
+    {"error": 7, "fetches": [None, 3]}, {"verdicts": [{"title": "a", "decision": "accept"}], "error": None},
+])
+def test_research_notes_survive_a_malformed_referee_value(populated, referee):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    _refereed(r, referee, added=[i])
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    lines, captions = _notes(at)
+    assert not any("unreadable" in c for c in captions)            # guarded, not caught
+    assert f"- #{i} Basis squeeze · builds on: b" in lines           # the rest of the notes is there
+
+
+def test_verdicts_that_do_not_pair_with_the_ideas_added_name_no_idea(populated):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    _refereed(r, {"web": True, "fetches": [], "denied": [], "verdicts": [
+        {"title": "Basis squeeze", "decision": "accept", "reason": "r", "sources": []},
+        {"title": "Carry unwind", "decision": "accept", "reason": "q", "sources": []}]}, added=[i])
+    lines, _ = _notes(_ideas_at())
+    assert "- Basis squeeze: **accepted** · r" in lines and "- Carry unwind: **accepted** · q" in lines
+
+
+def test_a_promoted_web_reviewed_ideas_review_packet_carries_the_caveat(populated):
+    from dashboard.ideas import WEB_REVIEWED_CAVEAT
+    r = _record(populated)
+    assert WEB_REVIEWED_CAVEAT not in [w.value for w in _ideas_at().warning]
+    promoted = next(i["id"] for i in r.ideas() if i["title"] == "promoted one")
+    r.set_idea(promoted, web_reviewed=True)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert WEB_REVIEWED_CAVEAT == ("A web-informed referee reviewed this card: academic papers published after the "
+                                   "model's training cutoff may discuss the holdout period, so treat its exam as "
+                                   "weaker evidence.")
+    assert [w.value for w in at.warning].count(WEB_REVIEWED_CAVEAT) == 1    # the packet's, not every card's
+    assert f"idea {promoted} · proposer · 4h · open · web-reviewed" in [c.value for c in at.caption]
+
+
 # ---------------------------------------------------------------- the human's stop list on the Ideas page
 
 def _stop_buttons(at, label):
