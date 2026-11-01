@@ -325,12 +325,15 @@ revised or not, cites no numbers from the record: mechanism, literature and rule
 Return one verdict per card, in the cards' order, each with its reason. This round's reply contract is the one \
 below, not the one under "Your reply":"""
 
-# The referee's web access is fenced in code (model.py): these sentences only tell it what the fence allows.
+# The referee's web access is fenced in code (model.py): these sentences only tell it what the fence allows. A paper
+# from the holdout period may discuss it, so the referee is asked to leave such papers alone (R-RF7); it can't be
+# checked in code, and the web_reviewed mark stays the safeguard.
 LITERATURE_WEB = """\
 Check it against the literature: use the allowed academic sources to find published evidence for or against it, \
 and to check that the papers it cites exist and say what it claims. You may fetch only from these hosts: {hosts}; \
-any other fetch is refused. Never look for prices, charts or market news. In each verdict's sources, name the URLs \
-you read on those hosts that the verdict relies on, and no other."""
+any other fetch is refused. Never look for prices, charts or market news. Cite only sources published before \
+{before}, and disregard any published on or after that date. In each verdict's sources, name the URLs you read on \
+those hosts that the verdict relies on, and no other."""
 
 LITERATURE_NO_WEB = """\
 Check it against the literature you know: published evidence for or against it, and whether the papers it cites \
@@ -339,8 +342,10 @@ exist and say what it claims. You have no web access in this review, so every ve
 
 def referee_instruction(pc, *, web: bool | None = None) -> str:
     """The referee's instruction: fixed text and the referee contract, from the config alone. `web` (default
-    pc.research_referee_web): whether the referee may fetch from pc.referee_domains, whose hosts it names."""
+    pc.research_referee_web): whether the referee may fetch from pc.referee_domains, whose hosts it names, and
+    then the one date in it, the lab's holdout start, before which its sources must be published."""
     web = pc.research_referee_web if web is None else web
-    literature = LITERATURE_WEB.format(hosts=", ".join(pc.referee_domains)) if web else LITERATURE_NO_WEB
+    literature = (LITERATURE_WEB.format(hosts=", ".join(pc.referee_domains), before=f"{pc.holdout_start:%Y-%m-%d}")
+                  if web else LITERATURE_NO_WEB)
     return "\n\n".join([REFEREE_INSTRUCTION.format(literature=literature),
                          contract.describe_referee(pc.timeframes, pc.research_max_ideas)])

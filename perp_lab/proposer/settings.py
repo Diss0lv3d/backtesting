@@ -26,6 +26,7 @@ class StartRefused(Exception):
 class ProposerConfig:
     model: str
     model_training_cutoff: date
+    holdout_start: date             # the lab's (cfg.holdout_start): the referee cites no source from then on
     claude_bin: str
     effort: str
     state_dir: Path
@@ -104,7 +105,8 @@ def load(cfg) -> ProposerConfig:
         raise StartRefused(f"proposer.timeframes {unknown} are not in the lab's timeframes")
     web = _flag(raw, "research_referee_web")
     return ProposerConfig(
-        model=model, model_training_cutoff=cutoff, claude_bin=str(raw["claude_bin"]), effort=str(raw["effort"]),
+        model=model, model_training_cutoff=cutoff, holdout_start=holdout, claude_bin=str(raw["claude_bin"]),
+        effort=str(raw["effort"]),
         state_dir=Path(raw["state_dir"]), timeframes=tfs,
         trials_per_day=int(raw["trials_per_day"]), trials_total=int(raw["trials_total"]),
         proposals_per_idea=int(raw["proposals_per_idea"]), fixups_per_proposal=int(raw["fixups_per_proposal"]),

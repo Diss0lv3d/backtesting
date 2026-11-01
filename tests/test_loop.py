@@ -1793,7 +1793,7 @@ def test_the_referees_prompt_is_the_record_both_stop_sections_the_cards_and_its_
     for gone in ("SUMMARY", "Stop B", HUMAN_FIRST):
         assert gone not in j.user, gone
     no_time_or_removed_item(j.user)
-    assert not DATE.search(j.user)
+    assert DATE.findall(j.user) == [f"{lab.pc.holdout_start:%Y-%m-%d}"]    # its sources' bound (R-RF7): no other
 
 
 def test_with_the_web_off_the_referee_is_tool_less_names_no_source_and_marks_nothing(lab):
@@ -1985,7 +1985,8 @@ def test_no_time_summary_or_later_card_text_reaches_any_prompt_with_the_referee(
     for c in lab.fake.calls:
         for gone in ("SUMMARY", "REASON", "05:06", "10:00", "2029"):
             assert gone not in c.user, gone
-        assert not DATE.search(c.user), DATE.search(c.user)
+        # one date only, the lab's holdout start in the referee's instruction (R-RF7)
+        assert DATE.findall(c.user) == ([f"{lab.pc.holdout_start:%Y-%m-%d}"] if refereeing(c) else []), c.user
         assert ("BUILDS-ON" in c.user) is refereeing(c)
 
 

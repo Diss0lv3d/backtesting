@@ -391,10 +391,10 @@ def test_a_web_referee_is_told_its_checks_its_hosts_and_never_to_look_for_market
               "the papers it cites exist and say what it claims",
               "You may fetch only from these hosts: " + ", ".join(pc.referee_domains),
               "Never look for prices, charts or market news",
-              "the URLs you read on those hosts that the verdict relies on"):
+              "the URLs you read on those hosts that the verdict relies on", SOURCES_BEFORE):
         assert s in words, s
     assert "no web access" not in words
-    assert not DATE.search(text)
+    assert DATE.findall(text) == ["2026-07-01"]           # the lab's holdout start, from the config: no other date
 
 
 def test_a_referee_without_the_web_is_told_its_sources_stay_empty(cfg):
@@ -407,6 +407,18 @@ def test_a_referee_without_the_web_is_told_its_sources_stay_empty(cfg):
     for s in (*REFEREE_CHECKS, "You have no web access in this review, so every verdict's sources stay empty"):
         assert s in words, s
     assert "fetch" not in words and not any(d in text for d in pc.referee_domains)
+    assert not DATE.search(text)                          # no sources, so no date for them
+
+
+SOURCES_BEFORE = ("Cite only sources published before 2026-07-01, and disregard any published on or after that "
+                  "date.")
+
+
+def test_the_referees_sources_end_at_the_configured_holdout_start(cfg):
+    """R-RF7: a paper from the holdout period may discuss it; the web_reviewed mark stays the safeguard."""
+    pc = replace(settings.load(cfg), holdout_start=datetime(2026, 9, 1).date())
+    words = " ".join(prompt.referee_instruction(pc).split())
+    assert SOURCES_BEFORE.replace("2026-07-01", "2026-09-01") in words and "2026-07-01" not in words
 
 
 def test_the_referee_instruction_follows_the_configured_hosts_and_limit(cfg):

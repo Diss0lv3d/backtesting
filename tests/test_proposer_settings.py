@@ -21,6 +21,7 @@ def _cfg(**over):
 def test_the_shipped_config_loads():
     pc = load(load_config(REPO / "config/lab.yaml"))
     assert pc.model == "claude-opus-5-5" and pc.model_training_cutoff == date(2026, 6, 30)
+    assert pc.holdout_start == date(2026, 7, 1)          # the lab's, for the referee's sources (R-RF7)
     assert pc.timeframes == ("15m", "1h", "4h") and pc.state_dir == Path("proposer")
 
 
