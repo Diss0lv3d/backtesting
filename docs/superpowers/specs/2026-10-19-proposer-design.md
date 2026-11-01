@@ -196,11 +196,14 @@ Rejected:
 8. **Judge**: first the harness pin is checked (see Harness pin). If the UTC day has changed since
    preflight, preflight runs again, so its lookahead span is the judge's. Then
    `lab judge <name> --tf TF --proposer`, with stdout and stderr to `proposer/logs/<name>.log`.
-   Every call counts toward the day's quota (Pace), whatever its exit code:
+   Every call counts toward the day's quota (Pace), whatever its exit code, and so does every re-run:
    - 0: judged; go on to step 9.
    - 2: refused. Recorded as `broken`; preflight should have caught it.
-   - 1: infrastructure error. Recorded as `broken`. If plugin code had reached real bars, the
-     judge registered the trial first (Trials), so N already counts it.
+   - 1: infrastructure error. It is re-run up to twice on the same bytes (after the pin and
+     signal checks, and within the day's quota), since an honest plugin shouldn't lose a slot to a
+     transient failure. Three exits of 1 are recorded as `broken` and count as one infrastructure
+     error. If plugin code had reached real bars, the judge registered the trial first (Trials),
+     so N already counts it, and a re-run adds none.
 9. **Read the verdict**, `runs/verdicts/<name>@<tf>@<hash10>.json`. The orchestrator computes the
    hash from the bytes it wrote. It stores the verdict's contents in the record.
 10. **Classify** in code (see The record), update the idea's status, append a line to the digest.
@@ -302,8 +305,10 @@ A new harness command. It runs plugin code only in the sandbox, and only on synt
    - A near-copy of a closed idea's plugin is refused, whatever the proposal's kind.
    - A near-copy of an open idea's plugin, proposed as a new idea, is refused with "propose it as a
      refinement (or a port) of X".
-   - A refinement is exempt from overlap with its own idea, and a port with the idea it ports.
-     Neither is exempt from any other idea.
+   - The exemption covers the port group: an idea, the idea it ports, and every other port of that
+     source. A port keeps its source's mechanism by design (a 1h plugin and its 4h twin overlap on
+     the shared market), so refining either side must not be refused for it. No idea outside the
+     group is exempt.
    - A mirror of any judged plugin is refused. A mirror's OOS result is close to minus the
      original's, which has already been seen, so its walk-forward would test nothing. This is the
      research note's exclusion of candidate E (sections 4 and 10), applied to every idea.
@@ -366,14 +371,14 @@ whose parent can't be run):
   that, any promotion in the family is blocked as `family_examined`, so another trial could never
   reach paper. A passed idea is the edge the user is after; the human takes it from there. This
   status is kept per family (`lineage_id`), not per idea. When a family's read is spent, every
-  idea with a judged plugin in that family closes with the outcome. The seeded ports share a
+  idea with a judged plugin in that family closes with the outcome. An idea holding plugins of two
+  families takes its outcome from any of them (passed wins over failed). The seeded ports share a
   family with the ideas they port (Seed).
 - `duplicate`: a new idea whose only judged proposals were filed as duplicates (below).
 
 **After-trial overlap.** Every judged proposal, whatever its kind, is checked against its verdict's
 overlap block (Verdict diagnostics). The verdict names runs by strategy and timeframe, which the
-record maps to ideas. The same exemptions apply as in preflight: a refinement against its own idea,
-a port against the idea it ports.
+record maps to ideas. The same exemption applies as in preflight: the port group.
 - **A near-copy of a closed idea.** It is one when, against any run of that idea, either:
   - its OOS position overlap is ≥ `overlap_max` (0.5); or
   - its OOS daily-return correlation is ≥ `corr_max` (0.8).
@@ -531,8 +536,8 @@ span), computed with `gates.dsr_from_moments`:
 
 Caps (config):
 - **`trials_per_day`: 12.** When the day's quota is used, the loop sleeps until the next 00:00
-  UTC. Every `lab judge` call counts toward it, whatever its exit code, so a plugin can't loop on
-  errors.
+  UTC. Every `lab judge` call counts toward it, whatever its exit code, and so does every re-run
+  of a judge exit 1, so a plugin can't loop on errors.
 - **`trials_total`: 100**, for the proposer's own trials. N would then be about 107 and the bar
   about 1.72. When it is reached, `lab propose` refuses to start. Raising it is the human's
   decision. The orchestrator can't read the `trials` table, so it counts conservatively: every
@@ -555,6 +560,9 @@ Stop conditions:
 - the harness pin changing (`harness_changed`, see Harness pin);
 - SIGINT or SIGTERM. The first one lets a running judge finish and then stops. The second kills it
   and records the proposal as `broken` / `interrupted`; it counts toward the day's quota.
+
+Every wait (quota, usage limit) re-reads the wall clock at least every 300 s, so a suspended
+laptop doesn't stretch it past its end.
 
 Rough size:
 - **Time.** A 1h judgement took about 2 minutes, and a model call takes a few minutes. So 12
@@ -662,6 +670,11 @@ claude -p --model claude-opus-5-5 --effort <proposer.effort>
   `init`) reported model `claude-opus-5-5`, tools `["StructuredOutput"]` (the `--json-schema`
   mechanism), no MCP servers, no skills and no slash commands. The reply arrived as validated JSON
   in `structured_output`, with `usage` and a `rate_limit_event` in the stream.
+- **Stream shape, CLI 2.1.316.** The first message may be `system` / `ui_invalidate`, before
+  `init`; `system` messages before `init` are skipped. A non-JSON line, any other message before
+  `init`, or EOF before `init` is a model-call error. The rate-limit status is
+  `rate_limit_event.rate_limit_info.status`, with the reset in `rate_limit_info.resetsAt` (epoch
+  seconds, UTC); `overageStatus` is ignored.
 - **The CLI updates itself.** It was 2.1.306 two days after the probe. Each session records
   `claude --version` at start, and the digest shows it. The init check below is what holds
   across versions.
@@ -671,7 +684,15 @@ line. It kills the process the moment the `init` message shows any of these:
 - a model other than the configured one;
 - any tool but `StructuredOutput`;
 - any MCP server, skill or slash command;
-- or any hook event later in the stream.
+- or any hook event, in any message of the stream (before `init` too).
+
+`init`'s `plugins` and `agents` are not checked: under `--safe-mode` they are listed but disabled.
+A plugin that ran anyway would show as a hook event or an extra tool.
+
+The reply schema has no `oneOf`, `allOf` or `anyOf` at its top level, because the API refuses it:
+`API Error: 400 tools.1.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level`.
+So the kind-to-block rule (a kind needs its block) is enforced by the parser, which refuses a
+violation as a fix-up.
 
 The init message comes before the model's first turn, so a misconfigured call is stopped before
 the model can act. Its output is discarded, and the session stops with reason `model_config`.
@@ -679,7 +700,8 @@ Every session also starts with a one-line probe call that must pass the same che
 
 **Usage limits.** The calls run on the user's Claude Code plan and share its usage limits with the
 user's own sessions.
-- When the stream reports a limit, the loop sleeps until the reset time it gives, or backs off
+- When the stream reports a refusal (a `rate_limit_event` whose status is neither `allowed` nor
+  `allowed_warning`; the warning still serves the call), or the API returns 429, the loop sleeps until the reset time it gives, or backs off
   hourly if none is given. It doesn't stop. The digest notes the pause.
 - The result's `usage` feeds the daily token caps.
 - Its `total_cost_usd` is recorded as the API-equivalent cost; on a subscription it isn't billed.
@@ -741,6 +763,8 @@ proposer:
 
 - **Model-call errors:**
   - A usage limit sleeps until it resets (Model).
+  - An API 4xx result other than 429 stops the session at once (reason `model_config`), with no
+    retries.
   - Other failures (the CLI exits non-zero, times out, or returns `is_error`) are retried with
     backoff, 5 tries. Then the session stops (reason `model_call`).
   - A failed init check stops the session at once (reason `model_config`).
@@ -749,9 +773,10 @@ proposer:
 - **Preflight infrastructure error** (exit 1): the session stops after 3 in a row.
 - **Record or state-dir errors:** fail closed; the session stops.
 - **Orchestrator crash:** on the next start, a proposal whose plugin is in `strategies/` but whose
-  verdict was never read gets `lab judge` again. If a judgement exists, this only rewrites the
-  verdict. If not, the same bytes are judged now, and N doesn't move again since the pair is
+  verdict was never read gets `lab judge` again. If a verdict file already exists, the proposal is filed from it without judging. If
+  not, the same bytes are judged now, and N doesn't move again since the pair is
   already registered. The model never saw the lost run, so it gains nothing.
+  `lab propose --trials 0` stops before this recovery.
 
 ## Residuals
 
@@ -838,7 +863,7 @@ The harness:
   - it catches a byte-different copy, a copy whose entries are one bar late, a small parameter
     change and a mirror;
   - a 1h plugin and its 4h twin overlap on the shared synthetic market;
-  - a refinement is exempt from its own idea only, and a port from the idea it ports only;
+  - the exemption covers the port group (an idea, its source and the source's other ports) and no other idea;
   - the cache key changes with the timeframe and the synthetic-market version.
 - **Verdict v2:** diagnostics present and computed from the walk-forward run, and still nothing
   derived from holdout data. A plugin-error message is absent from the verdict and kept in
@@ -960,3 +985,7 @@ The record shows the right piles and the digest is written.
     `lab exam` skips them (Exams and the human).
 13. **The harness is pinned for a session**: a clean `perp_lab/` and `config/` to start, and a stop
     on any change (Harness pin).
+
+## Amendments, 2026-11-01
+
+Amended during the build (controller rulings R26, R29, R42–R47); see the build ledger.
