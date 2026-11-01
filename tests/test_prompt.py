@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from perp_lab.dsr import sharpe_bar
-from perp_lab.proposer import contract, prompt, settings
+from perp_lab.proposer import context, contract, prompt, settings
 from perp_lab.proposer.record import Record, ideas
 from tests.test_store import cfg  # noqa: F401  (a temp config and store)
 
@@ -396,6 +396,19 @@ def test_a_web_referee_is_told_its_checks_its_hosts_and_never_to_look_for_market
         assert s in words, s
     assert "no web access" not in words
     assert DATE.findall(text) == ["2026-07-01"]           # the lab's holdout start, from the config: no other date
+
+
+ONE_TOOL = "In this review, unlike a proposal, you have one tool: WebFetch, limited to the hosts below."
+
+
+def test_a_web_referee_is_told_it_has_one_tool_where_the_static_context_says_none(cfg):
+    """M2: the system prompt is every call's static context, which says "You have no tools."; the referee's
+    instruction says what holds for its review, just before the hosts."""
+    pc = settings.load(cfg)
+    assert "You have no tools." in context.static_context(cfg, pc)
+    words = " ".join(prompt.referee_instruction(pc, web=True).split())
+    assert f"{ONE_TOOL} You may fetch only from these hosts: {', '.join(pc.referee_domains)};" in words
+    assert ONE_TOOL not in " ".join(prompt.referee_instruction(pc, web=False).split())
 
 
 def test_a_referee_without_the_web_is_told_its_sources_stay_empty(cfg):

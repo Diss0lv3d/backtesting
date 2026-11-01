@@ -345,13 +345,15 @@ only.
 Return one verdict per card, in the cards' order, each with its reason. This round's reply contract is the one \
 below, not the one under "Your reply":"""
 
-# The referee's web access is fenced in code (model.py): these sentences only tell it what the fence allows. A paper
+# The referee's web access is fenced in code (model.py): these sentences only tell it what the fence allows, and
+# that its review, unlike a proposal, has a tool, where the static context (its system prompt) says none. A paper
 # from the holdout period may discuss it, so the referee is asked to leave such papers alone (R-RF7); it can't be
 # checked in code, and the web_reviewed mark stays the safeguard.
 LITERATURE_WEB = """\
 Check it against the literature: use the allowed academic sources to find published evidence for or against it, \
-and to check that the papers it cites exist and say what it claims. You may fetch only from these hosts: {hosts}; \
-any other fetch is refused. Never look for prices, charts or market news. Cite only sources published before \
+and to check that the papers it cites exist and say what it claims. In this review, unlike a proposal, you have one \
+tool: WebFetch, limited to the hosts below. You may fetch only from these hosts: {hosts}; any other fetch is \
+refused. Never look for prices, charts or market news. Cite only sources published before \
 {before}, and disregard any published on or after that date. In each verdict's sources, name the URLs you read on \
 those hosts that the verdict relies on, and no other."""
 
