@@ -262,3 +262,40 @@ def test_the_flag_goes_when_its_idea_leaves_open(rec):
     assert rec.next_up()["id"] == a
     rec.set_idea(a, status="exhausted")
     assert rec.next_up() is None and rec.idea(a)["next_up"] is None
+
+
+@pytest.mark.parametrize("status", ["open", "exhausted", "dead"])
+def test_an_open_exhausted_or_dead_idea_can_be_excluded_with_a_reason(rec, status):
+    i = rec.add_idea("A", {}, "seed", "1h", status=status)
+    rec.exclude_idea(i, "  it is B's sign flip  ")
+    x = rec.idea(i)
+    assert (x["status"], x["excluded_reason"]) == ("excluded", "it is B's sign flip")
+
+
+@pytest.mark.parametrize("status", ["passed", "failed", "excluded", "duplicate"])
+def test_no_other_idea_can_be_excluded(rec, status):
+    i = rec.add_idea("A", {}, "seed", "1h", status=status)
+    with pytest.raises(ValueError, match=f"idea #{i} is {status}; only an open, exhausted or dead idea"):
+        rec.exclude_idea(i, "why")
+    assert (rec.idea(i)["status"], rec.idea(i)["excluded_reason"]) == (status, None)
+
+
+def test_an_exclusion_needs_a_reason_and_an_idea(rec):
+    i = rec.add_idea("A", {}, "seed", "1h")
+    with pytest.raises(ValueError, match="needs a reason"):
+        rec.exclude_idea(i, " \n ")
+    with pytest.raises(ValueError, match="there is no idea #9"):
+        rec.exclude_idea(9, "why")
+    assert rec.idea(i)["status"] == "open"
+
+
+def test_an_excluded_idea_loses_its_flag_and_stays_excluded_when_settled(rec):
+    from types import SimpleNamespace
+
+    from perp_lab.proposer import loop
+    i = rec.add_idea("A", {}, "seed", "1h")
+    rec.flag_next(i)
+    rec.exclude_idea(i, "why")
+    assert rec.next_up() is None
+    loop.settle(rec, SimpleNamespace(proposals_per_idea=4))
+    assert rec.idea(i)["status"] == "excluded"

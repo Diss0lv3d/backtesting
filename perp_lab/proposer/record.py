@@ -16,6 +16,7 @@ import sqlalchemy as sa
 
 md = sa.MetaData()
 BUSY_TIMEOUT_MS = 30_000
+EXCLUDABLE = ("open", "exhausted", "dead")    # never passed or failed: an exam's outcome stays on the record
 
 
 def _pragmas(dbapi_conn, _record) -> None:
@@ -249,6 +250,17 @@ class Record:
         if f.get("status", "open") != "open":
             f["next_up"] = None             # only an open idea can be tried next
         self._update(ideas, ideas.c.id, id, f)
+
+    def exclude_idea(self, id: int, reason: str) -> None:
+        """Close an open, exhausted or dead idea for good, by the human. The model reads the reason (prompt._why)."""
+        reason = (reason or "").strip()
+        if not reason:
+            raise ValueError("an exclusion needs a reason")
+        with self.engine.begin() as c:              # the write first, as in flag_next
+            if c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.status.in_(EXCLUDABLE))
+                         .values(status="excluded", excluded_reason=reason, next_up=None)).rowcount:
+                return
+        raise ValueError(self._why_not(id, "only an open, exhausted or dead idea can be excluded"))
 
     # -- the human's "try next"
     def flag_next(self, id: int) -> None:
