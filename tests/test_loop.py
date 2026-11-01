@@ -406,6 +406,45 @@ def test_a_budget_spent_verdict_stops_the_session_and_refuses_the_next_start(lab
     assert len(lab.fake.calls) == 1
 
 
+# -- failing closed (spec, Failures: record or state-dir errors stop the session)
+def _ended_in_error(lab, detail):
+    s = lab.rec.session(1)
+    assert (s["stop_reason"], s["ended_at"]) == ("error", T0)
+    end = digest(lab).split("## End")[1]
+    assert f"Stop reason: error: {detail}" in end
+
+
+def test_an_error_mid_round_ends_the_session_and_its_digest_then_propagates(lab):
+    def full(fake):
+        raise OSError("disk full")
+    lab.fake.on_judge = full
+    with pytest.raises(OSError, match="disk full"):
+        run(lab)
+    _ended_in_error(lab, "OSError: disk full")
+    assert [p["state"] for p in props(lab)] == ["copied"]          # judged again at the next start
+
+
+def test_an_error_writing_the_sessions_files_still_ends_its_record(lab):
+    (lab.state / "sessions" / "1.system.txt").mkdir(parents=True)   # the write fails: it is a directory
+    with pytest.raises(IsADirectoryError):
+        run(lab)
+    _ended_in_error(lab, "IsADirectoryError")
+
+
+def test_a_signal_during_the_sessions_end_does_not_cut_it_short(lab, monkeypatch):
+    finish = loop.Digest.finish
+
+    def interrupted(self, *a):
+        signal.raise_signal(signal.SIGINT)
+        finish(self, *a)
+    monkeypatch.setattr(loop.Digest, "finish", interrupted)
+    try:
+        assert run(lab, trials=1) == "trials"
+    except KeyboardInterrupt:
+        pytest.fail("the session's end ran without the session's signal handlers")
+    assert lab.rec.session(1)["stop_reason"] == "trials" and "## End" in digest(lab)
+
+
 # -- fix-ups
 def test_a_fixup_holds_the_rounds_prompt_the_rejected_proposal_and_the_errors(lab):
     lookahead = (3, {**ok_report(), "ok": False, "lookahead": ["peeks at close[t+1] at 2026-07-03"]})

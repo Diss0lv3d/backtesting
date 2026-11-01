@@ -302,17 +302,20 @@ class _Session:
         caps = {k: getattr(self.pc, k) for k in ("trials_per_day", "trials_total", "proposals_per_idea",
                                                  "fixups_per_proposal", "max_input_tokens_per_day",
                                                  "max_output_tokens_per_day")}
-        self.sid = self.record.start_session(
-            started_at=start, model=self.pc.model, cutoff=str(self.pc.model_training_cutoff), cli_version=self.cli,
-            commit=self.harness.commit, branch=self.harness.branch, caps={**caps, "days": days, "trials": trials})
-        sessions = self.state / "sessions"
-        self.digest = Digest(sessions / f"{self.sid}.md", now=self.deps.now)
-        self.digest.header(self.pc.model, self.pc.model_training_cutoff, self.cli, self.harness.commit,
-                           self.harness.branch)
-        (sessions / f"{self.sid}.system.txt").write_text(self.system, encoding="utf-8")   # what every call got
-        try:
-            with self.sig.installed():
+        # The handlers stay installed until the session's record is ended: a second Ctrl-C can't cut that short.
+        with self.sig.installed():
+            self.sid = self.record.start_session(
+                started_at=start, model=self.pc.model, cutoff=str(self.pc.model_training_cutoff),
+                cli_version=self.cli, commit=self.harness.commit, branch=self.harness.branch,
+                caps={**caps, "days": days, "trials": trials})
+            self.digest, self.ended = None, False
+            try:
                 try:
+                    sessions = self.state / "sessions"
+                    self.digest = Digest(sessions / f"{self.sid}.md", now=self.deps.now)
+                    self.digest.header(self.pc.model, self.pc.model_training_cutoff, self.cli, self.harness.commit,
+                                       self.harness.branch)
+                    (sessions / f"{self.sid}.system.txt").write_text(self.system, encoding="utf-8")   # every call's
                     self._recover()
                     while True:
                         self._gate()
@@ -321,14 +324,26 @@ class _Session:
                     reason, detail = e.reason, e.detail
                 except _Abort:
                     reason, detail = "signal", ""
-        except BaseException as e:   # fail closed: the session stops, and says so where it can
-            with contextlib.suppress(Exception):
-                self._end("error", f"{type(e).__name__}: {e}")
-            raise
-        self._end(reason, detail)
+                self._end(reason, detail)
+            except BaseException as e:   # fail closed (spec, Failures): the session stops, and says so where it can
+                self._end("error", f"{type(e).__name__}: {e}", quiet=True)
+                raise
         return reason
 
-    def _end(self, reason: str, detail: str) -> None:
+    def _end(self, reason: str, detail: str, quiet: bool = False) -> None:
+        """The session's record first, then the digest's end. `quiet` (on an error) keeps going past a step that
+        fails, so a broken digest can't leave the record's session open, and never overwrites an ended record."""
+        keep = contextlib.suppress(Exception) if quiet else contextlib.nullcontext()
+        if not self.ended:
+            with keep:
+                self.record.end_session(self.sid, reason, ended_at=self.deps.now(),
+                                        trials_used=self.record.trials_used() - self.base,
+                                        tokens_in=self.tokens[0], tokens_out=self.tokens[1])
+                self.ended = True
+        with keep:
+            self._finish_digest(reason, detail)
+
+    def _finish_digest(self, reason: str, detail: str) -> None:
         rows = {p["seq"]: p for p in self.record.proposals()}
         counts: dict[str, int] = {}
         for seq in self.handled:
@@ -343,9 +358,6 @@ class _Session:
             if best in PROGRESS and piles.RANK[best] > piles.RANK.get(self.best0.get(i["id"]), -1):
                 progress.append(f"#{i['id']} {i['title']}: {best}")
         self.digest.finish(counts, progress, f"{reason}: {detail}" if detail else reason, *self.tokens)
-        self.record.end_session(self.sid, reason, ended_at=self.deps.now(),
-                                trials_used=self.record.trials_used() - self.base,
-                                tokens_in=self.tokens[0], tokens_out=self.tokens[1])
 
     # -- before each round: stops, then the day's quotas
     def _gate(self) -> None:
