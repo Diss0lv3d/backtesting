@@ -435,7 +435,7 @@ def ideas(config: Optional[str] = CfgOpt):
         judged = [p for p in mine if p.get("judge_exit") is not None]
         best = piles.best_pile([piles.pile(p.get("verdict")) for p in judged if p.get("duplicate_of") is None])
         groups[piles.idea_group(i, mine)].append(
-            f"#{i['id']} {i['title']} \u2014 {i['timeframe']}, {i['status']}, {best or 'none'}, judged {len(judged)}")
+            f"#{i['id']} {i['title']}{' (research)' if i['origin'] == 'research' else ''} \u2014 {i['timeframe']}, {i['status']}, {best or 'none'}, judged {len(judged)}")
     for g in piles.GROUPS:
         if groups[g]:
             typer.echo(f"{g} ({len(groups[g])})")
