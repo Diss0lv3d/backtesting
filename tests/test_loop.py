@@ -935,6 +935,20 @@ def test_a_port_is_exempt_from_the_closed_idea_it_ports(lab):
     assert (port_idea["port_of"], port_idea["timeframe"], port_idea["card"]) == (x, "4h", card("Breakout"))
 
 
+@pytest.mark.parametrize("reviewed", [True, False])
+def test_a_port_of_a_web_reviewed_idea_is_web_reviewed_too(lab, reviewed):
+    """A port copies its idea's card, so it keeps what the card went through: a web-informed referee's review, and
+    with it the exam's caveat."""
+    x = lab.rec.add_ideas([{"title": "Basis squeeze", "card": card("Basis squeeze"), "origin": "research",
+                            "timeframe": "1h", "web_reviewed": reviewed}])[0]
+    lab.rec.add_proposal(idea_id=x, plugin="bsq", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("signal before costs"), "lineage_id": "family:bsq"})
+    lab.fake.replies = [port(x)]
+    assert run(lab, trials=1) == "trials"
+    port_idea = idea(lab, "Basis squeeze, 4h")
+    assert (port_idea["port_of"], port_idea["web_reviewed"]) == (x, reviewed)
+
+
 def _port_group(lab):
     """A dead source idea at 1h, its port at 4h (open, signal before costs), and an unrelated dead idea."""
     x = closed_idea(lab, "Breakout", "brk")

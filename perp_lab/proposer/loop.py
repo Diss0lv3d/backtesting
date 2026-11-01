@@ -739,7 +739,9 @@ class _Session:
             if title.casefold() in taken:
                 title = f"{title} (#{t.seq})"
             card = {k: v for k, v in (target.get("card") or {}).items() if k != "notes"}   # notes on its proposals
-            t.idea_id = self.record.add_idea(title, card, "proposer", p.timeframe, port_of=target["id"])
+            # the target's card, so the mark of a web-informed review that card had, and the exam's caveat with it
+            t.idea_id = self.record.add_idea(title, card, "proposer", p.timeframe, port_of=target["id"],
+                                             web_reviewed=bool(target.get("web_reviewed")))
             t.title = title
         t.exempt = _exempt(self.record, t.idea_id)
         self.record.update_proposal(t.seq, idea_id=t.idea_id)

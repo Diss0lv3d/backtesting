@@ -256,13 +256,14 @@ class Record:
 
     # -- ideas
     def add_idea(self, title: str, card: dict, origin: str, timeframe: str, *,
-                 port_of: int | None = None, status: str = "open") -> int:
+                 port_of: int | None = None, status: str = "open", web_reviewed: bool = False) -> int:
         return self.add_ideas([{"title": title, "card": card, "origin": origin, "timeframe": timeframe,
-                                "port_of": port_of, "status": status}])[0]
+                                "port_of": port_of, "status": status, "web_reviewed": web_reviewed}])[0]
 
     def add_ideas(self, rows: list[dict]) -> list[int]:
         """Add the ideas in one transaction, all or none: a title any idea has, whatever the case, refuses them
-        all. Each row has title, card, origin and timeframe, and may have port_of and status (default open)."""
+        all. Each row has title, card, origin and timeframe, and may have port_of, status (default open) and
+        web_reviewed (default false)."""
         now, out = _now(), []
         with self.engine.begin() as c:
             taken = {t.casefold() for (t,) in c.execute(sa.select(ideas.c.title))}
