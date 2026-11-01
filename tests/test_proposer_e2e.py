@@ -9,16 +9,19 @@ against them on the synthetic market. Three rounds:
 2. a near-copy of donchian_atr at 4h, whose idea is dead, refused on preflight's overlap until it is dropped;
 3. a sound plugin, judged.
 Between rounds 1 and 2, a research round: the temp config's `research_every` is 1, so one falls due after round
-1's trial, and none again, since round 2 spends no trial and round 3's ends the session. Its reply adds one idea
-and a stop list, which every later proposal is sent.
+1's trial, and none again, since round 2 spends no trial and round 3's ends the session. Its reply has two idea
+cards and a stop list, which every later proposal is sent. A referee reviews the cards in a web call (the config's
+default): its stream shows one allowed arXiv fetch, then a report that accepts the first card and rejects the
+second, so only the first enters the record, marked web_reviewed.
 
 Before the session, sentinels go where the model must never look: a run's notes in lab.db, that run's
-report.md, the holdout log, a file under data/, and round 1's plugin's own print, so that the research round and
-rounds 2 and 3 are sent after it exists (the sandbox keeps a plugin's output with its run, under runs/; the judge
-echoes it to its stdout only when the plugin fails). A distinctive time goes into the seeded verdict files'
-modification times, the run id they name and the holdout log. None of them, and none of the real judge runs' ids
-or log times, may appear in any argv or stdin the fake CLI recorded, the research call's included: it renders the
-record after a real judge.
+report.md, the holdout log, a file under data/, and round 1's plugin's own print, so that the research round, its
+referee and rounds 2 and 3 are sent after it exists (the sandbox keeps a plugin's output with its run, under runs/;
+the judge echoes it to its stdout only when the plugin fails). A distinctive time goes into the seeded verdict
+files' modification times, the run id they name and the holdout log. None of them, and none of the real judge
+runs' ids or log times, may appear in any argv or stdin the fake CLI recorded, the research and referee calls'
+included: they render the record after a real judge. The page the referee fetched carries a sentinel and the
+planted time too: it stays in the round's transcript, and no later call is sent it.
 """
 
 from __future__ import annotations
@@ -46,7 +49,8 @@ from tests.conftest import REPO, write_market
 from tests.test_seed import FAMILY, TRIALS
 
 UTC = timezone.utc
-SENTINELS = ("SENTINEL_LABDB", "SENTINEL_REPORT", "SENTINEL_HOLDOUT", "SENTINEL_DATA", "SENTINEL_STDOUT")
+SENTINELS = ("SENTINEL_LABDB", "SENTINEL_REPORT", "SENTINEL_HOLDOUT", "SENTINEL_DATA", "SENTINEL_STDOUT",
+             "SENTINEL_FETCHED")
 PLANTED = datetime(2031, 2, 3, 4, 5, 6, tzinfo=UTC)
 PLANTED_RUN = f"{PLANTED:%Y%m%d-%H%M%S}-5e171e"
 PLANTED_FORMS = ("2031-02-03T04:05:06", "2031-02-03 04:05:06", "2031-02-03", "20310203", "04:05:06",
@@ -155,11 +159,21 @@ ROUND_1 = new("Volume-burst continuation", PEEKING, ["volume", "high", "low", "c
 ROUND_1_FIX = new("Volume-burst continuation", VOLUME_BURST, ["volume", "high", "low", "close"])
 ROUND_2 = new("Channel breakout", NEAR_COPY, ["high", "low", "close"])
 ROUND_3 = new("Candle-body reversal", BODY_REVERSAL, ["open", "high", "low", "close"])
-# The research round's note (contract.ResearchNote): one idea, which no round proposes for, and a stop list.
+# The research round's note (contract.ResearchNote): two ideas, which no round proposes for, and a stop list. The
+# referee accepts the first and rejects the second.
 RESEARCH_IDEA = {**card("Liquidation-cascade rebound", ["open", "high", "low", "close"]), "timeframe": "4h",
                  "builds_on": "the closed breakout ideas"}
+REJECTED_IDEA = {**card("Round-number stop cascade", ["high", "low", "close"]), "timeframe": "4h",
+                 "builds_on": "the closed breakout ideas"}
 STOP = ["Channel breakouts at any lookback", "A filter added to a closed idea's entry"]
-RESEARCH = {"ideas": [RESEARCH_IDEA], "stop": STOP, "summary": "Breakouts are done; a forced-flow rebound is not."}
+RESEARCH = {"ideas": [RESEARCH_IDEA, REJECTED_IDEA], "stop": STOP,
+            "summary": "Breakouts are done; a forced-flow rebound is not."}
+ARXIV = "https://arxiv.org/abs/1707.06221"
+REPORT = {"verdicts": [
+    {"title": "Liquidation-cascade rebound", "decision": "accept", "reason": "Forced flow, not the exit, pays.",
+     "sources": [], "revised": None},
+    {"title": "Round-number stop cascade", "decision": "reject",
+     "reason": "No round-number effect survives costs.", "sources": [ARXIV], "revised": None}]}
 
 # --------------------------------------------------------------------------- the fake CLI's stream
 
@@ -174,9 +188,43 @@ def reply(structured_output: dict) -> dict:
             "exit": 0}
 
 
+def _said(content: list[dict]) -> str:
+    """An assistant message with these blocks and, as the real CLI sends it, each tool_use's input as the API sent
+    it."""
+    m = json.loads(STREAM[2])
+    return json.dumps({**m, "message": {**m["message"], "content": content},
+                       "wire_tool_inputs": {b["id"]: b["input"] for b in content}})
+
+
+def _told(tid: str, content: str) -> str:
+    """The CLI's tool_result for a tool_use, as a user message."""
+    m = {k: v for k, v in json.loads(STREAM[3]).items() if k not in ("tool_use_result", "tool_result_meta")}
+    block = {"tool_use_id": tid, "type": "tool_result", "content": content}
+    return json.dumps({**m, "message": {**m["message"], "content": [block]}})
+
+
+def referee_reply(report: dict) -> dict:
+    """A web call's scenario, in the shapes of CLI 2.1.316 (tests/test_model.py): init with WebFetch and the
+    default permission mode, one allowed fetch and its page, then the report through StructuredOutput, and its
+    result."""
+    init = json.loads(STREAM[1])
+    result = json.loads(STREAM[5])
+    fetch = {"type": "tool_use", "id": "toolu_e2e_fetch", "name": "WebFetch",
+             "input": {"url": ARXIV, "prompt": "Does a round-number effect survive costs?"}}
+    answer = {"type": "tool_use", "id": "toolu_e2e_report", "name": "StructuredOutput", "input": report}
+    page = f"SENTINEL_FETCHED. A paper of {PLANTED:%Y-%m-%d}: no round-number effect survives costs."
+    return {"lines": [STREAM[0], json.dumps({**init, "tools": ["StructuredOutput", "WebFetch"],
+                                             "permissionMode": "default"}),
+                      _said([fetch]), _told(fetch["id"], page),
+                      _said([answer]), _told(answer["id"], "Structured output provided successfully"),
+                      STREAM[4], json.dumps({**result, "structured_output": report, "permission_denials": []})],
+            "exit": 0}
+
+
 CALLS = [reply({"ok": True}),                          # the probe
          reply(ROUND_1), reply(ROUND_1_FIX),
          reply(RESEARCH),                              # due after round 1's trial
+         referee_reply(REPORT),                        # its referee, a web call
          *[reply(ROUND_2)] * 4,                        # the proposal and its 3 fix-ups
          reply(ROUND_3)]
 
@@ -214,7 +262,6 @@ def lab(tmp_path, monkeypatch):
                     "verdicts_dir": str(root / "runs" / "verdicts")}
     raw["validation"] = {**raw["validation"], "random_seeds": 5, "mc_iterations": 200}    # a quicker judge
     raw["proposer"] = {**raw["proposer"], "research_every": 1}          # one research round, after round 1
-    raw["proposer"]["research_referee"] = False         # its cards unreviewed: the fake CLI scripts no referee
     path = root / "config" / "lab.yaml"
     path.write_text(yaml.safe_dump(raw, allow_unicode=True))
     cfg = load_config(path)
@@ -286,6 +333,7 @@ def test_a_session_files_three_rounds_and_nothing_forbidden_reaches_the_model(la
     pc = settings.load(cfg)
     seed_bytes = {p.name: p.read_bytes() for p in (root / "strategies").glob("*.py")}
 
+    assert pc.research_referee and pc.research_referee_web             # the config's defaults: a web referee
     reason = loop.run_session(cfg, pc, days=1, trials=2, repo=root)
     assert reason == "trials"
 
@@ -343,36 +391,60 @@ def test_a_session_files_three_rounds_and_nothing_forbidden_reaches_the_model(la
                  "0012 · px0012_candle_body_reversal@4h · new · Candle-body reversal · no signal"):
         assert line in digest
 
-    # The research round, after round 1's trial: its idea in the record with origin research, its row ok, its
-    # digest line (and the summary under it) between round 1's line and round 2's.
+    # The research round, after round 1's trial: of its two cards only the one the referee accepted is in the
+    # record, with origin research and marked web_reviewed; its row ok, with the referee's verdicts and its fetch;
+    # its digest line (the verdicts, the rejection's reason and the summary under it) between round 1's line and
+    # round 2's.
     [rr] = research_rows(rec)
     [rid] = [i for i in ideas if title[i] == "Liquidation-cascade rebound"]
-    assert (ideas[rid]["origin"], ideas[rid]["timeframe"], ideas[rid]["card"]) == \
-        ("research", "4h", {k: v for k, v in RESEARCH_IDEA.items() if k not in ("timeframe", "builds_on")})
+    assert "Round-number stop cascade" not in title.values()
+    assert (ideas[rid]["origin"], ideas[rid]["timeframe"], ideas[rid]["card"], ideas[rid]["web_reviewed"]) == \
+        ("research", "4h", {k: v for k, v in RESEARCH_IDEA.items() if k not in ("timeframe", "builds_on")}, True)
+    assert [i for i in ideas if ideas[i]["web_reviewed"]] == [rid]
     assert (rr["session_id"], rr["trials_used"], rr["outcome"], rr["added"], rr["reply"]) == \
         (sid, 1, "ok", [rid], RESEARCH)
-    assert (root / pc.state_dir / "transcripts" / f"research-{rr['id']}.jsonl").exists()
-    research_line = f" · research: +1 idea (#{rid}); stop list 2 items\n  {RESEARCH['summary']}\n"
+    assert rr["referee"] == {"web": True, "fetches": [ARXIV], "denied": [], "verdicts": [
+        {k: v for k, v in verdict.items() if k != "revised"} for verdict in REPORT["verdicts"]]}
+    transcript = (root / pc.state_dir / "transcripts" / f"research-{rr['id']}.jsonl").read_text()
+    research_line = (f" · research: +1 idea (#{rid}); stop list 2 items; 2 cards: 1 accepted, 0 revised, "
+                     "1 rejected\n  rejected: Round-number stop cascade: No round-number effect survives costs.\n"
+                     f"  {RESEARCH['summary']}\n")
     assert digest.index("0010 · ") < digest.index(research_line) < digest.index("0011 · ")
 
-    # What the model was sent: the version check, the probe, 2 proposal calls, the research call, 4 + 1 more. All
-    # but the probe have the same system prompt (the static context); the research call has its own schema.
+    # What the model was sent: the version check, the probe, 2 proposal calls, the research call, its referee's,
+    # 4 + 1 more. All but the probe have the same system prompt (the static context); the research and referee
+    # calls have their own schemas.
     calls = seen_calls(root)
-    assert [c["argv"][1:] == ["--version"] for c in calls] == [True] + [False] * 9
+    assert [c["argv"][1:] == ["--version"] for c in calls] == [True] + [False] * 10
     assert calls[1]["stdin"] == model.PROBE_USER
     proposing = contract.schema(pc.timeframes)
     researching = contract.research_schema(pc.timeframes, pc.research_max_ideas)
+    refereeing = contract.referee_schema(pc.timeframes, pc.research_max_ideas)
     assert [json.loads(arg(c, "--json-schema")) for c in calls[2:]] == \
-        [proposing] * 2 + [researching] + [proposing] * 5
+        [proposing] * 2 + [researching, refereeing] + [proposing] * 5
     assert len({arg(c, "--system-prompt") for c in calls[2:]}) == 1
-    # The research call: the record and the research instruction, no stop list yet. Every proposal after it gets
-    # the round's stop list, and that the human's request comes before it; none before it.
+    # The research call: the record and the research instruction, no stop list yet. The referee call: the round's
+    # two cards and the referee instruction. Every proposal after them gets the round's stop list, and that the
+    # human's request comes before it; none before it.
     assert calls[4]["stdin"].endswith("\n" + prompt.research_instruction(pc) + "\n")
+    referee = calls[5]
+    assert referee["stdin"].endswith("\n" + prompt.referee_instruction(pc) + "\n")
+    assert "### Card 1" in referee["stdin"] and "Round-number stop cascade" in referee["stdin"]
     stop = ("Directions the research step recommends avoiding:\n"
             "- Channel breakouts at any lookback\n- A filter added to a closed idea's entry\n\n"
             "When the human asks for an idea below, that request comes before this list.\n")
     assert [(prompt.STOP_HEADING in c["stdin"], stop in c["stdin"]) for c in calls[2:]] == \
-        [(False, False)] * 3 + [(True, True)] * 5
+        [(False, False)] * 4 + [(True, True)] * 5
+    # The referee alone had the web: WebFetch and one allow rule per academic domain, no settings sources, the
+    # confined env. Every other call stayed tool-less.
+    rules = [f"WebFetch(domain:{d})" for d in pc.referee_domains]
+    fenced = ["--tools", "WebFetch", "--allowedTools", *rules, "--setting-sources", ""]
+    at = referee["argv"].index("--tools")
+    assert referee["argv"][at:at + len(fenced)] == fenced and "WebSearch" not in referee["argv"]
+    assert referee["env"].get("CLAUDE_CODE_EVAL_CONFINED") == "1"
+    for c in calls[1:5] + calls[6:]:
+        assert arg(c, "--tools") == "" and "--allowedTools" not in c["argv"]
+        assert "--setting-sources" not in c["argv"] and "CLAUDE_CODE_EVAL_CONFINED" not in c["env"]
     refused = [c["stdin"] for c in calls[2:] if "## Your last reply was refused" in c["stdin"]]
     assert len(refused) == 4
     assert "lookahead: " in refused[0] and "near-copy of closed idea #1 (Donchian breakout)" in refused[1]
@@ -387,8 +459,9 @@ def test_a_session_files_three_rounds_and_nothing_forbidden_reaches_the_model(la
     run_ids = runs["run_id"].tolist()
     stamps = {m for log in judge_logs for m in re.findall(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", log)}
     assert len(run_ids) >= 3 and stamps
+    assert "SENTINEL_FETCHED" in transcript and f"{PLANTED:%Y-%m-%d}" in transcript    # the page the referee read
     # ...and none of them, no planted time, no run id, no time from the judge's output and not the research
-    # round's time reached the model.
+    # round's time reached the model, in any call: the research and referee calls' argv and stdin included.
     rr_at = (f"{rr['at']:%Y-%m-%d %H:%M:%S}", f"{rr['at']:%Y-%m-%dT%H:%M:%S}")
     forbidden = [*SENTINELS, *PLANTED_FORMS, *run_ids, *stamps, *(t.replace(" ", "T") for t in stamps), *rr_at]
     for k, c in enumerate(calls):
