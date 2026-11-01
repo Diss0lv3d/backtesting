@@ -282,7 +282,7 @@ def test_a_retry_that_succeeds_returns_its_reply(pc, transcript, monkeypatch):
     reply = model.Reply(proposal={"ok": True}, usage={}, cost_usd=None)
     outcomes = [model.ModelCallError("x"), model.ModelCallError("y"), reply]
 
-    def call(*a):
+    def call(*a, **kw):
         out = outcomes.pop(0)
         if isinstance(out, Exception):
             raise out
@@ -690,6 +690,25 @@ def test_a_webfetch_in_a_tool_less_call_is_a_config_error_at_once(fake, pc, tran
 def test_a_fence_breach_is_its_own_error():
     """R-RF5: not ModelConfigError (the referee round fails closed, the session goes on) and not retried."""
     assert not issubclass(model.FenceBreach, (model.ModelConfigError, model.ModelCallError, model.UsageLimit))
+
+
+def test_web_domains_are_keyword_only(fake, pc, transcript):
+    fake.scenario(OK)
+    with pytest.raises(TypeError):
+        model.call(pc, "s", "u", SCHEMA, transcript, DOMAINS)
+    with pytest.raises(TypeError):
+        model.argv(pc, "s", SCHEMA, DOMAINS)
+    assert not (fake.dir / "seen.json").exists()
+
+
+def test_no_web_domains_as_none_is_a_tool_less_call(fake, pc, transcript):
+    assert model.argv(pc, "s", SCHEMA, web_domains=None) == model.argv(pc, "s", SCHEMA)
+    fake.scenario(OK)
+    sleeps = []
+    reply = model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append, web_domains=None)
+    assert reply.proposal == {"ok": True} and reply.fetches == []
+    assert fake.seen["argv"][1:] == model.argv(pc, "s", SCHEMA)[1:]
+    assert fake.seen["env"] == {"HOME": os.environ["HOME"], "PATH": os.environ["PATH"]}
 
 
 def test_call_with_retries_passes_the_web_domains_through(fake, pc, transcript):

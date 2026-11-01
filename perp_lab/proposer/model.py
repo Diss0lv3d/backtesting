@@ -107,10 +107,10 @@ class _TimedOut(Exception):
     pass
 
 
-def argv(pc, system: str, schema: dict, *, web_domains: tuple[str, ...] = ()) -> list[str]:
+def argv(pc, system: str, schema: dict, *, web_domains: tuple[str, ...] | None = ()) -> list[str]:
     """Without web domains, no tools at all. With them, WebFetch and one allow rule per domain, each its own argv
     element (the form the CLI accepts, probe of 2026-11-01); the next flag ends the list."""
-    tools = [""]
+    tools, web_domains = [""], tuple(web_domains or ())
     if web_domains:
         bad = [d for d in web_domains if not (isinstance(d, str) and DOMAIN.fullmatch(d))]
         if bad:  # a rule is the CLI's syntax: a domain that isn't a plain hostname could widen it
@@ -412,9 +412,11 @@ def _tail(err) -> str:
     return f"; stderr: {text}" if text else ""
 
 
-def call(pc, system: str, user: str, schema: dict, transcript: Path, web_domains: tuple[str, ...] = ()) -> Reply:
+def call(pc, system: str, user: str, schema: dict, transcript: Path, *,
+         web_domains: tuple[str, ...] | None = ()) -> Reply:
+    web_domains = tuple(web_domains or ())
     args = argv(pc, system, schema, web_domains=web_domains)
-    fence = _Fence(tuple(web_domains))
+    fence = _Fence(web_domains)
     transcript.parent.mkdir(parents=True, exist_ok=True)
     with _workdir() as cwd, tempfile.TemporaryFile() as err, open(transcript, "ab") as log:
         p = _start(pc, args, cwd, bool(web_domains), stdin=proc.PIPE, stdout=proc.PIPE, stderr=err)
@@ -452,14 +454,14 @@ def call(pc, system: str, user: str, schema: dict, transcript: Path, web_domains
 
 
 def call_with_retries(pc, system: str, user: str, schema: dict, transcript: Path, *, sleep=time.sleep,
-                      web_domains: tuple[str, ...] = ()) -> Reply:
+                      web_domains: tuple[str, ...] | None = ()) -> Reply:
     """Up to 5 tries on ModelCallError; UsageLimit, ModelConfigError and FenceBreach pass straight through."""
     for delay in BACKOFF_S:
         try:
-            return call(pc, system, user, schema, transcript, web_domains)
+            return call(pc, system, user, schema, transcript, web_domains=web_domains)
         except ModelCallError:
             sleep(delay)
-    return call(pc, system, user, schema, transcript, web_domains)
+    return call(pc, system, user, schema, transcript, web_domains=web_domains)
 
 
 def cli_version(pc) -> str:
