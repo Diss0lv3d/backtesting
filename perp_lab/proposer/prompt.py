@@ -10,6 +10,10 @@ A research round (research-round spec) gets the same record with a fixed instruc
 returns, only the stop list ever reaches a later prompt (stop_section): never its time, summary or ideas' reasons.
 The human's own stop list (human_stop_section) goes before it in every proposal and research prompt: the items'
 text only, never when they were added.
+
+A round's cards then go to a referee call (referee-and-human-stops spec, "The referee") before any enters the
+record: the same record and stop sections, the cards as the research step wrote them (note_cards) and a fixed
+instruction of its own (referee_instruction), from the config alone.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import copy
 import json
 import math
 import re
+from dataclasses import asdict
 
 from perp_lab.dsr import sharpe_bar
 from perp_lab.proposer import contract, piles
@@ -277,3 +282,65 @@ def research_instruction(pc, *, revising: bool = False, capped: bool = False) ->
     parts = [RESEARCH_INSTRUCTION, REVISE_STOP if revising else None, ret,
              contract.describe_research(pc.timeframes, pc.research_max_ideas)]
     return "\n\n".join(x for x in parts if x)
+
+
+CARDS_HEADING = "## The research step's cards"
+CARDS_INTRO = """\
+The idea cards this research round returned, in its order and as it wrote them, each with the lesson in the record \
+it says it builds on (builds_on). None is in the record yet."""
+
+
+def note_cards(note: contract.ResearchNote) -> str:
+    """The cards a referee reviews: every field the research step wrote, builds_on included, numbered in the note's
+    order. Nothing else of the note: never its stop list or summary."""
+    out = [CARDS_HEADING, CARDS_INTRO]
+    for k, idea in enumerate(note.ideas, 1):
+        out += [f"### Card {k}", card_text({**asdict(idea), "columns": list(idea.columns)})]
+    return "\n\n".join(out) + "\n"
+
+
+REFEREE_INSTRUCTION = """\
+## This round: the referee
+
+This round is a review, not a proposal: no plugin, and no trial. You are a skeptical referee of the cards above: \
+none joins the record unless it survives your review. For each card decide: accept (it joins as written), revise \
+(your corrected card joins instead) or reject (nothing joins).
+
+Check each card against the record. Reject a near-copy of a judged plugin's mechanism, a sign flip of a closed \
+idea, a filter added to a closed idea's entry, a restatement of an open idea, an idea in one of the directions the \
+human has ruled out (when listed above), and an edge that would come from its exit rather than its entry.
+
+{literature}
+
+Check it against costs: can the move it expects pay the round-trip cost of the cost model at its timeframe and its \
+trade count?
+
+Check it against the data: its signal must be computable from the columns it lists, and those must be bar columns \
+a plugin may read.
+
+Revise only to correct a claim, sharpen the rule, neutralise the exit or fix the timeframe, keeping the idea: a \
+different idea is a reject. A revised card keeps its card's title or takes one no idea in the record has. A card, \
+revised or not, cites no numbers from the record: mechanism, literature and rule only.
+
+Return one verdict per card, in the cards' order, each with its reason. This round's reply contract is the one \
+below, not the one under "Your reply":"""
+
+# The referee's web access is fenced in code (model.py): these sentences only tell it what the fence allows.
+LITERATURE_WEB = """\
+Check it against the literature: use the allowed academic sources to find published evidence for or against it, \
+and to check that the papers it cites exist and say what it claims. You may fetch only from these hosts: {hosts}; \
+any other fetch is refused. Never look for prices, charts or market news. In each verdict's sources, name the URLs \
+you read on those hosts that the verdict relies on, and no other."""
+
+LITERATURE_NO_WEB = """\
+Check it against the literature you know: published evidence for or against it, and whether the papers it cites \
+exist and say what it claims. You have no web access in this review, so every verdict's sources stay empty."""
+
+
+def referee_instruction(pc, *, web: bool | None = None) -> str:
+    """The referee's instruction: fixed text and the referee contract, from the config alone. `web` (default
+    pc.research_referee_web): whether the referee may fetch from pc.referee_domains, whose hosts it names."""
+    web = pc.research_referee_web if web is None else web
+    literature = LITERATURE_WEB.format(hosts=", ".join(pc.referee_domains)) if web else LITERATURE_NO_WEB
+    return "\n\n".join([REFEREE_INSTRUCTION.format(literature=literature),
+                         contract.describe_referee(pc.timeframes, pc.research_max_ideas)])

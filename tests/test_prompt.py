@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -342,3 +342,81 @@ def test_a_research_fixup_asks_for_a_corrected_note():
                                   "describes.")
     assert prompt.fixup("P", {}, ["e"]).rstrip().endswith("Return a corrected proposal: one JSON object, as the "
                                                           "reply contract describes.")
+
+
+# -- the referee (referee-and-human-stops spec, "The referee")
+def _note(*titles):
+    return contract.parse_research({"ideas": [{"title": t, "mechanism": f"{t}: who pays", "why_it_persists": "w",
+                                               "signal": "s", "trades_per_coin_per_year": 12,
+                                               "likely_failure": "f", "columns": ["close", "funding_last"],
+                                               "timeframe": "1h", "builds_on": f"{t} builds on the fades"}
+                                              for t in titles], "stop": ["x"], "summary": "SUMMARY"},
+                                   ("1h", "4h"), 3)
+
+
+def test_the_cards_under_review_are_the_notes_cards_as_written_in_order_with_builds_on():
+    n = _note("Basis squeeze", "Carry unwind")
+    text = prompt.note_cards(n)
+    assert text.startswith(prompt.CARDS_HEADING + "\n\n") and text.endswith("\n")
+    for k, idea in enumerate(n.ideas, 1):
+        written = {**asdict(idea), "columns": list(idea.columns)}
+        assert f"### Card {k}\n\n" + prompt.card_text(written) in text
+    assert text.index("### Card 1") < text.index("Basis squeeze") < text.index("### Card 2") < \
+        text.index("Carry unwind")
+    assert "Basis squeeze builds on the fades" in text and '"builds_on"' in text
+    # the cards only: never the round's summary or stop list
+    assert "SUMMARY" not in text and not DATE.search(text)
+
+
+REFEREE_CHECKS = (
+    "skeptical referee", "accept", "revise", "reject",
+    "a near-copy of a judged plugin's mechanism", "a sign flip of a closed idea",
+    "a filter added to a closed idea's entry", "a restatement of an open idea",
+    "an edge that would come from its exit rather than its entry", "the directions the human has ruled out",
+    "round-trip cost", "bar columns a plugin may read",
+    "Revise only to correct a claim, sharpen the rule, neutralise the exit or fix the timeframe",
+    "a different idea is a reject", "no numbers from the record", "one verdict per card, in the cards' order",
+    "not the one under \"Your reply\"")
+
+
+def test_a_web_referee_is_told_its_checks_its_hosts_and_never_to_look_for_market_data(cfg):
+    pc = settings.load(cfg)
+    assert pc.research_referee_web
+    text = prompt.referee_instruction(pc)
+    assert text == prompt.referee_instruction(pc, web=True)
+    described = contract.describe_referee(pc.timeframes, pc.research_max_ideas)
+    assert text.endswith(described)
+    words = " ".join(text[: -len(described)].split())
+    for s in (*REFEREE_CHECKS, "use the allowed academic sources to find published evidence for or against it",
+              "the papers it cites exist and say what it claims",
+              "You may fetch only from these hosts: " + ", ".join(pc.referee_domains),
+              "Never look for prices, charts or market news",
+              "the URLs you read on those hosts that the verdict relies on"):
+        assert s in words, s
+    assert "no web access" not in words
+    assert not DATE.search(text)
+
+
+def test_a_referee_without_the_web_is_told_its_sources_stay_empty(cfg):
+    pc = replace(settings.load(cfg), research_referee_web=False)
+    text = prompt.referee_instruction(pc)
+    assert text == prompt.referee_instruction(settings.load(cfg), web=False)
+    described = contract.describe_referee(pc.timeframes, pc.research_max_ideas)
+    assert text.endswith(described)
+    words = " ".join(text[: -len(described)].split())
+    for s in (*REFEREE_CHECKS, "You have no web access in this review, so every verdict's sources stay empty"):
+        assert s in words, s
+    assert "fetch" not in words and not any(d in text for d in pc.referee_domains)
+
+
+def test_the_referee_instruction_follows_the_configured_hosts_and_limit(cfg):
+    pc = replace(settings.load(cfg), referee_domains=("arxiv.org", "www.nber.org"), research_max_ideas=2)
+    text = prompt.referee_instruction(pc)
+    assert "You may fetch only from these hosts: arxiv.org, www.nber.org;" in " ".join(text.split())
+    assert "ssrn" not in text and text.endswith(contract.describe_referee(pc.timeframes, 2))
+
+
+def test_a_referee_fixup_asks_for_a_corrected_report():
+    text = prompt.fixup("THE ROUND'S PROMPT", {"verdicts": 1}, ["verdicts: must be an array"], what="referee report")
+    assert text.rstrip().endswith("Return a corrected referee report: one JSON object, as the reply contract "
+                                  "describes.")
