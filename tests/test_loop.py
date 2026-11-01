@@ -1738,6 +1738,55 @@ def test_a_research_calls_tokens_count_toward_the_days_caps_and_the_session(lab)
     assert (s["tokens_in"], s["tokens_out"]) == (7700, 70)
 
 
+# The real referee call's result (2026-11-02, CLI 2.1.316, effort high): `usage` is its own model's tokens alone;
+# `modelUsage` has them too, and those of the model WebFetch summarises each fetched page with (M1).
+REAL_USAGE = {"input_tokens": 14, "cache_creation_input_tokens": 45054, "cache_read_input_tokens": 349044,
+              "output_tokens": 8594, "output_tokens_details": {"thinking_tokens": 3909},
+              "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0}, "service_tier": "standard",
+              "cache_creation": {"ephemeral_1h_input_tokens": 45054, "ephemeral_5m_input_tokens": 0}}
+REAL_MODEL_USAGE = {
+    "claude-opus-5-5": {"inputTokens": 14, "outputTokens": 8594, "cacheReadInputTokens": 349044,
+                        "cacheCreationInputTokens": 45054, "webSearchRequests": 0, "costUSD": 0.6021768000000001,
+                        "contextWindow": 1000000, "maxOutputTokens": 128000, "thinkingTokens": 3909,
+                        "cacheCreationEphemeral5mInputTokens": 0, "cacheCreationEphemeral1hInputTokens": 45054,
+                        "canonicalModel": "claude-opus-5-5", "provider": "firstParty", "costBasis": "list"},
+    "claude-haiku-5-5": {"inputTokens": 147413, "outputTokens": 13892, "cacheReadInputTokens": 13850,
+                         "cacheCreationInputTokens": 1385, "webSearchRequests": 0, "costUSD": 0.021998925000000003,
+                         "contextWindow": 1000000, "maxOutputTokens": 128000, "thinkingTokens": 7917,
+                         "cacheCreationEphemeral5mInputTokens": 1385, "cacheCreationEphemeral1hInputTokens": 0,
+                         "canonicalModel": "claude-haiku-5-5", "provider": "firstParty", "costBasis": "list"}}
+# every model's input, cache creation and cache reads; and output (thinking is in it, as in usage)
+REAL_TOKENS = (14 + 45054 + 349044 + 147413 + 13850 + 1385, 8594 + 13892)
+
+
+def test_a_calls_tokens_are_every_models_in_model_usage_once():
+    assert loop._tokens(Reply(proposal={}, usage=REAL_USAGE, cost_usd=0.62, model_usage=REAL_MODEL_USAGE)) == \
+        REAL_TOKENS == (556760, 22486)
+
+
+@pytest.mark.parametrize("model_usage", [None, {}, "x", {"claude-opus-5-5": "x"},
+                                         {"claude-opus-5-5": {"input_tokens": 9, "output_tokens": 9}}],
+                         ids=["absent", "empty", "a-string", "an-entry-not-a-dict", "keys-renamed"])
+def test_a_call_without_a_readable_model_usage_counts_its_usage(model_usage):
+    assert loop._tokens(Reply(proposal={}, usage=REAL_USAGE, cost_usd=None, model_usage=model_usage)) == \
+        (14 + 45054 + 349044, 8594)
+
+
+def test_a_referees_fetch_summaries_count_toward_the_round_the_day_and_the_session(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze")]
+    lab.fake.reports = [Reply(proposal=report(v("Basis squeeze", sources=[ARXIV])), usage=dict(REAL_USAGE),
+                              cost_usd=0.62, fetches=[ARXIV], model_usage=REAL_MODEL_USAGE)]
+    assert run(lab, refereed(lab), trials=1) == "trials"
+    assert order(lab) == "RVP"
+    (row,) = rounds(lab)
+    assert (row["tokens_in"], row["tokens_out"]) == (1100 + REAL_TOKENS[0], 10 + REAL_TOKENS[1])
+    assert [(c["seq"], c["tokens_in"], c["tokens_out"]) for c in call_rows(lab)][1] == (None, *REAL_TOKENS)
+    assert lab.rec.usage_on(T0.date()) == (2200 + REAL_TOKENS[0], 20 + REAL_TOKENS[1])
+    s = lab.rec.session(1)
+    assert (s["tokens_in"], s["tokens_out"]) == (2200 + REAL_TOKENS[0], 20 + REAL_TOKENS[1])
+
+
 def test_a_research_round_waits_out_the_days_judge_quota_first(lab):
     assert run(lab, replace(lab.pc, trials_per_day=5), trials=6) == "trials"
     assert order(lab) == "PPPPPRP"

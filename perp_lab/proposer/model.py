@@ -80,6 +80,7 @@ class Reply:
     cost_usd: float | None
     fetches: list[str] = field(default_factory=list)  # every WebFetch URL the model issued, in order
     denied: list[str] = field(default_factory=list)  # those the CLI denied (the result's permission_denials)
+    model_usage: dict | None = None  # the result's modelUsage, every model's tokens by model, when an object
 
 
 class ModelConfigError(Exception):
@@ -464,9 +465,11 @@ def call(pc, system: str, user: str, schema: dict, transcript: Path, *,
     if not isinstance(usage, dict):  # the daily token caps count it: a call they can't count fails closed
         raise ModelCallError(f"the result has no usage object: {type(usage).__name__}")
     cost = result.get("total_cost_usd")
+    per_model = result.get("modelUsage")
     return Reply(proposal=proposal, usage=usage,
                  cost_usd=float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
-                 fetches=fence.urls(), denied=fence.denied())
+                 fetches=fence.urls(), denied=fence.denied(),
+                 model_usage=per_model if isinstance(per_model, dict) else None)
 
 
 def call_with_retries(pc, system: str, user: str, schema: dict, transcript: Path, *, sleep=time.sleep,

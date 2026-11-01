@@ -126,7 +126,16 @@ def test_the_cli_runs_in_an_empty_temp_dir_outside_the_repo_with_only_home_and_p
 def test_the_ok_fixture_parses_to_its_structured_output_and_usage(fake, pc, transcript):
     fake.scenario(OK)
     reply = model.call(pc, "s", "u", SCHEMA, transcript)
-    assert reply == model.Reply(proposal={"ok": True}, usage=_msg(RESULT)["usage"], cost_usd=0.020392)
+    assert reply == model.Reply(proposal={"ok": True}, usage=_msg(RESULT)["usage"], cost_usd=0.020392,
+                                model_usage=_msg(RESULT)["modelUsage"])
+
+
+@pytest.mark.parametrize("model_usage", ["x", [], None])
+def test_a_result_whose_model_usage_is_not_an_object_has_none(fake, pc, transcript, model_usage):
+    fake.scenario([*OK[:RESULT], _line(RESULT, modelUsage=model_usage)])
+    assert model.call(pc, "s", "u", SCHEMA, transcript).model_usage is None
+    fake.scenario([*OK[:RESULT], _line(RESULT, drop=("modelUsage",))])
+    assert model.call(pc, "s", "u", SCHEMA, transcript).model_usage is None
 
 
 def test_the_transcript_holds_every_line_and_no_token(fake, pc, transcript):

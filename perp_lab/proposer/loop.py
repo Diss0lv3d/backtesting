@@ -320,12 +320,26 @@ def after_trial(record: Record, pc, seq: int, exempt: set, pile: str, verdict: d
     return None, notes
 
 
-def _tokens(usage: dict) -> tuple[int, int]:
-    """Everything the model read, cached or not, and what it wrote (R31). A missing key counts 0."""
-    def n(k):
-        v = usage.get(k)
-        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else 0
-    return n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens"), n("output_tokens")
+def _n(counts: dict, k: str) -> int:
+    v = counts.get(k)
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else 0
+
+
+def _tokens(reply: model.Reply) -> tuple[int, int]:
+    """Everything the call's models read, cached or not, and what they wrote (R31). A missing key counts 0.
+
+    `usage` is the called model's alone. A web call's fetched pages are each summarised by a second model, whose
+    tokens only the result's `modelUsage` holds: it has every model's, the called one's included (the real referee
+    call of 2026-11-02: ≈163k input tokens there beside `usage`'s ≈394k), so a call counts every model's there once,
+    never `usage` on top. Each side is at least `usage`'s, so a modelUsage the code can't read undercounts nothing."""
+    u = reply.usage
+    tin = _n(u, "input_tokens") + _n(u, "cache_creation_input_tokens") + _n(u, "cache_read_input_tokens")
+    tout = _n(u, "output_tokens")
+    per = reply.model_usage if isinstance(reply.model_usage, dict) else {}
+    models = [m for m in per.values() if isinstance(m, dict)]
+    all_in = sum(_n(m, "inputTokens") + _n(m, "cacheCreationInputTokens") + _n(m, "cacheReadInputTokens")
+                 for m in models)
+    return max(tin, all_in), max(tout, sum(_n(m, "outputTokens") for m in models))
 
 
 def _preflight_errors(report: dict) -> list[str]:
@@ -629,7 +643,7 @@ class _Session:
             except model.FenceBreach:
                 self._log_call(seq, 0, 0, None, "fence_breach")
                 raise
-            tin, tout = _tokens(reply.usage)
+            tin, tout = _tokens(reply)
             self._log_call(seq, tin, tout, reply.cost_usd, "reply")
             return reply
 
@@ -942,7 +956,7 @@ class _Session:
     @staticmethod
     def _count(r: _Research, reply: model.Reply) -> None:
         """A round's call's tokens on its row (the call itself is logged with seq None, so the day counts it)."""
-        tin, tout = _tokens(reply.usage)
+        tin, tout = _tokens(reply)
         r.tokens = [r.tokens[0] + tin, r.tokens[1] + tout]
 
     def _referee(self, r: _Research, note: contract.ResearchNote, stop: list[str]) -> None:
