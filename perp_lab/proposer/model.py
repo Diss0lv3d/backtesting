@@ -24,8 +24,9 @@ the CLI otherwise fetches with no rule (about 90 documentation sites; probe of 2
 the code fence is the guarantee. Init must list exactly `StructuredOutput` and `WebFetch` with `permissionMode`
 "default", every WebFetch the model issues is recorded, and one off the allowlist is harmless only if the CLI
 denied it: its tool_result, which the model reads next, must be the CLI's denial, and the result's
-`permission_denials` must list it. Anything else kills the call with ModelConfigError before its result is used.
-The audit runs on every call; a tool-less one allows no host.
+`permission_denials` must list it. Anything else is a FenceBreach: the call is killed before its result is used,
+and it is not retried; the caller fails closed for that call and goes on (R-RF5). An init that fails the check is
+still a ModelConfigError, and so is a WebFetch in a tool-less call: the CLI did not hold `--tools ""`.
 """
 
 from __future__ import annotations
@@ -81,6 +82,11 @@ class Reply:
 class ModelConfigError(Exception):
     """The CLI is not set up as the spec requires, or the API refuses the call as made (a 4xx other than 429): no
     retry can help, and the session stops with `model_config`."""
+
+
+class FenceBreach(Exception):
+    """A web call's stream showed a fetch off the allowlist that the CLI did not deny, or a shape the fetch audit
+    can't vouch for: the call was killed before its result was used. Not retried (R-RF5)."""
 
 
 class UsageLimit(Exception):
@@ -272,12 +278,14 @@ class _Fence:
         if kind == "assistant":
             for item in _items(msg, "tool_use"):
                 if item.get("name") == "WebFetch":
+                    if not self.domains:
+                        raise ModelConfigError('a WebFetch in a tool-less call: --tools "" did not hold')
                     self._fetch(item)
         elif kind == "user":
             for item in _items(msg, "tool_result"):
                 tid = _id(item.get("tool_use_id"))
                 if tid in self.off and not _is_denial(item.get("content")):
-                    raise ModelConfigError(f"off-list fetch: {self.off[tid]}: its tool_result is not the denial")
+                    raise FenceBreach(f"off-list fetch: {self.off[tid]}: its tool_result is not the denial")
         elif kind == "result":
             denials = msg.get("permission_denials")
             for d in denials if isinstance(denials, list) else ():
@@ -285,7 +293,7 @@ class _Fence:
                     self.denials.add(d["tool_use_id"])
             for tid, host in self.off.items():
                 if tid not in self.denials:
-                    raise ModelConfigError(f"off-list fetch: {host}: not in the result's permission_denials")
+                    raise FenceBreach(f"off-list fetch: {host}: not in the result's permission_denials")
 
     def _fetch(self, item: dict) -> None:
         tid, inp = _id(item.get("id")), item.get("input")
@@ -408,7 +416,7 @@ def call(pc, system: str, user: str, schema: dict, transcript: Path, web_domains
 
 def call_with_retries(pc, system: str, user: str, schema: dict, transcript: Path, *, sleep=time.sleep,
                       web_domains: tuple[str, ...] = ()) -> Reply:
-    """Up to 5 tries on ModelCallError; UsageLimit and ModelConfigError pass straight through."""
+    """Up to 5 tries on ModelCallError; UsageLimit, ModelConfigError and FenceBreach pass straight through."""
     for delay in BACKOFF_S:
         try:
             return call(pc, system, user, schema, transcript, web_domains)

@@ -533,7 +533,7 @@ def test_an_off_list_fetch_that_ran_kills_the_call_at_once(fake, pc, transcript,
     # listed as denied in the result too: the tool_result is what the model reads, so it alone decides
     fake.scenario([*head, 30, *OK[ASSISTANT:RESULT], _result(("toolu_b", GECKO))])
     start = time.monotonic()
-    with pytest.raises(model.ModelConfigError, match="off-list fetch: api.coingecko.com"):
+    with pytest.raises(model.FenceBreach, match="off-list fetch: api.coingecko.com"):
         model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
     assert time.monotonic() - start < QUICK_S
     assert _gone(fake.seen["pid"])
@@ -550,7 +550,7 @@ def test_an_off_list_fetch_the_result_does_not_list_as_denied_kills_the_call(fak
     fake.scenario([*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a"), _fetch("toolu_b", GECKO),
                          _fetched("toolu_b", DENIED)), result, 30])
     start = time.monotonic()
-    with pytest.raises(model.ModelConfigError, match="off-list fetch: api.coingecko.com"):
+    with pytest.raises(model.FenceBreach, match="off-list fetch: api.coingecko.com"):
         model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
     assert time.monotonic() - start < QUICK_S
     assert _gone(fake.seen["pid"])
@@ -558,7 +558,7 @@ def test_an_off_list_fetch_the_result_does_not_list_as_denied_kills_the_call(fak
 
 def test_an_off_list_fetch_with_no_tool_result_and_no_denial_kills_the_call(fake, pc, transcript):
     fake.scenario([*_web(_fetch("toolu_b", GECKO)), _result(), 30])
-    with pytest.raises(model.ModelConfigError, match="off-list fetch: api.coingecko.com"):
+    with pytest.raises(model.FenceBreach, match="off-list fetch: api.coingecko.com"):
         model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
     assert _gone(fake.seen["pid"])
 
@@ -568,16 +568,26 @@ def test_an_off_list_fetch_with_no_tool_result_and_no_denial_kills_the_call(fake
                          ids=["no-url", "a-number", "no-scheme", "backslash", "bad-ipv6", "ftp"])
 def test_an_unreadable_fetch_url_that_was_not_denied_kills_the_call(fake, pc, transcript, url):
     fake.scenario([*_web(_fetch("toolu_b", url), _fetched("toolu_b", "a page")), _result()])
-    with pytest.raises(model.ModelConfigError, match="off-list fetch"):
+    with pytest.raises(model.FenceBreach, match="off-list fetch"):
         model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
 
 
-def test_the_audit_holds_in_a_tool_less_call_too(fake, pc, transcript):
-    # cannot happen past the init check, which lists no WebFetch; the audit is on anyway, with nothing allowed
-    fake.scenario([OK[UI], OK[INIT], _fetch("toolu_a", ARXIV), _fetched("toolu_a"), 30, *OK[ASSISTANT:]])
-    with pytest.raises(model.ModelConfigError, match="off-list fetch: export.arxiv.org"):
+def test_a_webfetch_in_a_tool_less_call_is_a_config_error_at_once(fake, pc, transcript):
+    # cannot happen past the init check, which lists no WebFetch: the CLI did not hold --tools "", so the session
+    # stops (model_config) rather than one call failing closed
+    head = [OK[UI], OK[INIT], _fetch("toolu_a", ARXIV)]
+    fake.scenario([*head, _fetched("toolu_a"), 30, *OK[ASSISTANT:]])
+    start = time.monotonic()
+    with pytest.raises(model.ModelConfigError, match="WebFetch"):
         model.call(pc, "s", "u", SCHEMA, transcript)
+    assert time.monotonic() - start < QUICK_S
     assert _gone(fake.seen["pid"])
+    assert transcript.read_text().splitlines() == head
+
+
+def test_a_fence_breach_is_its_own_error():
+    """R-RF5: not ModelConfigError (the referee round fails closed, the session goes on) and not retried."""
+    assert not issubclass(model.FenceBreach, (model.ModelConfigError, model.ModelCallError, model.UsageLimit))
 
 
 def test_call_with_retries_passes_the_web_domains_through(fake, pc, transcript):
@@ -591,7 +601,7 @@ def test_call_with_retries_passes_the_web_domains_through(fake, pc, transcript):
 def test_an_off_list_fetch_is_not_retried(fake, pc, transcript):
     fake.scenario([*_web(_fetch("toolu_b", GECKO), _fetched("toolu_b", "a price chart")), _result()])
     sleeps = []
-    with pytest.raises(model.ModelConfigError, match="off-list fetch"):
+    with pytest.raises(model.FenceBreach, match="off-list fetch"):
         model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append, web_domains=DOMAINS)
     assert sleeps == []
 
