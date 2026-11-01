@@ -1,7 +1,8 @@
 # New idea cards for the strategy builder, 2026-11-01, ranked (1 = test first).
 # Each item has exactly contract.IdeaCard's fields plus the timeframe. No statistic from the lab's
 # real bars, runs or verdicts appears in any card; numbers are parameters, literature years and the
-# trade-count estimate. Rationale, evidence and kill criteria: report.md next to this file.
+# trade-count estimate. Rationale, evidence and kill criteria: README.md next to this file.
+# Add them all (or none, if any fails its checks) with `lab idea add docs/research/2026-11-01-ideas/cards.yaml`.
 
 - title: Perp-flow divergence
   mechanism: >-
