@@ -1,6 +1,6 @@
 # Research Referee and Human Stop List Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. (6 tasks after the user's "connect point 2 and 3": the referee checks the web.)
 
 **Goal:** The human can rule out directions for the whole loop (a stop list in every proposal and research prompt), and every research round's cards are reviewed by a skeptical referee call before any enters the record.
 
@@ -12,13 +12,13 @@
 
 ## Global Constraints
 
-- The referee call is the shared caller (`_call`): tool-less `claude -p`, the guarded model, the init check, usage-limit waits, seq None token accounting. No web, no file access, no new subprocess.
+- The referee call is the shared caller (`_call`): the guarded model, usage-limit waits, seq None token accounting — with web access fenced in code: `--tools WebFetch`, one `--allowedTools WebFetch(domain:…)` per `referee_domains` entry, the init check expecting exactly StructuredOutput + WebFetch, and a fetch audit (an off-list fetch that wasn't denied → kill, `model_config`). No WebSearch, no file access, no new subprocess. `research_referee_web: false` → a tool-less referee.
 - The referee schema has no `oneOf`/`allOf`/`anyOf` at its top level; "revised iff revise" is checked in code.
 - Prompts carry nothing time-bearing and no CLI error text; the human's stop items are fixed text the human wrote (one line, ≤ 200 chars).
 - Fail closed: a referee failure adds no cards; it never loses the round's stop list and never stops the session (except `ModelConfigError`).
 - `perp_lab/proposer/` boundary rules hold (tests/test_proposer_boundaries.py).
 - record.db exists on the user's machine: new tables via `create_all`; the new `research.referee` column via the existing column migration in `Record.__init__`.
-- Config: `research_referee: true` (default).
+- Config: `research_referee: true`, `research_referee_web: true`, `referee_domains: [arxiv.org, export.arxiv.org, api.semanticscholar.org, api.crossref.org, ideas.repec.org, papers.ssrn.com, www.nber.org]` (defaults).
 - Style: match the surrounding code; TDD; one concern per commit; stage by path; trailers per the dispatch.
 
 ## Review Focus
@@ -28,6 +28,7 @@
 3. The human's stop list is in every proposal and research prompt (before the research list), absent when empty, and survives `research_every: 0`.
 4. A revised card goes through `human.check`; a revision that fails it is a fix-up, not a silent add.
 5. The e2e sentinel check covers the referee call.
+6. The web fence: no path lets the referee fetch an off-list host and have its content used; the proposal and research calls stay tool-less (their argv and init check unchanged).
 
 ---
 
@@ -62,29 +63,42 @@
 - `contract.Verdict` (title: str one line; decision: one of accept/revise/reject; reason: one line ≤ 300; revised: `ResearchIdea | None`), `contract.RefereeReport` (verdicts: tuple of Verdict, at most `research_max_ideas`). `referee_schema(timeframes, max_ideas)`, `describe_referee(...)`, `parse_referee(obj, timeframes, max_ideas)` from the shared machinery (nullable nested object support if the machinery lacks it — extend minimally, test it; no top-level combinator).
 - `research.check_report(report, note, record, pc) -> list[str]`: exactly one verdict per note card, titles matching in order; `revised` present iff `revise`; each revised card through `human.check` (title: the original or a new unused one; distinct within the result).
 - `research.referee_result(report, note) -> list[ResearchIdea]`: the cards to add (accepted as written, revised as revised).
-- `ProposerConfig.research_referee: bool` (StartRefused if not a bool); config default `true`.
+- `ProposerConfig.research_referee: bool`, `research_referee_web: bool`, `referee_domains: tuple[str, ...]` (StartRefused on a wrong type, an empty or non-hostname domain); config defaults per the Global Constraints.
+- `ideas.web_reviewed` boolean column via the column migration (default false).
 - `research.referee` JSON column, nullable, via the column migration (test on an old record.db with a research table lacking it).
 
 - [ ] Tests first (schema shape and no combinator; parse/describe agree; limits; check_report cases incl. mismatched count/order/title, revised iff revise, a revised card failing human.check; referee_result; settings; migration), fail, implement, pass, full suite.
 - [ ] Commits: `feat(proposer): the referee report contract and its checks`, `feat(proposer): the research row keeps the referee's verdicts`.
 
-### Task 4: The referee in the research round
+### Task 4: A web-fenced call in the model caller
+
+**Files:** Modify `perp_lab/proposer/model.py`, `tests/fake_claude.py` (only if a scenario needs it). Test: `tests/test_model.py`.
+
+**Interfaces:**
+- `model.argv(pc, system, schema, *, web_domains: tuple[str, ...] = ())`: with no domains, exactly today's argv (`--tools ""`); with domains, `--tools WebFetch` plus `--allowedTools` and one `WebFetch(domain:<d>)` rule per domain (check the CLI's accepted form: one flag with several rules or several values — the controller's probe used one rule).
+- `model.call(..., web_domains=())` / `call_with_retries(..., web_domains=())`: the init check expects `["StructuredOutput"]` with no domains, and exactly `{"StructuredOutput", "WebFetch"}` with domains; every assistant `tool_use` of WebFetch is recorded (url); the result's `permission_denials` are read; a WebFetch whose host isn't on the allowlist and which was not denied (its tool_result isn't a denial and it isn't in permission_denials) → kill the process, `ModelConfigError("off-list fetch: <host>")`. `Reply` gains `fetches: list[str]` and `denied: list[str]`.
+- Host matching: exact host or a subdomain of an allowed domain (`www.` handled), compared case-insensitively; anything unparsable counts as off-list.
+
+- [ ] Tests first (argv both ways; init check both ways; an allowed fetch recorded; a denied off-list fetch recorded and harmless; an off-list fetch that ran → ModelConfigError and the process killed; host matching cases; today's tool-less behaviour unchanged), fail, implement, pass, full suite.
+- [ ] Commit: `feat(proposer): a model call can fetch from an allowlist of academic hosts, audited in code`.
+
+### Task 5: The referee in the research round
 
 **Files:** Modify `perp_lab/proposer/prompt.py`, `perp_lab/proposer/loop.py`, `perp_lab/proposer/digest.py`. Test: `tests/test_prompt.py`, `tests/test_loop.py`, `tests/test_digest.py`.
 
 **Interfaces:**
 - `prompt.referee_instruction(pc) -> str` (fixed text per the spec's "The call" + `describe_referee`), `prompt.note_cards(note) -> str` (the note's cards as the model wrote them, builds_on included, as JSON or a fixed layout — no times).
-- In `_research`, after a valid note with ideas and not capped, when `pc.research_referee`: one referee call through `_call` with the referee schema (same transcript), fix-ups on parse/`check_report` errors, then `add_ideas(referee_result(...))`. Fail closed per the spec (no cards; stop list and summary kept; outcome `ok`; referee outcome on the row and the digest). `research_referee: false` → today's behaviour.
+- In `_research`, after a valid note with ideas and not capped, when `pc.research_referee`: one referee call through `_call` with the referee schema (same transcript) and `web_domains=pc.referee_domains` when `pc.research_referee_web`, fix-ups on parse/`check_report` errors (incl. `sources` off the allowlist), then `add_ideas(referee_result(...))` with `web_reviewed` set when the referee had web. The referee JSON on the row records verdicts, sources, fetches and denials. Fail closed per the spec (no cards; stop list and summary kept; outcome `ok`; referee outcome on the row and the digest). `research_referee: false` → today's behaviour.
 - `Digest.research(...)` reports the verdict counts and each rejection's reason; a referee failure says why.
 
 - [ ] Tests first (fake Deps: accept/revise/reject mixes and what's added; fix-up on mismatch and on a failing revised card; fail closed on call error and invalid-after-fix-ups; skipped when no ideas, capped, or off; the referee prompt exactly static context + record + stop sections + cards + instruction; tokens counted; digest lines; no times or CLI text in any prompt), fail, implement, pass, full suite.
 - [ ] Commits: `feat(proposer): the referee instruction`, `feat(proposer): a referee reviews each research round's cards`.
 
-### Task 5: Verdicts on the Ideas page, and end to end
+### Task 6: Verdicts on the Ideas page, and end to end
 
 **Files:** Modify `dashboard/ideas.py`, `README.md`, `tests/test_proposer_e2e.py`, `docs/superpowers/specs/2026-11-01-research-round-design.md` (a pointer to the referee spec). Test: `tests/test_dashboard.py`, `tests/test_proposer_e2e.py`.
 
-**Interfaces:** the research notes list each card with its verdict and reason (revised → the added idea), and a referee failure; malformed `referee` values guarded like the reply. README: the referee (what it checks, fail-closed, `research_referee`). e2e: the research round's fake reply has ideas, the fake referee replies (e.g. one accept, one reject), the record holds only the accepted card, and the sentinel/time check covers the referee call.
+**Interfaces:** the research notes list each card with its verdict, reason and sources (revised → the added idea), the fetches and denials, and a referee failure; malformed `referee` values guarded like the reply; an idea with `web_reviewed` shows a "web-reviewed" tag, and the review packet of a promoted web-reviewed idea carries the caveat (academic papers after the cutoff may discuss the holdout period: weaker evidence). README: the referee (what it checks, fail-closed, `research_referee`). e2e: the research round's fake reply has ideas, the fake referee replies (e.g. one accept, one reject), the record holds only the accepted card, and the sentinel/time check covers the referee call.
 
 - [ ] Tests first, fail, implement, pass; e2e; full suite.
 - [ ] Commits: `feat(dashboard): the referee's verdicts in the research notes`, `test(proposer): the end-to-end research round is refereed`, `docs(proposer): the research referee`.
