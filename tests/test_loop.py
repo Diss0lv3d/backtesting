@@ -1810,6 +1810,11 @@ def test_no_research_rounds_time_summary_or_builds_on_reaches_any_prompt(lab):
 
 
 # -- the referee (referee-and-human-stops spec, "The referee")
+def holdout_dates(lab) -> set[str]:
+    """The only dates a prompt may hold: the referee's, the lab's holdout start and the day before it."""
+    return {f"{lab.pc.holdout_start:%Y-%m-%d}", f"{lab.pc.holdout_start - timedelta(days=1):%Y-%m-%d}"}
+
+
 ARXIV = "https://arxiv.org/abs/1707.06221"
 GECKO = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?days=120"
 
@@ -1900,7 +1905,7 @@ def test_the_referees_prompt_is_the_record_both_stop_sections_the_cards_and_its_
     for gone in ("SUMMARY", "Stop B", HUMAN_FIRST):
         assert gone not in j.user, gone
     no_time_or_removed_item(j.user)
-    assert DATE.findall(j.user) == [f"{lab.pc.holdout_start:%Y-%m-%d}"]    # its sources' bound (R-RF7): no other
+    assert set(DATE.findall(j.user)) == holdout_dates(lab)      # its sources' and searches' bounds: no other
 
 
 def test_with_the_web_off_the_referee_is_tool_less_names_no_source_and_marks_nothing(lab):
@@ -2110,8 +2115,8 @@ def test_no_time_summary_or_later_card_text_reaches_any_prompt_with_the_referee(
     for c in lab.fake.calls:
         for gone in ("SUMMARY", "REASON", "05:06", "10:00", "2029", ARXIV):     # nothing of the referee's review
             assert gone not in c.user, gone
-        # one date only, the lab's holdout start in the referee's instruction (R-RF7)
-        assert DATE.findall(c.user) == ([f"{lab.pc.holdout_start:%Y-%m-%d}"] if refereeing(c) else []), c.user
+        # no date but the lab's holdout start and the day before, in the referee's instruction (R-RF7, M3)
+        assert set(DATE.findall(c.user)) == (holdout_dates(lab) if refereeing(c) else set()), c.user
         assert ("BUILDS-ON" in c.user) is refereeing(c)
 
 

@@ -25,6 +25,7 @@ import json
 import math
 import re
 from dataclasses import asdict
+from datetime import timedelta
 
 from perp_lab.dsr import sharpe_bar
 from perp_lab.proposer import contract, piles
@@ -347,15 +348,20 @@ below, not the one under "Your reply":"""
 
 # The referee's web access is fenced in code (model.py): these sentences only tell it what the fence allows, and
 # that its review, unlike a proposal, has a tool, where the static context (its system prompt) says none. A paper
-# from the holdout period may discuss it, so the referee is asked to leave such papers alone (R-RF7); it can't be
-# checked in code, and the web_reviewed mark stays the safeguard.
+# from the holdout period may discuss it, so the referee is asked to leave such papers alone (R-RF7) and to bound its
+# searches so that they don't return one (M3: the real referee run read an October 2026 paper's metadata); neither
+# can be checked in code, and the web_reviewed mark stays the safeguard. Each search's bound is the day before the
+# holdout start, in the form its API takes. arXiv's refuses an open range ([* TO ...]: an error entry, checked
+# 2026-11-02), so its range starts before arXiv's first submission (August 1991).
 LITERATURE_WEB = """\
 Check it against the literature: use the allowed academic sources to find published evidence for or against it, \
 and to check that the papers it cites exist and say what it claims. In this review, unlike a proposal, you have one \
 tool: WebFetch, limited to the hosts below. You may fetch only from these hosts: {hosts}; any other fetch is \
-refused. Never look for prices, charts or market news. Cite only sources published before \
-{before}, and disregard any published on or after that date. In each verdict's sources, name the URLs you read on \
-those hosts that the verdict relies on, and no other."""
+refused. Never look for prices, charts or market news. Cite only sources published before {before}, and disregard \
+any published on or after that date. Bound every search to papers from before that date: Crossref with \
+filter=until-pub-date:{last}, Semantic Scholar with publicationDateOrYear=:{last}, arXiv with \
+submittedDate:[199101010000 TO {last:%Y%m%d}2359] joined to its search_query by AND. In each verdict's sources, name \
+the URLs you read on those hosts that the verdict relies on, and no other."""
 
 LITERATURE_NO_WEB = """\
 Check it against the literature you know: published evidence for or against it, and whether the papers it cites \
@@ -365,9 +371,11 @@ exist and say what it claims. You have no web access in this review, so every ve
 def referee_instruction(pc, *, web: bool | None = None) -> str:
     """The referee's instruction: fixed text and the referee contract, from the config alone. `web` (default
     pc.research_referee_web): whether the referee may fetch from pc.referee_domains, whose hosts it names, and
-    then the one date in it, the lab's holdout start, before which its sources must be published."""
+    then the only dates in it, the lab's holdout start, before which its sources must be published, and the day
+    before it, where its searches end."""
     web = pc.research_referee_web if web is None else web
-    literature = (LITERATURE_WEB.format(hosts=", ".join(pc.referee_domains), before=f"{pc.holdout_start:%Y-%m-%d}")
+    literature = (LITERATURE_WEB.format(hosts=", ".join(pc.referee_domains), before=f"{pc.holdout_start:%Y-%m-%d}",
+                                        last=pc.holdout_start - timedelta(days=1))
                   if web else LITERATURE_NO_WEB)
     return "\n\n".join([REFEREE_INSTRUCTION.format(literature=literature),
                          contract.describe_referee(pc.timeframes, pc.research_max_ideas)])

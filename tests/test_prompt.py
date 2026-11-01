@@ -392,10 +392,12 @@ def test_a_web_referee_is_told_its_checks_its_hosts_and_never_to_look_for_market
               "the papers it cites exist and say what it claims",
               "You may fetch only from these hosts: " + ", ".join(pc.referee_domains),
               "Never look for prices, charts or market news",
-              "the URLs you read on those hosts that the verdict relies on", SOURCES_BEFORE):
+              "the URLs you read on those hosts that the verdict relies on", SOURCES_BEFORE, BOUNDS):
         assert s in words, s
     assert "no web access" not in words
-    assert DATE.findall(text) == ["2026-07-01"]           # the lab's holdout start, from the config: no other date
+    # the lab's holdout start and the day before it, from the config: no other date
+    assert set(DATE.findall(text)) == {"2026-07-01", "2026-06-30"}
+    assert re.findall(r"\d{8,}", text) == ["199101010000", "202606302359"]
 
 
 ONE_TOOL = "In this review, unlike a proposal, you have one tool: WebFetch, limited to the hosts below."
@@ -426,6 +428,11 @@ def test_a_referee_without_the_web_is_told_its_sources_stay_empty(cfg):
 
 SOURCES_BEFORE = ("Cite only sources published before 2026-07-01, and disregard any published on or after that "
                   "date.")
+# M3: the searches themselves end the day before the holdout, so a later paper doesn't come back to be read. arXiv's
+# API refuses an open range ([* TO ...]: an error entry, checked 2026-11-02), so its range starts before arXiv did.
+BOUNDS = ("Bound every search to papers from before that date: Crossref with filter=until-pub-date:2026-06-30, "
+          "Semantic Scholar with publicationDateOrYear=:2026-06-30, arXiv with submittedDate:[199101010000 TO "
+          "202606302359] joined to its search_query by AND.")
 
 
 def test_the_referees_sources_end_at_the_configured_holdout_start(cfg):
@@ -433,6 +440,15 @@ def test_the_referees_sources_end_at_the_configured_holdout_start(cfg):
     pc = replace(settings.load(cfg), holdout_start=datetime(2026, 9, 1).date())
     words = " ".join(prompt.referee_instruction(pc).split())
     assert SOURCES_BEFORE.replace("2026-07-01", "2026-09-01") in words and "2026-07-01" not in words
+
+
+@pytest.mark.parametrize("start, last", [("2026-09-01", "2026-08-31"), ("2027-01-01", "2026-12-31"),
+                                         ("2028-03-01", "2028-02-29")])
+def test_the_referees_searches_end_the_day_before_the_configured_holdout_start(cfg, start, last):
+    pc = replace(settings.load(cfg), holdout_start=datetime.fromisoformat(start).date())
+    words = " ".join(prompt.referee_instruction(pc).split())
+    assert BOUNDS.replace("2026-06-30", last).replace("20260630", last.replace("-", "")) in words
+    assert set(DATE.findall(words)) == {start, last}
 
 
 def test_the_referee_instruction_follows_the_configured_hosts_and_limit(cfg):
