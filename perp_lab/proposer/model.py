@@ -242,8 +242,10 @@ def call(pc, system: str, user: str, schema: dict, transcript: Path) -> Reply:
     if not isinstance(proposal, dict):
         raise ModelCallError(f"the result has no structured_output object: {type(proposal).__name__}")
     usage = result.get("usage")
+    if not isinstance(usage, dict):  # the daily token caps count it: a call they can't count fails closed
+        raise ModelCallError(f"the result has no usage object: {type(usage).__name__}")
     cost = result.get("total_cost_usd")
-    return Reply(proposal=proposal, usage=usage if isinstance(usage, dict) else {},
+    return Reply(proposal=proposal, usage=usage,
                  cost_usd=float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None)
 
 

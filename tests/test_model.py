@@ -236,8 +236,10 @@ def test_an_allowed_warning_still_serves_the_call(fake, pc, transcript):
     ([*OK[:RESULT], _line(RESULT, is_error=True, subtype="error_during_execution")], 0),
     ([*OK[:RESULT], _line(RESULT, drop=("structured_output",))], 0),
     ([*OK[:RESULT], _line(RESULT, structured_output="ok")], 0),
+    ([*OK[:RESULT], _line(RESULT, drop=("usage",))], 0),  # the daily token caps fail closed
 ], ids=["non-json-first", "non-json-later", "not-an-object", "empty", "eof-before-init", "assistant-before-init",
-        "eof-without-result", "non-zero-exit", "is-error", "no-structured-output", "structured-output-not-object"])
+        "eof-without-result", "non-zero-exit", "is-error", "no-structured-output", "structured-output-not-object",
+        "no-usage"])
 def test_a_broken_stream_raises_model_call_error(fake, pc, transcript, lines, exit):
     fake.scenario(lines, exit=exit)
     start = time.monotonic()
