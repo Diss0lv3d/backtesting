@@ -504,7 +504,7 @@ class _Session:
         """Calls and checks until the proposal passes preflight (True), or it is dropped (False)."""
         # The record, the research step's stop list (none before a valid round) and the instruction.
         parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
-                 prompt.stop_section(self._stop_list()), prompt.instruction(self._next_up()))
+                 prompt.stop_section(self._stop_list(), human_first=True), prompt.instruction(self._next_up()))
         base = "\n".join(x for x in parts if x) + "\n"
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):

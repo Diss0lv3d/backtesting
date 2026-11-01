@@ -199,15 +199,18 @@ def fixup(user: str, rejected: dict, errors: list[str], what: str = "proposal") 
 
 
 STOP_HEADING = "Directions the research step recommends avoiding:"
+# The research step advises; the human decides. A proposal's instruction (below the list) may carry the human's ask.
+HUMAN_FIRST = "When the human asks for an idea below, that request comes before this list."
 
 
-def stop_section(stop: list[str]) -> str:
+def stop_section(stop: list[str], *, human_first: bool = False) -> str:
     """The stop list in force (the latest valid research round's), for every later proposal and research round;
-    "" when it has none."""
+    "" when it has none. `human_first`, in a proposal's prompt, adds that the human's request comes first."""
     if not stop:
         return ""
     # one line each, whatever the row holds: an item must not start a markdown line of its own
-    return "\n".join([STOP_HEADING, *(f"- {' '.join(str(s).split())}" for s in stop)]) + "\n"
+    lines = [STOP_HEADING, *(f"- {' '.join(str(s).split())}" for s in stop)]
+    return "\n".join([*lines, *(["", HUMAN_FIRST] if human_first else [])]) + "\n"
 
 
 RESEARCH_INSTRUCTION = """\
@@ -224,7 +227,10 @@ filter added to a closed idea's entry; an idea whose edge would come from its ex
 A stop with no target earns on trends whatever the entry, so an exit alone can make an entry look like an edge. \
 Say in each card how its exits stay neutral, so that its result measures its entry.
 
-A card must not cite numbers from the record: mechanism, literature and rule only."""
+A card must not cite numbers from the record: mechanism, literature and rule only.
+
+Each stop item names a direction (a mechanism or a family of rules), never an open idea of the record: only the \
+human closes an idea."""
 
 # Only when a stop list is in force: the prompt shows it (stop_section) between the record and this instruction.
 REVISE_STOP = """\

@@ -244,6 +244,23 @@ def test_the_stop_section_is_its_heading_and_one_line_per_direction():
         f"{STOP_HEADING}\n- Sign flips of dead fades\n- Exit-only changes\n"
 
 
+HUMAN_FIRST = "When the human asks for an idea below, that request comes before this list."
+
+
+def test_in_a_proposals_prompt_the_stop_list_gives_way_to_the_humans_request():
+    assert prompt.stop_section([], human_first=True) == ""
+    assert prompt.stop_section(["Exit-only\nchanges "], human_first=True) == \
+        f"{STOP_HEADING}\n- Exit-only changes\n\n{HUMAN_FIRST}\n"
+    assert HUMAN_FIRST not in prompt.stop_section(["Exit-only changes"])      # a research round's: no request
+
+
+def test_a_stop_item_names_a_direction_never_an_open_idea(cfg):
+    pc = settings.load(cfg)
+    for text in (prompt.research_instruction(pc), prompt.research_instruction(pc, revising=True)):
+        assert ("Each stop item names a direction (a mechanism or a family of rules), never an open idea of the "
+                "record: only the human closes an idea.") in " ".join(text.split())
+
+
 def test_the_research_instruction_says_what_the_round_is_for_and_ends_with_its_contract(cfg):
     pc = settings.load(cfg)
     text = prompt.research_instruction(pc)

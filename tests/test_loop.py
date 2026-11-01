@@ -1202,6 +1202,7 @@ def test_a_transient_kill_leaves_the_flag_and_a_real_verdict_clears_it(lab):
 
 # -- the research step's stop list in the proposal prompt
 STOP_HEADING = "Directions the research step recommends avoiding:"
+HUMAN_FIRST = "When the human asks for an idea below, that request comes before this list."
 
 
 def test_with_no_research_round_the_proposal_prompt_is_the_record_and_the_instruction(lab):
@@ -1220,7 +1221,7 @@ def test_the_latest_valid_research_rounds_stop_list_and_nothing_else_of_it_reach
     assert run(lab, replace(lab.pc, research_every=1000), trials=1) == "trials"     # no round falls due
     assert order(lab) == "P"
     user = lab.fake.calls[0].user
-    section = f"{STOP_HEADING}\n- Exit-only changes\n- Sign flips of dead fades\n"
+    section = f"{STOP_HEADING}\n- Exit-only changes\n- Sign flips of dead fades\n\n{HUMAN_FIRST}\n"
     assert user == record + "\n" + section + "\n" + prompt.instruction() + "\n"     # between record and instruction
     for gone in ("Old direction", "Refused direction", "SUMMARY", "2029", "05:06"):
         assert gone not in user, gone
@@ -1351,7 +1352,7 @@ def test_an_ok_round_adds_its_ideas_and_the_next_proposal_carries_its_stop_list(
     assert (row["tokens_in"], row["tokens_out"]) == (1100, 10)
     # the proposal: the new ideas in its record, the stop list between the record and the instruction
     assert "### #2 Basis squeeze" in p.user and "BUILDS-ON" not in p.user
-    assert p.user.endswith(f"{STOP_HEADING}\n- Exit-only changes\n- Sign flips of dead fades\n\n"
+    assert p.user.endswith(f"{STOP_HEADING}\n- Exit-only changes\n- Sign flips of dead fades\n\n{HUMAN_FIRST}\n\n"
                            + prompt.instruction() + "\n")
     lines = digest(lab).splitlines()
     k = lines.index("- 10:00 · research: +2 ideas (#2, #3); stop list 2 items")
@@ -1369,6 +1370,15 @@ def test_a_round_sees_the_stop_list_in_force_and_is_asked_to_revise_it(lab):
     # the record, the list in force (the latest valid round's) and the instruction to revise it, in that order
     assert research_calls(lab)[0].user == (record + "\n" + f"{STOP_HEADING}\n- Exit-only changes\n" + "\n"
                                            + prompt.research_instruction(lab.pc, revising=True) + "\n")
+
+
+def test_with_a_stop_list_in_force_the_humans_request_comes_before_it(lab):
+    i = lab.rec.add_idea("Mine", card("Mine"), "human", "1h")
+    lab.rec.flag_next(i)
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok", reply=note(stop=["Human ideas"]))
+    assert run(lab, trials=1) == "trials"
+    user = lab.fake.calls[0].user
+    assert user.index("- Human ideas\n\n" + HUMAN_FIRST + "\n") < user.index(ASK.format(i))
 
 
 def test_a_later_valid_round_replaces_the_stop_list_and_a_failed_one_keeps_it(lab):

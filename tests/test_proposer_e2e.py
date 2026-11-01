@@ -365,10 +365,11 @@ def test_a_session_files_three_rounds_and_nothing_forbidden_reaches_the_model(la
         [proposing] * 2 + [researching] + [proposing] * 5
     assert len({arg(c, "--system-prompt") for c in calls[2:]}) == 1
     # The research call: the record and the research instruction, no stop list yet. Every proposal after it gets
-    # the round's stop list, and none before it.
+    # the round's stop list, and that the human's request comes before it; none before it.
     assert calls[4]["stdin"].endswith("\n" + prompt.research_instruction(pc) + "\n")
     stop = ("Directions the research step recommends avoiding:\n"
-            "- Channel breakouts at any lookback\n- A filter added to a closed idea's entry\n")
+            "- Channel breakouts at any lookback\n- A filter added to a closed idea's entry\n\n"
+            "When the human asks for an idea below, that request comes before this list.\n")
     assert [(prompt.STOP_HEADING in c["stdin"], stop in c["stdin"]) for c in calls[2:]] == \
         [(False, False)] * 3 + [(True, True)] * 5
     refused = [c["stdin"] for c in calls[2:] if "## Your last reply was refused" in c["stdin"]]
