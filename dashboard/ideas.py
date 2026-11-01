@@ -25,7 +25,9 @@ from perp_lab.store import db
 
 _TITLES = {"passed": "Passed", "promoted": "Promoted", "close call": "Close call",
            "signal before costs": "Signal before costs", "open": "Other open ideas"}
-_PAUSE = re.compile(r"paused: .*; until (\d{4}-\d\d-\d\d \d\d:\d\d) UTC\s*$")
+# The digest's own line shape (digest.pause): top level, so a model-written summary indented under a research line
+# can't match.
+_PAUSE = re.compile(r"^- \d\d:\d\d · paused: .*; until (\d{4}-\d\d-\d\d \d\d:\d\d) UTC\s*$")
 
 
 def state_dir(pc) -> Path:
@@ -52,10 +54,13 @@ def sleeping_until(state: Path, sid: int | None, now: datetime | None = None) ->
     if sid is None or not path.exists():
         return None
     lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    m = _PAUSE.search(lines[-1]) if lines else None
+    m = _PAUSE.match(lines[-1]) if lines else None
     if m is None:
         return None
-    until = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    try:
+        until = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    except ValueError:                                  # a date no calendar has
+        return None
     return until if until > (now or datetime.now(timezone.utc)) else None
 
 

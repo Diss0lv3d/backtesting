@@ -254,6 +254,19 @@ def test_session_state_probes_the_lock_and_reads_the_last_pause(tmp_path):
     assert ideas.sleeping_until(tmp_path, 1, now) is None
 
 
+def test_sleeping_until_ignores_a_summary_line_and_an_impossible_date(tmp_path):
+    from datetime import datetime, timezone
+
+    from dashboard import ideas
+    now = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    (tmp_path / "sessions").mkdir()
+    f = tmp_path / "sessions" / "1.md"
+    f.write_text("- 11:00 · research: 1 idea added\n  paused: x; until 2030-01-01 00:00 UTC\n")
+    assert ideas.sleeping_until(tmp_path, 1, now) is None    # model-written summary, indented
+    f.write_text("- 11:00 · paused: usage limit; until 2026-02-30 10:00 UTC\n")
+    assert ideas.sleeping_until(tmp_path, 1, now) is None
+
+
 # ---------------------------------------------------------------- the human's ideas on the Ideas page
 
 def _seeded(cfg):
