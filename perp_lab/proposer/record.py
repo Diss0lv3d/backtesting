@@ -67,7 +67,7 @@ ideas = sa.Table(
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("title", sa.String(256), nullable=False),
     sa.Column("card", sa.JSON),
-    sa.Column("origin", sa.String(16), nullable=False),     # seed | proposer
+    sa.Column("origin", sa.String(16), nullable=False),     # seed | proposer | human
     sa.Column("timeframe", sa.String(8)),
     sa.Column("status", sa.String(16), nullable=False),
     sa.Column("port_of", sa.Integer, sa.ForeignKey("ideas.id")),
@@ -75,6 +75,8 @@ ideas = sa.Table(
     sa.Column("root_plugin", sa.String(128)),
     sa.Column("excluded_reason", sa.Text),
     sa.Column("created_at", UTCDateTime, nullable=False),
+    # When the human asked for the idea to be tried next; one idea at most. A time, so never in a prompt.
+    sa.Column("next_up", UTCDateTime),
     sa.Index("ux_ideas_title_nocase", sa.func.lower(sa.column("title")), unique=True),
 )
 
@@ -131,6 +133,28 @@ judge_calls = sa.Table(
 )
 
 
+# Columns added after a table first shipped: create_all never adds a column to an existing table, and the user's
+# record.db predates these.
+_ADDED_COLUMNS: list[tuple[str, str, str]] = [
+    ("ideas", "next_up", "DATETIME"),
+]
+
+
+def _has_column(eng: sa.Engine, table: str, column: str) -> bool:
+    return column in {c["name"] for c in sa.inspect(eng).get_columns(table)}
+
+
+def _add_columns(eng: sa.Engine) -> None:
+    for table, column, ddl in _ADDED_COLUMNS:
+        if not _has_column(eng, table, column):
+            try:
+                with eng.begin() as c:
+                    c.execute(sa.text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+            except sa.exc.OperationalError:
+                if not _has_column(eng, table, column):   # another process added it meanwhile: fine
+                    raise
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -153,6 +177,7 @@ class Record:
         self.engine = sa.create_engine(f"sqlite:///{self.state_dir / 'record.db'}", future=True)
         sa.event.listen(self.engine, "connect", _pragmas)
         md.create_all(self.engine)
+        _add_columns(self.engine)
         # High-water mark of reserved sequence numbers: above every recorded proposal and every transcript
         # already on disk, so a number handed out once is never handed out again, even after a crash.
         self._lock = threading.Lock()
@@ -221,7 +246,42 @@ class Record:
     def set_idea(self, id: int, **f) -> None:
         if "title" in f:
             raise ValueError("an idea's title is fixed")
+        if f.get("status", "open") != "open":
+            f["next_up"] = None             # only an open idea can be tried next
         self._update(ideas, ideas.c.id, id, f)
+
+    # -- the human's "try next"
+    def flag_next(self, id: int) -> None:
+        """Ask for an open idea to be tried next, in place of any other: one idea is flagged at a time."""
+        # The write first, conditional on the status: a session may write the record meanwhile, and SQLite opens
+        # no transaction on a read, so a status read first could be stale by the write.
+        with self.engine.begin() as c:
+            if c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.status == "open")
+                         .values(next_up=_now())).rowcount:
+                c.execute(sa.update(ideas).where(ideas.c.id != id, ideas.c.next_up.is_not(None)).values(next_up=None))
+                return
+        raise ValueError(self._why_not(id, "only an open idea can be tried next"))
+
+    def _why_not(self, id: int, rule: str) -> str:
+        try:
+            status = self.idea(id)["status"]
+        except KeyError:
+            return f"there is no idea #{id}"
+        return f"idea #{id} is {status}; {rule}"
+
+    def clear_next(self, *ids: int) -> None:
+        """Clear the flag: from any idea, or only from the ideas named."""
+        q = sa.update(ideas).where(ideas.c.next_up.is_not(None))
+        if ids:
+            q = q.where(ideas.c.id.in_(ids))
+        with self.engine.begin() as c:
+            c.execute(q.values(next_up=None))
+
+    def next_up(self) -> dict | None:
+        """The flagged idea, whatever its status now."""
+        with self.engine.connect() as c:
+            row = c.execute(sa.select(ideas).where(ideas.c.next_up.is_not(None))).mappings().first()
+        return None if row is None else dict(row)
 
     # -- proposals
     def next_seq(self) -> int:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -197,3 +198,67 @@ def test_the_record_is_in_wal_mode_with_a_busy_timeout(rec, tmp_path):
         with r.engine.connect() as c:
             assert c.exec_driver_sql("PRAGMA journal_mode").scalar() == "wal"
             assert c.exec_driver_sql("PRAGMA busy_timeout").scalar() == 30_000
+
+
+# The ideas table as record.db was first created (seeded 2026-11-01): no next_up column.
+OLD_IDEAS = """CREATE TABLE ideas (
+    id INTEGER NOT NULL, title VARCHAR(256) NOT NULL, card JSON, origin VARCHAR(16) NOT NULL,
+    timeframe VARCHAR(8), status VARCHAR(16) NOT NULL, port_of INTEGER, family VARCHAR(128),
+    root_plugin VARCHAR(128), excluded_reason TEXT, created_at DATETIME NOT NULL, PRIMARY KEY (id),
+    FOREIGN KEY(port_of) REFERENCES ideas (id))"""
+
+
+def _idea_columns(state) -> list[str]:
+    c = sqlite3.connect(state / "record.db")
+    try:
+        return [row[1] for row in c.execute("PRAGMA table_info(ideas)")]
+    finally:
+        c.close()
+
+
+def test_an_old_record_gets_the_next_up_column_once_and_keeps_its_ideas(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    c = sqlite3.connect(state / "record.db")
+    c.execute(OLD_IDEAS)
+    c.execute("INSERT INTO ideas (title, origin, status, created_at) VALUES ('Old', 'seed', 'open', "
+              "'2026-11-01 00:00:00')")
+    c.commit()
+    c.close()
+    rec = Record(state)
+    assert rec.idea(1)["title"] == "Old" and rec.idea(1)["next_up"] is None
+    assert _idea_columns(state).count("next_up") == 1
+    rec.flag_next(1)
+    again = Record(state)                       # the migration is idempotent
+    assert _idea_columns(state).count("next_up") == 1 and again.next_up()["id"] == 1
+
+
+def test_one_idea_is_next_up_at_a_time_and_only_an_open_one(rec):
+    a, b = rec.add_idea("A", {}, "seed", "1h"), rec.add_idea("B", {}, "human", "1h")
+    dead = rec.add_idea("C", {}, "seed", "1h", status="dead")
+    assert rec.next_up() is None
+    rec.flag_next(a)
+    assert rec.next_up()["id"] == a and rec.next_up()["next_up"].tzinfo is not None
+    rec.flag_next(b)                            # setting one clears the others
+    assert rec.next_up()["id"] == b and rec.idea(a)["next_up"] is None
+    with pytest.raises(ValueError, match="dead"):
+        rec.flag_next(dead)
+    with pytest.raises(ValueError, match="no idea #99"):
+        rec.flag_next(99)
+    assert rec.next_up()["id"] == b             # a refused flag leaves the flagged idea as it was
+    rec.clear_next(a)                           # a's flag is already gone: b keeps its own
+    assert rec.next_up()["id"] == b
+    rec.clear_next(b)
+    assert rec.next_up() is None
+    rec.flag_next(a)
+    rec.clear_next()
+    assert rec.next_up() is None
+
+
+def test_the_flag_goes_when_its_idea_leaves_open(rec):
+    a = rec.add_idea("A", {}, "seed", "1h")
+    rec.flag_next(a)
+    rec.set_idea(a, family="family:a")
+    assert rec.next_up()["id"] == a
+    rec.set_idea(a, status="exhausted")
+    assert rec.next_up() is None and rec.idea(a)["next_up"] is None
