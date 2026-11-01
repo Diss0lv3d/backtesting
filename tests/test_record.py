@@ -188,3 +188,12 @@ def test_add_seed_is_one_transaction_and_only_into_a_record_with_no_ideas(rec):
     assert rec.add_seed([idea], [prop]) is True
     assert [i["title"] for i in rec.ideas()] == ["A"] and rec.next_seq() == 2
     assert rec.add_seed([{**idea, "id": 2, "title": "B"}], []) is False and len(rec.ideas()) == 1
+
+
+def test_the_record_is_in_wal_mode_with_a_busy_timeout(rec, tmp_path):
+    """M-12: the Ideas page reads record.db while a session writes it; a "database is locked" would end a week-long
+    session. WAL lets readers and the writer go on together, and a busy timeout waits out a brief lock."""
+    for r in (rec, Record(tmp_path / "state")):          # every connection, the second process's too
+        with r.engine.connect() as c:
+            assert c.exec_driver_sql("PRAGMA journal_mode").scalar() == "wal"
+            assert c.exec_driver_sql("PRAGMA busy_timeout").scalar() == 30_000

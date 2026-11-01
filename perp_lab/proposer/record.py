@@ -15,6 +15,17 @@ from pathlib import Path
 import sqlalchemy as sa
 
 md = sa.MetaData()
+BUSY_TIMEOUT_MS = 30_000
+
+
+def _pragmas(dbapi_conn, _record) -> None:
+    """On every connection: the Ideas page reads the record while a session writes it. In WAL mode readers and the
+    writer don't block each other, and a brief lock is waited out instead of raising "database is locked", which
+    would end the session (M-12)."""
+    cur = dbapi_conn.cursor()
+    cur.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    cur.execute("PRAGMA journal_mode = WAL")
+    cur.close()
 
 
 class UTCDateTime(sa.TypeDecorator):
@@ -140,6 +151,7 @@ class Record:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         (self.state_dir / "transcripts").mkdir(exist_ok=True)
         self.engine = sa.create_engine(f"sqlite:///{self.state_dir / 'record.db'}", future=True)
+        sa.event.listen(self.engine, "connect", _pragmas)
         md.create_all(self.engine)
         # High-water mark of reserved sequence numbers: above every recorded proposal and every transcript
         # already on disk, so a number handed out once is never handed out again, even after a crash.
