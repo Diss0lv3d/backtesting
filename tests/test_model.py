@@ -367,3 +367,240 @@ def test_an_api_5xx_or_unknown_error_is_still_retried(fake, pc, transcript, stat
     with pytest.raises(model.ModelCallError):
         model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append)
     assert sleeps == [30, 60, 120, 240]
+
+
+# A web-fenced call (the referee), in the shapes of CLI 2.1.316 (the controller's probes of 2026-11-01): WebFetch
+# is the one built-in tool, each domain its own --allowedTools rule; a fetch is an assistant tool_use, its result a
+# user tool_result; a fetch the CLI refused gets the denial below as its tool_result and is listed in the result's
+# permission_denials.
+DOMAINS = ("arxiv.org", "export.arxiv.org", "api.semanticscholar.org", "www.nber.org")
+WEB_TOOLS = ["StructuredOutput", "WebFetch"]
+INIT_WEB = _line(INIT, tools=WEB_TOOLS)
+ARXIV = "https://export.arxiv.org/abs/1707.06221"
+GECKO = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?days=120"
+DENIED = ("Permission for this tool use was denied. It requires approval, and this session has no approval "
+          "surface — nobody can answer a permission prompt here — so it was denied automatically.")
+NO_CONTENT = object()
+
+
+def _fetch(tid: str, url) -> str:
+    m = _msg(ASSISTANT)
+    item = {"type": "tool_use", "id": tid, "name": "WebFetch", "input": {"url": url, "prompt": "Its findings?"}}
+    return json.dumps({**m, "message": {**m["message"], "content": [item]}})
+
+
+def _fetched(tid: str, content=f"Paper {ARXIV}: no round-number effect survives costs.") -> str:
+    m = {k: v for k, v in _msg(USER).items() if k not in ("tool_use_result", "tool_result_meta")}
+    item = {"tool_use_id": tid, "type": "tool_result"}
+    if content is not NO_CONTENT:
+        item["content"] = content
+    return json.dumps({**m, "message": {**m["message"], "content": [item]}})
+
+
+def _result(*denied: tuple[str, str], tool: str = "WebFetch") -> str:
+    return _line(RESULT, permission_denials=[{"tool_name": tool, "tool_use_id": t, "tool_input": {"url": u}}
+                                             for t, u in denied])
+
+
+def _web(*middle: str) -> list[str]:
+    """A web call's stream up to its result: init with WebFetch, the given lines, then the fixture's reply."""
+    return [OK[UI], INIT_WEB, *middle, *OK[ASSISTANT:RESULT]]
+
+
+def test_a_web_argv_has_webfetch_and_one_allow_rule_per_domain_before_the_next_flag(pc):
+    assert model.argv(pc, "the static context", SCHEMA, web_domains=DOMAINS) == [
+        "claude", "-p", "--model", "claude-opus-5-5", "--effort", "high", "--tools", "WebFetch", "--allowedTools",
+        "WebFetch(domain:arxiv.org)", "WebFetch(domain:export.arxiv.org)",
+        "WebFetch(domain:api.semanticscholar.org)", "WebFetch(domain:www.nber.org)", "--strict-mcp-config",
+        "--safe-mode", "--disable-slash-commands", "--no-session-persistence", "--permission-prompts", "none",
+        "--system-prompt", "the static context", "--json-schema", json.dumps(SCHEMA), "--output-format",
+        "stream-json", "--verbose", "--include-hook-events"]
+
+
+def test_no_web_domains_is_todays_tool_less_argv(pc):
+    a = model.argv(pc, "s", SCHEMA, web_domains=())
+    assert a == model.argv(pc, "s", SCHEMA)
+    assert a[a.index("--tools") + 1] == "" and "--allowedTools" not in a and not any("WebFetch" in x for x in a)
+
+
+@pytest.mark.parametrize("domain", ["", "org", "arxiv.org) Bash(", "arxiv.org,evil.com", "arxiv.org evil.com",
+                                    "*.arxiv.org", "https://arxiv.org", "arxiv.org/abs", "аrxiv.org", "arx\u0131v.org",
+                                    "\u212aaggle.com", None])
+def test_a_web_domain_that_is_not_a_hostname_is_refused_before_any_process(fake, pc, transcript, domain):
+    fake.scenario(OK)
+    with pytest.raises(model.ModelConfigError, match="not a hostname"):
+        model.argv(pc, "s", SCHEMA, web_domains=("arxiv.org", domain))
+    with pytest.raises(model.ModelConfigError, match="not a hostname"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=("arxiv.org", domain))
+    assert not (fake.dir / "seen.json").exists()
+
+
+def test_a_tool_less_reply_has_no_fetches(fake, pc, transcript):
+    fake.scenario(OK)
+    reply = model.call(pc, "s", "u", SCHEMA, transcript)
+    assert reply.fetches == [] and reply.denied == []
+
+
+def test_a_web_call_runs_the_fenced_argv_and_records_an_allowed_fetch(fake, pc, transcript):
+    fake.scenario([*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a")), _result()])
+    reply = model.call(pc, "the static context", "the cards", SCHEMA, transcript, web_domains=DOMAINS)
+    assert fake.seen["argv"][1:] == model.argv(pc, "the static context", SCHEMA, web_domains=DOMAINS)[1:]
+    assert fake.seen["env"] == {"HOME": os.environ["HOME"], "PATH": os.environ["PATH"]}
+    assert reply.proposal == {"ok": True} and reply.usage == _msg(RESULT)["usage"]
+    assert reply.fetches == [ARXIV] and reply.denied == []
+    assert transcript.read_text().splitlines() == [*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a")), _result()]
+
+
+def test_a_web_init_in_either_order_passes(fake, pc, transcript):
+    fake.scenario([OK[UI], _line(INIT, tools=["WebFetch", "StructuredOutput"]), *OK[ASSISTANT:]])
+    assert model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS).proposal == {"ok": True}
+
+
+@pytest.mark.parametrize("tools", [
+    ["StructuredOutput"], ["WebFetch"], [*WEB_TOOLS, "WebSearch"], [*WEB_TOOLS, "Bash"], [*WEB_TOOLS, "WebFetch"],
+    ["WebFetch", "WebFetch"], [], "StructuredOutput,WebFetch", None,
+], ids=["no-webfetch", "no-structured-output", "websearch", "bash", "duplicate", "webfetch-twice", "none",
+        "a-string", "no-tools-key"])
+def test_a_web_init_must_list_exactly_structured_output_and_webfetch(fake, pc, transcript, tools):
+    init = _line(INIT, drop=("tools",)) if tools is None else _line(INIT, tools=tools)
+    fake.scenario([OK[UI], init, 30, *OK[ASSISTANT:]])
+    start = time.monotonic()
+    with pytest.raises(model.ModelConfigError, match="tools"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+def test_a_tool_less_call_refuses_an_init_with_webfetch(fake, pc, transcript):
+    fake.scenario([OK[UI], INIT_WEB, 30, *OK[ASSISTANT:]])
+    start = time.monotonic()
+    with pytest.raises(model.ModelConfigError, match="tools"):
+        model.call(pc, "s", "u", SCHEMA, transcript)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+@pytest.mark.parametrize("denial", [DENIED, DENIED + " Ask the user.", [{"type": "text", "text": DENIED}]],
+                         ids=["text", "longer-text", "one-text-block"])
+def test_a_denied_off_list_fetch_is_recorded_and_harmless(fake, pc, transcript, denial):
+    fake.scenario([*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a"), _fetch("toolu_b", GECKO),
+                         _fetched("toolu_b", denial)), _result(("toolu_b", GECKO))])
+    reply = model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert reply.proposal == {"ok": True}
+    assert reply.fetches == [ARXIV, GECKO] and reply.denied == [GECKO]
+
+
+def test_a_denied_off_list_fetch_whose_tool_result_never_shows_is_harmless(fake, pc, transcript):
+    fake.scenario([*_web(_fetch("toolu_b", GECKO)), _result(("toolu_b", GECKO))])
+    reply = model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert reply.fetches == [GECKO] and reply.denied == [GECKO]
+
+
+@pytest.mark.parametrize("content", [
+    "Bitcoin closed at 67,000 on 2026-08-01.",
+    "",
+    NO_CONTENT,
+    "Note: " + DENIED,
+    " " + DENIED,
+    [{"type": "text", "text": DENIED}, {"type": "text", "text": "Bitcoin closed at 67,000."}],
+    [{"type": "text", "text": "Bitcoin closed at 67,000."}],
+    [{"type": "image", "source": {"type": "base64", "data": "AAAA"}}],
+    {"text": DENIED},
+], ids=["page", "empty", "no-content", "denial-not-first", "leading-space", "denial-then-page", "text-block",
+        "image-block", "an-object"])
+def test_an_off_list_fetch_that_ran_kills_the_call_at_once(fake, pc, transcript, content):
+    head = [OK[UI], INIT_WEB, _fetch("toolu_b", GECKO), _fetched("toolu_b", content)]
+    # listed as denied in the result too: the tool_result is what the model reads, so it alone decides
+    fake.scenario([*head, 30, *OK[ASSISTANT:RESULT], _result(("toolu_b", GECKO))])
+    start = time.monotonic()
+    with pytest.raises(model.ModelConfigError, match="off-list fetch: api.coingecko.com"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+    assert transcript.read_text().splitlines() == head
+    assert not Path(fake.seen["cwd"]).exists()
+
+
+@pytest.mark.parametrize("result", [
+    _result(), _result(("toolu_a", ARXIV)), _result(("toolu_b", GECKO), tool="Bash"),
+    _line(RESULT, drop=("permission_denials",)), _line(RESULT, permission_denials={"toolu_b": GECKO}),
+    _line(RESULT, permission_denials=["toolu_b"]),
+], ids=["none-denied", "another-denied", "other-tool", "no-key", "an-object", "bare-ids"])
+def test_an_off_list_fetch_the_result_does_not_list_as_denied_kills_the_call(fake, pc, transcript, result):
+    fake.scenario([*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a"), _fetch("toolu_b", GECKO),
+                         _fetched("toolu_b", DENIED)), result, 30])
+    start = time.monotonic()
+    with pytest.raises(model.ModelConfigError, match="off-list fetch: api.coingecko.com"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+def test_an_off_list_fetch_with_no_tool_result_and_no_denial_kills_the_call(fake, pc, transcript):
+    fake.scenario([*_web(_fetch("toolu_b", GECKO)), _result(), 30])
+    with pytest.raises(model.ModelConfigError, match="off-list fetch: api.coingecko.com"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert _gone(fake.seen["pid"])
+
+
+@pytest.mark.parametrize("url", [None, 42, "arxiv.org/abs/1", "https://evil.com\\@arxiv.org/", "http://[",
+                                 "ftp://arxiv.org/"],
+                         ids=["no-url", "a-number", "no-scheme", "backslash", "bad-ipv6", "ftp"])
+def test_an_unreadable_fetch_url_that_was_not_denied_kills_the_call(fake, pc, transcript, url):
+    fake.scenario([*_web(_fetch("toolu_b", url), _fetched("toolu_b", "a page")), _result()])
+    with pytest.raises(model.ModelConfigError, match="off-list fetch"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+
+
+def test_the_audit_holds_in_a_tool_less_call_too(fake, pc, transcript):
+    # cannot happen past the init check, which lists no WebFetch; the audit is on anyway, with nothing allowed
+    fake.scenario([OK[UI], OK[INIT], _fetch("toolu_a", ARXIV), _fetched("toolu_a"), 30, *OK[ASSISTANT:]])
+    with pytest.raises(model.ModelConfigError, match="off-list fetch: export.arxiv.org"):
+        model.call(pc, "s", "u", SCHEMA, transcript)
+    assert _gone(fake.seen["pid"])
+
+
+def test_call_with_retries_passes_the_web_domains_through(fake, pc, transcript):
+    fake.scenario([*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a")), _result()])
+    sleeps = []
+    reply = model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append, web_domains=DOMAINS)
+    assert reply.fetches == [ARXIV] and sleeps == []
+    assert fake.seen["argv"][1:] == model.argv(pc, "s", SCHEMA, web_domains=DOMAINS)[1:]
+
+
+def test_an_off_list_fetch_is_not_retried(fake, pc, transcript):
+    fake.scenario([*_web(_fetch("toolu_b", GECKO), _fetched("toolu_b", "a price chart")), _result()])
+    sleeps = []
+    with pytest.raises(model.ModelConfigError, match="off-list fetch"):
+        model.call_with_retries(pc, "s", "u", SCHEMA, transcript, sleep=sleeps.append, web_domains=DOMAINS)
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("url", [
+    "https://arxiv.org/abs/1707.06221", "http://arxiv.org/abs/1", "https://export.arxiv.org/api/query?id_list=1",
+    "https://www.arxiv.org/abs/1", "https://ARXIV.ORG/abs/1", "HTTPS://Export.ArXiv.Org/abs/1",
+    "https://arxiv.org:443/abs/1", "https://arxiv.org:/abs/1", "https://arxiv.org./abs/1", "https://arxiv.org",
+    "https://api.semanticscholar.org/graph/v1/paper/search?query=round+numbers", "https://www.nber.org/papers/w1",
+    "https://nber.org/papers/w1", "https://arxiv.org/abs/1#@evil.com",
+])
+def test_an_allowed_host_is_on_the_allowlist(url):
+    assert model.on_allowlist(url, DOMAINS)
+
+
+@pytest.mark.parametrize("url", [
+    GECKO, "https://www.coindesk.com/", "https://evilarxiv.org/", "https://arxiv.org.evil.com/",
+    "https://xarxiv.org/", "https://semanticscholar.org/", "https://data.nber.org/", "https://nber.org.evil.com/",
+    "ftp://arxiv.org/abs/1", "file:///etc/passwd", "arxiv.org/abs/1", "//arxiv.org/abs/1", "https:arxiv.org/abs/1",
+    "https://arxiv.org@evil.com/", "https://evil.com@arxiv.org/", "https://arxiv.org:443@evil.com/",
+    "https://evil.com\\@arxiv.org/", "https://evil.com\\.arxiv.org/", "https://arxiv.org evil.com/",
+    "https://arxiv.org\t/abs/1", " https://arxiv.org/abs/1", "https://ar%78iv.org/", "https://arxiv%2eorg/",
+    "https://[::1]/", "http://[", "https://аrxiv.org/", "https://arxiv。org/", "https://", "https://:443/", "",
+    "https://evil.com/?u=https://arxiv.org/", "https://evil.com#https://arxiv.org/", None, 42,
+    ["https://arxiv.org/"],
+])
+def test_any_other_url_is_off_the_allowlist(url):
+    assert not model.on_allowlist(url, DOMAINS)
+
+
+def test_nothing_is_on_an_empty_allowlist():
+    assert not model.on_allowlist(ARXIV, ())
