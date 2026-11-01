@@ -11,9 +11,10 @@ error text (R35), never a time.
 Everything that touches the world is a `Deps` callable, so the loop runs in tests with fakes and a fake clock.
 
 `run_session` returns why the session stopped: trials_total, days or trials (the caps); infra_errors (3 judge or
-preflight exits of 1 in a row); stuck (5 proposals in a row dropped after their fix-ups); model_call or
-model_config (the model call); harness_changed (the pin); signal (SIGINT or SIGTERM); budget_spent (a verdict
-shows the global holdout budget spent). A start a guard refuses raises StartRefused instead (R34).
+preflight exits of 1 in a row, a judge counting once after its retries); stuck (5 proposals in a row dropped
+after their fix-ups); model_call or model_config (the model call); harness_changed (the pin); signal (SIGINT or
+SIGTERM); budget_spent (a verdict shows the global holdout budget spent). A start a guard refuses raises
+StartRefused instead (R34).
 
 Paths: the state dir resolves against the repo (the checkout the editable install points at), never the working
 directory. strategies/ and the verdicts dir are the judge's own, relative to the working directory, which in a
@@ -43,6 +44,7 @@ from perp_lab.proposer.settings import StartRefused
 
 UTC = timezone.utc
 INFRA_MAX = 3              # judge or preflight exits of 1 in a row
+JUDGE_TRIES = 3            # a judge exit 1 is tried again twice on the same bytes (R45)
 STUCK_MAX = 5              # proposals in a row dropped after their fix-ups
 USAGE_BACKOFF_S = 3600     # a usage limit that gives no reset time
 USAGE_MIN_S = 60           # a reset time already past must not turn the retry into a busy loop
@@ -376,10 +378,26 @@ class _Session:
             why = self._quota(day)
             if why is None:
                 return
-            until = datetime.combine(day + timedelta(days=1), dtime(0), tzinfo=UTC)
-            if self.deadline is not None:
-                until = min(until, self.deadline)
+            until = self._next_day(day)
             self.digest.pause(why, until)
+            self._sleep_until(until)
+
+    def _next_day(self, day) -> datetime:
+        """When a quota wait ends: the next 00:00 UTC, or the session's deadline if that comes first."""
+        until = datetime.combine(day + timedelta(days=1), dtime(0), tzinfo=UTC)
+        return min(until, self.deadline) if self.deadline is not None else until
+
+    def _judge_quota(self) -> None:
+        """Before a judge's retry: a call past the day's quota waits for the next UTC day, as any judge does."""
+        while True:
+            now = self.deps.now()
+            if self.deadline is not None and now >= self.deadline:
+                raise _Stop("days")
+            day = now.astimezone(UTC).date()
+            if self.record.judge_calls_on(day) < self.pc.trials_per_day:
+                return
+            until = self._next_day(day)
+            self.digest.pause(f"the day's {self.pc.trials_per_day} judge calls are used", until)
             self._sleep_until(until)
 
     def _quota(self, day) -> str | None:
@@ -596,17 +614,28 @@ class _Session:
         return True
 
     def _judge(self, t: _Prop) -> None:
-        self._pin_check()
+        """`lab judge` on the copied bytes. An exit of 1 (an infrastructure error) is tried again, up to
+        JUDGE_TRIES calls in all, so a transient failure doesn't file an honest plugin as broken and cost its idea
+        a slot; the same bytes add no trial (R45). Each call is made after its own pin and signal checks, and
+        within the day's quota."""
         logs = self.state / "logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        # Only a judge already running may finish after a signal: none starts after one. The copy stays `copied`
-        # for the next start's recovery (this covers recovery's own judges too).
-        if self.sig.count:
-            raise _Stop("signal")
-        with self.sig.judging():
-            code = self.deps.judge(t.name, t.tf, logs / f"{t.name}.log")
-        # Every judge call counts toward the day's quota, whatever its exit code.
-        done = {"judge_exit": code, "judged_at": self.deps.now()}
+        for attempt in range(JUDGE_TRIES):
+            if attempt:
+                self._judge_quota()
+            self._pin_check()
+            logs.mkdir(parents=True, exist_ok=True)
+            # Only a judge already running may finish after a signal: none starts after one. The copy stays
+            # `copied` for the next start's recovery (this covers recovery's own judges too).
+            if self.sig.count:
+                raise _Stop("signal")
+            with self.sig.judging():
+                code = self.deps.judge(t.name, t.tf, logs / f"{t.name}.log")
+            # Every judge call counts toward the day's quota, whatever its exit code.
+            at = self.deps.now()
+            self.record.add_judge_call(seq=t.seq, at=at, exit=code)
+            if code != 1 or self.sig.killed:
+                break
+        done = {"judge_exit": code, "judged_at": at}
         if self.sig.killed and code != 0:
             self._close(t, "broken", "broken: interrupted (a second signal killed the judge)",
                         broken_reason="interrupted", pile="broken", **done)

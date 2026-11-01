@@ -112,8 +112,18 @@ def test_a_seeded_trial_counts_in_neither_trials_used_nor_judge_calls_on(rec):
     _prop(rec, "human", 0, ["Sharpe low"], origin="seed")
     _prop(rec, "human2", 1, ["x"], origin="seed")
     assert rec.trials_used() == 0 and rec.judge_calls_on(today.date()) == 0
-    _prop(rec, "mine", 0, ["Sharpe low"], judged_at=today)
+    seq = _prop(rec, "mine", 0, ["Sharpe low"], judged_at=today)
+    rec.add_judge_call(seq=seq, at=today, exit=0)
     assert rec.trials_used() == 1 and rec.judge_calls_on(today.date()) == 1
+
+
+def test_judge_calls_on_counts_every_call_not_every_proposal(rec):
+    # R45: a judge exit 1 is retried on the same bytes; the day's quota counts calls (spec, Pace and budget)
+    today = datetime.now(UTC)
+    seq = _prop(rec, "mine", 0, ["Sharpe low"], judged_at=today)
+    for code in (1, 1, 0):
+        rec.add_judge_call(seq=seq, at=today, exit=code)
+    assert rec.judge_calls_on(today.date()) == 3 and rec.trials_used() == 1
 
 
 def test_day_splits_at_midnight_utc(rec):
@@ -124,7 +134,7 @@ def test_day_splits_at_midnight_utc(rec):
     nxt = datetime(2026, 10, 21, 0, 0, 0, tzinfo=UTC)
     for n, t in enumerate([before, at, last, nxt]):
         rec.add_call(at=t, tokens_in=10, tokens_out=1)
-        _prop(rec, f"p{n}", 1, ["x"], judged_at=t)
+        rec.add_judge_call(seq=_prop(rec, f"p{n}", 1, ["x"], judged_at=t), at=t, exit=1)
     assert rec.usage_on(d) == (20, 2) and rec.judge_calls_on(d) == 2
     # a non-UTC aware time is converted: 01:00+02:00 on the 20th is 23:00 UTC on the 19th
     rec.add_call(at=datetime(2026, 10, 20, 1, tzinfo=timezone(timedelta(hours=2))), tokens_in=7, tokens_out=0)

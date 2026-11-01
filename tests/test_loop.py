@@ -293,13 +293,59 @@ def test_the_daily_quota_sleeps_until_the_next_midnight_utc(lab):
 
 
 def test_judge_exits_0_1_and_2_each_count_toward_the_days_quota(lab):
-    pc = replace(lab.pc, trials_per_day=3)
-    lab.fake.judge_exits = [0, 1, 2, 0]
+    pc = replace(lab.pc, trials_per_day=5)
+    lab.fake.judge_exits = [0, 1, 1, 1, 2, 0]           # an exit 1 is tried 3 times (R45)
     assert run(lab, pc, trials=3) == "trials"
-    assert lab.rec.judge_calls_on(T0.date()) == 3 and slept(lab) == TO_MIDNIGHT
+    assert lab.rec.judge_calls_on(T0.date()) == 5 and slept(lab) == TO_MIDNIGHT
     assert [(p["state"], p["judge_exit"], p["broken_reason"]) for p in props(lab)] == [
         ("judged", 0, None), ("broken", 1, "judge_error"), ("broken", 2, "refused"), ("judged", 0, None)]
-    assert lab.rec.trials_used() == 3                    # a refusal is no trial
+    assert lab.rec.trials_used() == 3                    # a refusal is no trial; retries are one trial
+
+
+# -- a judge exit 1 is retried on the same bytes (R45)
+def test_a_judge_exit_1_then_0_is_judged_and_both_calls_count(lab):
+    lab.fake.judge_exits = [1, 0]
+    assert run(lab, trials=1) == "trials"
+    (p,) = props(lab)
+    assert (p["state"], p["judge_exit"], p["pile"], p["broken_reason"]) == ("judged", 0, "no signal", None)
+    assert [j[:2] for j in lab.fake.judges] == [("px0001_idea_1", "1h")] * 2
+    assert lab.rec.judge_calls_on(T0.date()) == 2 and lab.rec.trials_used() == 1
+    assert lab.fake.pin_checks == 3                      # before preflight, the judge and its retry
+    assert "no signal" in digest(lab) and "judge exit" not in digest(lab)
+
+
+def test_three_judge_exits_of_1_are_one_broken_proposal_and_one_infra_error(lab):
+    lab.fake.judge_exits = [1, 1, 1]
+    assert run(lab, trials=2) == "trials"                # three infra errors would have stopped it
+    p1, p2 = props(lab)
+    assert (p1["state"], p1["judge_exit"], p1["broken_reason"]) == ("broken", 1, "judge_error")
+    assert p2["state"] == "judged" and [j[0] for j in lab.fake.judges] == ["px0001_idea_1"] * 3 + ["px0002_idea_2"]
+    assert lab.rec.judge_calls_on(T0.date()) == 4 and lab.rec.trials_used() == 2
+
+
+def test_a_retry_past_the_days_quota_waits_for_the_next_utc_day(lab):
+    lab.fake.judge_exits = [1, 0]
+    assert run(lab, replace(lab.pc, trials_per_day=1), trials=1) == "trials"
+    assert slept(lab) == TO_MIDNIGHT and len(lab.fake.judges) == 2
+    (p,) = props(lab)
+    assert (p["state"], p["judged_at"]) == ("judged", T0 + timedelta(seconds=TO_MIDNIGHT))
+    assert lab.rec.judge_calls_on(T0.date()) == 1 and lab.rec.judge_calls_on((T0 + timedelta(days=1)).date()) == 1
+    assert "paused: the day's 1 judge calls are used; until 2026-11-03 00:00 UTC" in digest(lab)
+
+
+def test_a_signal_during_a_failing_judge_stops_before_its_retry(lab):
+    lab.fake.judge_exits = [1]
+    lab.fake.on_judge = lambda f: signal.raise_signal(signal.SIGINT)
+    assert run(lab) == "signal"
+    assert len(lab.fake.judges) == 1 and [p["state"] for p in props(lab)] == ["copied"]   # for the next start
+    assert lab.rec.judge_calls_on(T0.date()) == 1
+
+
+def test_a_pin_change_before_a_retry_stops_and_leaves_the_copy(lab):
+    lab.fake.judge_exits = [1]
+    lab.fake.pin_error = lambda n: PinError("harness_changed") if n == 3 else None   # 3: the retry's
+    assert run(lab) == "harness_changed"
+    assert len(lab.fake.judges) == 1 and [p["state"] for p in props(lab)] == ["copied"]
 
 
 @pytest.mark.parametrize("cap", [{"max_input_tokens_per_day": 2000}, {"max_output_tokens_per_day": 15}])
@@ -344,15 +390,17 @@ def test_a_quota_sleep_ends_at_the_session_deadline(lab):
 
 # -- stops
 def test_three_judge_infrastructure_errors_in_a_row_stop_the_session(lab):
-    lab.fake.judge_exits = [1, 1, 0, 1, 1, 1]            # the exit 0 resets the count
+    # each infrastructure error is a judge that exited 1 three times (R45); a retry's exit 0 resets the count
+    lab.fake.judge_exits = [1, 1, 1] + [1, 1, 0] + [1, 1, 1] * 3
     assert run(lab) == "infra_errors"
-    assert len(lab.fake.judges) == 6
+    assert len(lab.fake.judges) == 15
+    assert [p["state"] for p in props(lab)] == ["broken", "judged", "broken", "broken", "broken"]
 
 
 def test_preflight_infrastructure_errors_count_with_the_judges(lab):
     err = (1, {**ok_report(), "ok": False, "error": "SandboxUnavailable: no bwrap"})
     lab.fake.preflight_results = [err, (0, ok_report()), err]
-    lab.fake.judge_exits = [1]
+    lab.fake.judge_exits = [1, 1, 1]
     assert run(lab) == "infra_errors"
     assert [(p["state"], p["broken_reason"]) for p in props(lab)] == [
         ("dropped", "preflight_error"), ("broken", "judge_error"), ("dropped", "preflight_error")]

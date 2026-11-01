@@ -1,7 +1,7 @@
 """The proposer's record: its own SQLite file, never lab.db.
 
 The record is the model's only memory and what the human reads on the Ideas page, so it keeps everything:
-sessions, ideas, proposals and model calls, plus one transcript file per proposal. Errors propagate on
+sessions, ideas, proposals, model calls and judge calls, plus one transcript file per proposal. Errors propagate on
 purpose: the loop fails closed rather than run on a record it could not write. Times here are for the human
 (Ideas page, digest) and are never rendered into a prompt.
 """
@@ -107,6 +107,16 @@ calls = sa.Table(
     sa.Column("tokens_out", sa.Integer),
     sa.Column("cost_usd", sa.Float),
     sa.Column("outcome", sa.String(64)),
+)
+
+# One row per `lab judge` call: a judge exit 1 is retried on the same bytes, and the day's quota counts calls,
+# not proposals (R45; spec, Pace and budget). The seeded human trials have none.
+judge_calls = sa.Table(
+    "judge_calls", md,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("seq", sa.Integer, sa.ForeignKey("proposals.seq"), nullable=False),
+    sa.Column("at", UTCDateTime, nullable=False, index=True),
+    sa.Column("exit", sa.Integer),
 )
 
 
@@ -248,6 +258,11 @@ class Record:
         f.setdefault("at", _now())
         self._insert(calls, f)
 
+    # -- judge calls
+    def add_judge_call(self, **f) -> None:
+        f.setdefault("at", _now())
+        self._insert(judge_calls, f)
+
     # -- counts
     def usage_on(self, day: date) -> tuple[int, int]:
         lo, hi = _day(day)
@@ -258,9 +273,10 @@ class Record:
         return int(a), int(b)
 
     def judge_calls_on(self, day: date) -> int:
+        """The `lab judge` calls made on a UTC day, retries included, whatever their exit code."""
         lo, hi = _day(day)
-        q = sa.select(sa.func.count()).select_from(proposals).where(
-            proposals.c.judged_at >= lo, proposals.c.judged_at < hi)
+        q = sa.select(sa.func.count()).select_from(judge_calls).where(judge_calls.c.at >= lo,
+                                                                      judge_calls.c.at < hi)
         with self.engine.connect() as c:
             return int(c.execute(q).scalar())
 
