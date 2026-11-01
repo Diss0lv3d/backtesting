@@ -90,6 +90,12 @@ def test_a_research_round_is_one_line_with_its_summary_indented_under_it(tmp_pat
         "  The fades died on costs.", "  ## End", "  Carry is next."]
 
 
+def test_a_failed_research_call_says_why_on_its_line(tmp_path):
+    d = _digest(tmp_path)
+    d.research([], 0, "error: model_call", None, "claude exited 1;\nstderr: timed out")
+    assert d.path.read_text().splitlines() == ["- 10:05 · research: error model_call: claude exited 1; stderr: timed out"]
+
+
 @pytest.mark.parametrize("args, line", [
     (([5], 1, "ok", "s"), "research: +1 idea (#5); stop list 1 item"),
     (([], 0, "ok", "s"), "research: +0 ideas; stop list 0 items"),

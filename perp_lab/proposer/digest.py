@@ -58,8 +58,10 @@ class Digest:
         self._write(f"- {_utc(self.now()):%H:%M} · {seq:04d} · {_one_line(run)} · {_one_line(kind)} · "
                     f"{_one_line(idea_title)} · {_one_line(outcome)}")
 
-    def research(self, added_ids: list[int], stop_count: int, outcome: str, summary: str | None) -> None:
-        """One line per research round, and the note's summary indented under it (research-round spec)."""
+    def research(self, added_ids: list[int], stop_count: int, outcome: str, summary: str | None,
+                 detail: str | None = None) -> None:
+        """One line per research round, and the note's summary indented under it (research-round spec). `detail`,
+        the CLI's error text for a failed call, goes on the line."""
         if outcome in ("ok", "capped"):
             n = len(added_ids)
             ideas = f"+{n} {'idea' if n == 1 else 'ideas'}"
@@ -72,6 +74,8 @@ class Digest:
             what = "invalid after fix-ups"
         else:
             what = outcome.replace(": ", " ", 1)                 # error: model_call -> error model_call
+        if detail:
+            what += f": {detail}"
         # Indented, the model's lines stay inside the round's list item: none starts a markdown line of its own.
         notes = [f"  {ln.rstrip()}" for ln in (summary or "").splitlines() if ln.strip()]
         self._write(f"- {_utc(self.now()):%H:%M} · research: {_one_line(what)}", *notes)

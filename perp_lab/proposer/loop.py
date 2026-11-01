@@ -822,17 +822,20 @@ class _Session:
         rid = self.record.add_research(session_id=self.sid, at=self.deps.now(),
                                        trials_used=self.record.trials_used(), outcome="error: interrupted")
         r = _Research(id=rid, transcript=self.record.state_dir / "transcripts" / f"research-{rid}.jsonl")
+        detail = None
         try:
             outcome = self._research_note(r)
-        except _CallFailed:
-            outcome = "error: model_call"
+        except _CallFailed as e:
+            # the CLI's text goes to the digest only (R35): a failure only research meets (a timeout on its bigger
+            # reply) must not hide behind its code, round after round
+            outcome, detail = "error: model_call", e.detail
         except _Stop as e:
             self._research_end(r, f"error: {e.reason}")
             raise
         except _Abort:
             self._research_end(r, "error: signal")
             raise
-        self._research_end(r, outcome)
+        self._research_end(r, outcome, detail)
 
     def _research_note(self, r: _Research) -> str:
         """Calls and checks until a note is valid and written (ok, or capped), or it is refused after the fix-ups
@@ -869,11 +872,11 @@ class _Session:
             return None, list(e.errors)
         return note, research.check_note(note, self.record, self.pc)
 
-    def _research_end(self, r: _Research, outcome: str) -> None:
+    def _research_end(self, r: _Research, outcome: str, detail: str | None = None) -> None:
         self.record.update_research(r.id, reply=r.reply, added=r.added, tokens_in=r.tokens[0],
                                     tokens_out=r.tokens[1], outcome=outcome)
         stop, summary = (len(r.note.stop), r.note.summary) if r.note is not None else (0, None)
-        self.digest.research(r.added, stop, outcome, summary)
+        self.digest.research(r.added, stop, outcome, summary, detail)
 
     # -- crash recovery
     def _recover(self) -> None:

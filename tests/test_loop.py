@@ -1393,9 +1393,12 @@ def test_a_research_call_that_fails_is_recorded_and_the_session_goes_on(lab):
     assert order(lab) == "RP" and [p["state"] for p in props(lab)] == ["judged"]
     (row,) = rounds(lab)
     assert (row["outcome"], row["reply"], row["added"], row["tokens_in"]) == ("error: model_call", None, [], 0)
-    assert "research: error model_call" in digest(lab) and lab.rec.session(1)["stop_reason"] == "trials"
+    assert lab.rec.session(1)["stop_reason"] == "trials"
+    # why, for the human: a research-only failure (a timeout on the bigger reply) must not hide behind its code
+    assert f"research: error model_call: claude exited 1; stderr: {SENTINEL}" in digest(lab)
     assert [(c["seq"], c["outcome"]) for c in call_rows(lab)] == [(None, "model_call"), (1, "reply")]
-    assert SENTINEL not in lab.fake.calls[1].user and SENTINEL not in json.dumps(row, default=str)
+    assert not [c for c in lab.fake.calls if SENTINEL in c.user or SENTINEL in c.system]
+    assert SENTINEL not in json.dumps(rounds(lab), default=str)
 
 
 def test_a_model_config_error_in_research_stops_the_session(lab):
