@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import signal
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -726,6 +727,27 @@ def test_recovery_rejudges_a_copied_proposal(lab):
     assert (p["state"], p["judge_exit"], p["pile"], p["judged_at"]) == ("judged", 0, "no signal", T0)
     assert lab.rec.idea(i)["family"] == "family:px0005_recovered"
     assert "recovered" in digest(lab)
+
+
+def test_recovery_files_an_existing_verdict_file_without_judging_again(lab):
+    """M-5: after a hard kill and a quick restart, the orphaned judge may still be judging; a verdict file for the
+    recorded bytes means a judge already finished, so recovery files it rather than start another."""
+    i = _copied(lab)
+    v = {**verdict("signal before costs"), "strategy": "px0005_recovered", "timeframe": "1h",
+         "lineage_id": "family:px0005_recovered"}
+    path = Path(lab.cfg["judge"]["verdicts_dir"]) / f"px0005_recovered@1h@{blob_hash(SRC.encode())[:10]}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(v))
+    written = T0 - timedelta(minutes=3)
+    os.utime(path, (written.timestamp(), written.timestamp()))
+    assert run(lab, trials=1) == "trials"                # the filed trial is the session's one
+    assert lab.fake.judges == [] and lab.fake.calls == []
+    (p,) = props(lab)
+    assert (p["state"], p["judge_exit"], p["pile"], p["verdict"]) == ("judged", 0, "signal before costs", v)
+    assert p["judged_at"] == written                     # when the judge wrote it
+    assert lab.rec.idea(i)["family"] == "family:px0005_recovered"
+    assert lab.rec.judge_calls_on(T0.date()) == 0 and lab.rec.trials_used() == 1
+    assert "recovered: signal before costs" in digest(lab)
 
 
 def test_a_signal_during_recovery_stops_before_the_next_judge(lab):

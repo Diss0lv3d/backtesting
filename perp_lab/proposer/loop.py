@@ -692,7 +692,9 @@ class _Session:
     # -- crash recovery
     def _recover(self) -> None:
         """A proposal whose plugin is in strategies/ but whose verdict was never read is judged again (spec,
-        Failures). Its bytes must be the ones recorded; anything else under its name is never judged as it."""
+        Failures). Its bytes must be the ones recorded; anything else under its name is never judged as it. If its
+        verdict file is already there, a judge finished after all (the orphan of a hard kill may finish after the
+        restart), so it is filed from the file and not judged again (M-5)."""
         for p in self.record.proposals():
             if p["origin"] != "proposer" or p["state"] not in ("staged", "copied"):
                 continue
@@ -709,12 +711,27 @@ class _Session:
             if ours:
                 t.copied = True
                 self.record.update_proposal(p["seq"], state="copied")
-                self._judge(t)
+                path = seed.verdict_path(self.cfg, p["plugin"], p["timeframe"], p["hash"])
+                v = seed.read_verdict(path)
+                if v is None:
+                    self._judge(t)
+                else:
+                    self._file_found(t, v, path)
             elif p["state"] == "staged":                 # the session stopped before its copy
                 self._close(t, "dropped", "dropped: the session stopped before its copy", broken_reason="interrupted")
             else:
                 self._close(t, "broken", "broken: plugin_changed (strategies/ no longer holds its bytes)",
                             broken_reason="plugin_changed", pile="broken")
+
+    def _file_found(self, t: _Prop, verdict: dict, path: Path) -> None:
+        """File a verdict a judge wrote before this session started, as of when it was written."""
+        try:
+            at = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+        except OSError:
+            at = self.deps.now()
+        self._file(t, verdict, {"judge_exit": 0, "judged_at": at})
+        if _budget_spent(verdict):
+            raise _Stop("budget_spent")
 
 
 # -- the start
