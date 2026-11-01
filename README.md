@@ -146,7 +146,7 @@ Spec: `docs/superpowers/specs/2026-10-19-proposer-design.md`.
   - **The model reads a card and an exclusion reason as you write them.** Describe the mechanism and the rule only: no results from real data (Sharpe ratios, returns, backtest figures, dates of runs), because the model must not see real-data statistics outside its own verdicts.
   - Any refusal from `lab idea` exits 2.
 - **Research rounds.** Every `research_every` proposer trials (and once per trial count when no idea can be worked on), the session makes one extra tool-less model call that reads the record and writes up to `research_max_ideas` new idea cards, a stop list and a summary for you. The cards are checked like your own (the same card checks, a new one-line title, a configured timeframe, allowed columns) and added all or none with origin `research`; the stop list replaces the previous one and the builder sees it in its next proposal prompt; the summary is for you. A round is not a trial, but its tokens count toward the day's caps. Config, under `proposer:` in `config/lab.yaml`:
-  - `research_every`: proposer trials between rounds; `0` turns research off.
+  - `research_every`: proposer trials between rounds; `0` turns research off, and with it the stop list: while research is off no stop list is in force, so the builder sees none (the Ideas page says so).
   - `research_max_ideas`: new idea cards per round.
   - `research_open_cap`: untried research ideas the record may hold before a round adds no more (the round still runs, and refreshes the stop list and summary).
   - There is no web access, on purpose: news from the holdout period would contaminate the exams. The round sees only the record.

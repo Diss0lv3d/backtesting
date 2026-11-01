@@ -229,14 +229,16 @@ def _lines(x) -> list[str]:
     return [str(v) for v in x] if isinstance(x, list) else []
 
 
-def _research_body(record: Record, row: dict) -> None:
+def _research_body(record: Record, pc, row: dict) -> None:
     ok = row.get("outcome") in ("ok", "capped")      # only a valid note's list reaches the builder
     st.markdown(f"**{row['at']:%Y-%m-%d %H:%M} UTC** · {row['outcome']} · at {row['trials_used']} trials")
     note = row.get("reply") if ok else (record.last_ok_research() or {}).get("reply")
     note = note if isinstance(note, dict) else {}
     if ok and isinstance(note.get("summary"), str) and note["summary"]:
         st.markdown(f"**Summary:** {note['summary']}")
-    if stop := _lines(note.get("stop")):
+    if pc.research_every == 0:                       # the loop's rule: research off, no list in force
+        st.markdown("**Research is off: no stop list is in force** (`proposer.research_every` is 0)")
+    elif stop := _lines(note.get("stop")):
         st.markdown("**Stop list** (the builder is told to stop trying these)" if ok else
                     "**Stop list in force** (from the latest valid round)")
         for line in stop:
@@ -249,7 +251,7 @@ def _research_body(record: Record, row: dict) -> None:
             st.markdown(f"- #{i} {titles.get(i, '?')}")
 
 
-def _research_notes(record: Record) -> None:
+def _research_notes(record: Record, pc) -> None:
     """The latest research round (spec: research-round-design, Where the human sees it); absent before the first.
     A refused round keeps the model's raw reply, so nothing in it is trusted to have a shape."""
     row = record.last_research()
@@ -257,7 +259,7 @@ def _research_notes(record: Record) -> None:
         return
     with st.expander("Research notes"):
         try:
-            _research_body(record, row)
+            _research_body(record, pc, row)
         except Exception:                                # noqa: BLE001 - a bad note must not take the page down
             st.caption("Research notes unreadable")
 
@@ -290,7 +292,7 @@ def page_ideas(cfg) -> None:
     c[1].caption(f"bar at N: Sharpe {dsr.sharpe_bar(max(n, 1)):.2f}")
     c[2].metric("Session", session_state(record, state))
     c[3].metric("Tokens today", f"{tin:,} in / {tout:,} out")
-    _research_notes(record)
+    _research_notes(record, pc)
     _add_form(record, pc)
 
     ideas = record.ideas()

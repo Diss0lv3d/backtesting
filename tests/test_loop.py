@@ -1217,12 +1217,22 @@ def test_the_latest_valid_research_rounds_stop_list_and_nothing_else_of_it_reach
         lab.rec.add_research(session_id=None, at=planted, trials_used=0, added=[], outcome=outcome,
                              reply=None if stop is None else {"ideas": [], "stop": stop, "summary": "SUMMARY"})
     record = prompt.render_record(lab.rec, 0, lab.pc.timeframes)
-    assert run(lab, replace(lab.pc, research_every=0), trials=1) == "trials"
+    assert run(lab, replace(lab.pc, research_every=1000), trials=1) == "trials"     # no round falls due
+    assert order(lab) == "P"
     user = lab.fake.calls[0].user
     section = f"{STOP_HEADING}\n- Exit-only changes\n- Sign flips of dead fades\n"
     assert user == record + "\n" + section + "\n" + prompt.instruction() + "\n"     # between record and instruction
     for gone in ("Old direction", "Refused direction", "SUMMARY", "2029", "05:06"):
         assert gone not in user, gone
+
+
+def test_with_research_off_no_stop_list_is_in_force(lab):
+    """R-RL4: research_every 0 turns the rounds off and the last round's stop list with them: a human turns research
+    off exactly when it steers badly."""
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok", reply=note(stop=["Old direction"]))
+    want = prompt.render_record(lab.rec, 0, lab.pc.timeframes) + "\n" + prompt.instruction() + "\n"
+    assert run(lab, replace(lab.pc, research_every=0), trials=1) == "trials"
+    assert order(lab) == "P" and lab.fake.calls[0].user == want
 
 
 

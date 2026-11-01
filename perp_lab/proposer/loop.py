@@ -522,8 +522,11 @@ class _Session:
         return False
 
     def _stop_list(self) -> list[str]:
-        """The stop list of the latest research round that returned a valid note (ok or capped): it replaces the
-        one before. Only its lines reach the prompt, never the round's time or summary."""
+        """The stop list in force: the latest research round's that returned a valid note (ok or capped), which
+        replaces the one before. None while research is off (research_every 0): a human turns it off exactly when
+        it steers badly. Only its lines reach the prompt, never the round's time or summary."""
+        if self.pc.research_every == 0:
+            return []
         last = self.record.last_ok_research()
         reply = last.get("reply") if last is not None else None
         stop = reply.get("stop") if isinstance(reply, dict) else None

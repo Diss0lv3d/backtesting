@@ -414,6 +414,20 @@ def test_ideas_page_shows_research_ideas_tagged_and_the_latest_research_notes(po
     assert f"#{i} basis squeeze" in text
 
 
+def test_with_research_off_the_research_notes_say_no_stop_list_is_in_force(populated):
+    raw = yaml.safe_load(populated.path.read_text())
+    raw["proposer"]["research_every"] = 0
+    populated.path.write_text(yaml.safe_dump(raw))
+    _research_row(_record(populated), [])
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    text = " ".join(m.value for m in notes.markdown)
+    assert "research is off: no stop list is in force" in text.lower()
+    assert "fading wicks on 5m" not in text and "plain momentum" not in text
+    assert "Funding ideas look thin." in text                  # the round's summary is still the human's to read
+
+
 def test_ideas_page_has_no_research_notes_without_a_research_row(populated):
     _record(populated)
     at = _ideas_at()
