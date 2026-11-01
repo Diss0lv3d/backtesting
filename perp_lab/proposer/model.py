@@ -256,13 +256,13 @@ def _items(msg: dict, kind: str) -> list[dict]:
     return [c for c in content if isinstance(c, dict) and c.get("type") == kind]
 
 
-def _blocks(msg: dict, kind: str) -> list[dict]:
+def _blocks(msg: dict, what: str) -> list[dict]:
     """A web call's message content, which must be a list of blocks: any other shape could carry what the audit
     never sees."""
     body = msg.get("message")
     content = body.get("content") if isinstance(body, dict) else None
     if not isinstance(content, list) or not all(isinstance(c, dict) for c in content):
-        raise FenceBreach(f"an {kind} message whose content is not a list of blocks")
+        raise FenceBreach(f"{what} message whose content is not a list of blocks")
     return content
 
 
@@ -288,13 +288,13 @@ class _Fence:
             if kind == "assistant" and any(i.get("name") == "WebFetch" for i in _items(msg, "tool_use")):
                 raise ModelConfigError('a WebFetch in a tool-less call: --tools "" did not hold')
         elif kind == "assistant":
-            for block in _blocks(msg, "assistant"):
+            for block in _blocks(msg, "an assistant"):
                 if block.get("type") not in ASSISTANT_BLOCKS:
                     raise FenceBreach(f"an assistant block of type {block.get('type')!r}")
                 if block.get("type") == "tool_use":
                     self._use(block, msg)
         elif kind == "user":
-            for block in _blocks(msg, "user"):
+            for block in _blocks(msg, "a user"):
                 self._answer(block)
         elif kind == "result":
             denials = msg.get("permission_denials")

@@ -691,6 +691,15 @@ def test_a_fetch_whose_wire_input_differs_is_a_breach(fake, pc, transcript, wire
     assert _gone(fake.seen["pid"])
 
 
+@pytest.mark.parametrize("line,says", [
+    (_told("a note"), "a user message"), (_said("a block"), "an assistant message"),
+], ids=["user", "assistant"])
+def test_a_breach_names_the_message_it_could_not_read(line, says):
+    with pytest.raises(model.FenceBreach, match=f"^{says} whose content is not a list of blocks$"):
+        msg = json.loads(line)
+        model._Fence(DOMAINS).see(msg["type"], msg)
+
+
 def test_text_and_thinking_pass_in_a_web_call(fake, pc, transcript):
     blocks = [{"type": "thinking", "thinking": "Check arXiv first.", "signature": "c2ln"},
               {"type": "redacted_thinking", "data": "cmVkYWN0ZWQ="}, {"type": "text", "text": "Fetching the paper."}]
