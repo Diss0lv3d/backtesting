@@ -1,9 +1,10 @@
 """The Ideas page: the proposer's record for the human (spec, "Where the user reads the record").
 
-Reads record.db, the session digest and lock, and lab.db. It writes only record.db, and only on the human's
-action: an idea card of their own, an exclusion, or the "try next" flag, each checked in code (human.py, Record),
-as `lab idea` does. It never creates the state dir. The grouping is `piles.idea_group`, the rule `lab ideas` prints
-by.
+Reads record.db, the session digest and lock, and lab.db. It writes only record.db: on the human's action (an idea
+card of their own, an exclusion, or the "try next" flag, each checked in code in human.py and Record, as `lab idea`
+does), and once more on its first load of a record made before the next_up column, when opening the record runs the
+column migration (Record). It never creates the state dir. The grouping is `piles.idea_group`, the rule `lab ideas`
+prints by.
 """
 
 from __future__ import annotations
