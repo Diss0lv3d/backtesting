@@ -59,10 +59,12 @@ class Digest:
                     f"{_one_line(idea_title)} · {_one_line(outcome)}")
 
     def research(self, added_ids: list[int], stop_count: int, outcome: str, summary: str | None,
-                 detail: str | None = None, held: int = 0) -> None:
+                 detail: str | None = None, held: int = 0, referee: dict | None = None) -> None:
         """One line per research round, and the note's summary indented under it (research-round spec). `detail`,
         the CLI's error text for a failed call or a refused note's first error, goes on the line; `held`, the ideas
-        a capped round held back."""
+        a capped round held back. `referee`, when a referee reviewed the round's cards (referee-and-human-stops
+        spec): its verdicts, counted on the line with each rejection's reason under it, or its error."""
+        rejected = []
         if outcome in ("ok", "capped"):
             if outcome == "capped":
                 ideas = f"{held} {'idea' if held == 1 else 'ideas'} not added (cap)"
@@ -72,6 +74,15 @@ class Digest:
                 if added_ids:
                     ideas += " (" + ", ".join(f"#{i}" for i in added_ids) + ")"
             what = f"{ideas}; stop list {stop_count} {'item' if stop_count == 1 else 'items'}"
+            if referee is not None and "error" in referee:
+                what += f"; referee error: {referee['error']}"
+            elif referee is not None:
+                verdicts = referee.get("verdicts") or []
+                n = {d: sum(v.get("decision") == d for v in verdicts) for d in ("accept", "revise", "reject")}
+                what += (f"; {len(verdicts)} {'card' if len(verdicts) == 1 else 'cards'}: {n['accept']} accepted, "
+                         f"{n['revise']} revised, {n['reject']} rejected")
+                rejected = [f"  rejected: {_one_line(v.get('title'))}: {_one_line(v.get('reason'))}"
+                            for v in verdicts if v.get("decision") == "reject"]
         elif outcome == "invalid":
             what = "invalid after fix-ups"
         else:
@@ -80,7 +91,7 @@ class Digest:
             what += f": {detail}"
         # Indented, the model's lines stay inside the round's list item: none starts a markdown line of its own.
         notes = [f"  {ln.rstrip()}" for ln in (summary or "").splitlines() if ln.strip()]
-        self._write(f"- {_utc(self.now()):%H:%M} · research: {_one_line(what)}", *notes)
+        self._write(f"- {_utc(self.now()):%H:%M} · research: {_one_line(what)}", *rejected, *notes)
 
     def pause(self, reason: str, until: datetime) -> None:
         self._write(f"- {_utc(self.now()):%H:%M} · paused: {_one_line(reason)}; until {_when(until)}")

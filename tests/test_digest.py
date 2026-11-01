@@ -110,3 +110,38 @@ def test_each_research_outcome_has_its_line(tmp_path, args, line):
     d.research(*args)
     lines = d.path.read_text().splitlines()
     assert lines[0] == f"- 10:05 · {line}" and len(lines) == (2 if args[3] else 1)
+
+
+# -- the referee (referee-and-human-stops spec, Digest)
+def _verdict(title, decision, reason="r"):
+    return {"title": title, "decision": decision, "reason": reason, "sources": []}
+
+
+def test_a_refereed_round_counts_its_verdicts_and_gives_each_rejections_reason_under_it(tmp_path):
+    d = _digest(tmp_path)
+    referee = {"web": True, "fetches": [], "denied": [], "verdicts": [
+        _verdict("Basis squeeze", "accept"), _verdict("Carry unwind", "revise"),
+        _verdict("Round-number\ncascade", "reject", "Urquhart (2017): no round-number\neffect survives costs"),
+        _verdict("Volume premium", "reject", "Garfinkel et al. (2025) find none")]}
+    d.research([17, 18], 1, "ok", "The fades died on costs.", referee=referee)
+    assert d.path.read_text().splitlines() == [
+        "- 10:05 · research: +2 ideas (#17, #18); stop list 1 item; 4 cards: 1 accepted, 1 revised, 2 rejected",
+        "  rejected: Round-number cascade: Urquhart (2017): no round-number effect survives costs",
+        "  rejected: Volume premium: Garfinkel et al. (2025) find none",
+        "  The fades died on costs."]
+
+
+def test_one_card_is_one_card(tmp_path):
+    d = _digest(tmp_path)
+    d.research([17], 0, "ok", None, referee={"web": False, "verdicts": [_verdict("Basis squeeze", "accept")]})
+    assert d.path.read_text().splitlines() == [
+        "- 10:05 · research: +1 idea (#17); stop list 0 items; 1 card: 1 accepted, 0 revised, 0 rejected"]
+
+
+def test_a_referee_that_failed_says_why_and_the_round_keeps_its_stop_list_and_summary(tmp_path):
+    d = _digest(tmp_path)
+    referee = {"web": True, "error": "model_call: claude exited 1;\nstderr: x"}
+    d.research([], 2, "ok", "Carry is next.", referee=referee)
+    assert d.path.read_text().splitlines() == [
+        "- 10:05 · research: +0 ideas; stop list 2 items; referee error: model_call: claude exited 1; stderr: x",
+        "  Carry is next."]

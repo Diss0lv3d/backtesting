@@ -214,6 +214,7 @@ def lab(tmp_path, monkeypatch):
                     "verdicts_dir": str(root / "runs" / "verdicts")}
     raw["validation"] = {**raw["validation"], "random_seeds": 5, "mc_iterations": 200}    # a quicker judge
     raw["proposer"] = {**raw["proposer"], "research_every": 1}          # one research round, after round 1
+    raw["proposer"]["research_referee"] = False         # its cards unreviewed: the fake CLI scripts no referee
     path = root / "config" / "lab.yaml"
     path.write_text(yaml.safe_dump(raw, allow_unicode=True))
     cfg = load_config(path)

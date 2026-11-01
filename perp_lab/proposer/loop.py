@@ -12,7 +12,9 @@ Every `research_every` proposer trials, or when no idea is answerable, a researc
 proposal (research-round spec): one call of the same kind, on the record, the stop list in force and a fixed
 instruction, whose new idea cards enter the record (unless untried research ideas are at their cap) and whose stop
 list goes into every later prompt in place of the last one. A failed round is recorded and skipped; only a stop
-(model_config, a signal, the deadline) ends the session.
+(model_config, a signal, the deadline) ends the session. Before any of a round's cards enters the record, a referee
+call reviews them (referee-and-human-stops spec): only the cards it accepts or revises are added, and a referee that
+fails adds none, while the round's stop list stands.
 
 Everything that touches the world is a `Deps` callable, so the loop runs in tests with fakes and a fake clock.
 
@@ -66,13 +68,16 @@ STOPS = ("trials_total", "days", "trials", "infra_errors", "stuck", "model_call"
 # allow-list: an outcome a later stop reason brings counts as cut short until it is listed here (research-round
 # spec, Amended during the build).
 RAN = ("ok", "capped", "invalid", "error: model_call")
+REFEREE_ERROR_MAX = 300     # a referee error as the row and the digest keep it: one line, this long at most
+REFEREE_FETCHES_MAX = 50    # the fetches, and the denials, a research row keeps
 
 
 @dataclass(frozen=True)
 class Deps:
     """What the loop does to the world. `default_deps` wires the real ones."""
 
-    call_model: Callable   # (system, user, schema, transcript) -> model.Reply, after retries; or a model error
+    call_model: Callable   # (system, user, schema, transcript, *, web_domains=()) -> model.Reply, after retries;
+    #                        or a model error. web_domains: the referee's allowlist, () for every other call
     preflight: Callable   # (path, tf) -> (exit code, report): 0 passed, 3 failed a check, 1 infrastructure error
     judge: Callable        # (name, tf, log) -> the judge's exit code, once it has exited
     now: Callable          # () -> an aware datetime
@@ -192,6 +197,8 @@ class _Research:
     added: list[int] = field(default_factory=list)
     held: int = 0                         # the cards a capped round returned anyway, set aside
     tokens: list[int] = field(default_factory=lambda: [0, 0])
+    referee: dict | None = None           # its verdicts, fetches and denials, or its error; None: no referee ran
+    referee_why: str | None = None        # a failed referee call's CLI text: for the digest only (R35)
 
 
 # -- the record, settled from the verdicts
@@ -338,6 +345,16 @@ def _short(s: str, n: int = 160) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _referee_row(web: bool, fetches: list[str], denied: list[str], **outcome) -> dict:
+    """The research row's referee JSON: whether it had the web, the fetches its calls issued and those the CLI
+    denied (each list cut to REFEREE_FETCHES_MAX, each URL to contract.URL_MAX_CHARS), and its verdicts or its
+    error. The verdicts pair with the row's `added` in order: the accepted and revised cards were added, in the
+    verdicts' order."""
+    def urls(xs):
+        return [_short(u, contract.URL_MAX_CHARS) for u in xs[:REFEREE_FETCHES_MAX]]
+    return {"web": web, "fetches": urls(fetches), "denied": urls(denied), **outcome}
+
+
 # -- the session
 class _Session:
     def __init__(self, cfg, pc, deps: Deps, record: Record, state: Path, harness: pin.Pin, cli: str):
@@ -347,6 +364,7 @@ class _Session:
         self.system_sha = hashlib.sha256(self.system.encode("utf-8")).hexdigest()
         self.schema = contract.schema(pc.timeframes)
         self.research_schema = contract.research_schema(pc.timeframes, pc.research_max_ideas)
+        self.referee_schema = contract.referee_schema(pc.timeframes, pc.research_max_ideas)
         self.sig = _Signals(deps.kill_judge)
         self.infra = self.stuck = 0
         self.tokens = [0, 0]
@@ -552,10 +570,11 @@ class _Session:
             return None
         return idea
 
-    def _call(self, seq: int | None, user: str, schema: dict | None = None,
-              transcript: Path | None = None) -> model.Reply:
+    def _call(self, seq: int | None, user: str, schema: dict | None = None, transcript: Path | None = None,
+              web_domains: tuple[str, ...] = ()) -> model.Reply:
         """One model call, through a usage-limit wait. A proposal's call (seq, the proposal schema and transcript)
-        by default; a research round's passes its own schema and transcript, and no seq."""
+        by default; a research round's passes its own schema and transcript, and no seq; its referee's, the web
+        domains it may fetch from, when it may. A fence breach (a web call's only) is logged and passed up."""
         schema = schema if schema is not None else self.schema
         transcript = transcript if transcript is not None else self.record.transcript_path(seq)
         while True:
@@ -566,7 +585,7 @@ class _Session:
                                    ensure_ascii=False) + "\n")
             try:
                 with self.sig.waiting():
-                    reply = self.deps.call_model(self.system, user, schema, transcript)
+                    reply = self.deps.call_model(self.system, user, schema, transcript, web_domains=web_domains)
             except model.UsageLimit as e:
                 now = self.deps.now()
                 until = e.resets_at or now + timedelta(seconds=USAGE_BACKOFF_S)
@@ -585,6 +604,9 @@ class _Session:
             except model.ModelConfigError as e:
                 self._log_call(seq, 0, 0, None, "model_config")
                 raise _Stop("model_config", str(e)) from None
+            except model.FenceBreach:
+                self._log_call(seq, 0, 0, None, "fence_breach")
+                raise
             tin, tout = _tokens(reply.usage)
             self._log_call(seq, tin, tout, reply.cost_usd, "reply")
             return reply
@@ -852,7 +874,10 @@ class _Session:
 
         The cap is checked before the call: a round at the cap is asked for no cards and revises only the stop list
         and the summary. Cards it returns anyway are set aside, never checked, so they can't cost a fix-up or the
-        stop list."""
+        stop list.
+
+        With research_referee, a valid note's cards go to the referee (_referee), which adds what it passes; the
+        round is ok whatever the referee did, so its stop list and summary stand."""
         stop = self._stop_list()
         capped = self.record.untried_research_ideas() >= self.pc.research_open_cap
         parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
@@ -862,8 +887,7 @@ class _Session:
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
             reply = self._call(None, user, self.research_schema, r.transcript)
-            tin, tout = _tokens(reply.usage)
-            r.tokens = [r.tokens[0] + tin, r.tokens[1] + tout]
+            self._count(r, reply)
             r.reply = reply.proposal
             note, errors = self._check_note(reply.proposal, capped)
             if not errors:
@@ -871,6 +895,10 @@ class _Session:
                     ideas = reply.proposal.get("ideas") if isinstance(reply.proposal, dict) else None
                     r.note, r.held = note, len(ideas) if isinstance(ideas, list) else 0
                     return "capped", None
+                if self.pc.research_referee and note.ideas:
+                    self._referee(r, note, stop)
+                    r.note = note
+                    return "ok", None
                 try:
                     r.added = self.record.add_ideas([research.row(i) for i in note.ideas])
                 except ValueError as e:         # a title added since the check (the human's form, meanwhile)
@@ -880,6 +908,66 @@ class _Session:
                     return "ok", None
             user = prompt.fixup(base, reply.proposal, errors, what="research note")
         return "invalid", _short(errors[0])
+
+    @staticmethod
+    def _count(r: _Research, reply: model.Reply) -> None:
+        """A round's call's tokens on its row (the call itself is logged with seq None, so the day counts it)."""
+        tin, tout = _tokens(reply.usage)
+        r.tokens = [r.tokens[0] + tin, r.tokens[1] + tout]
+
+    def _referee(self, r: _Research, note: contract.ResearchNote, stop: list[str]) -> None:
+        """The referee (referee-and-human-stops spec): calls and checks until its report pairs with the note's
+        cards, then the cards it accepted or revised are added, all or none, marked web_reviewed when it had the
+        web. Its prompt is the record, the human's stop list, the research step's list in force (the one the round
+        was asked to revise, not the round's own), the round's cards and the referee instruction: nothing else.
+
+        It fails closed: a call that fails, a fence breach (R-RF5) or a report still refused after its fix-ups adds
+        no card, and the row and the digest say why; the round goes on. A stop (model_config, a signal, the
+        deadline in a usage-limit wait) goes up, as from any call."""
+        web = self.pc.research_referee_web
+        domains = tuple(self.pc.referee_domains) if web else ()
+        fetches, denied = [], []
+        parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
+                 prompt.human_stop_section(self._human_stops()), prompt.stop_section(stop), prompt.note_cards(note),
+                 prompt.referee_instruction(self.pc, web=web))
+        base = "\n".join(x for x in parts if x) + "\n"
+        user = base
+        why = None
+        try:
+            for attempt in range(self.pc.fixups_per_proposal + 1):
+                reply = self._call(None, user, self.referee_schema, r.transcript, web_domains=domains)
+                self._count(r, reply)
+                fetches += reply.fetches
+                denied += reply.denied
+                report, errors = self._check_report(reply.proposal, note, web)
+                if not errors:
+                    rows = [{**research.row(i), "web_reviewed": web} for i in research.referee_result(report, note)]
+                    try:
+                        r.added = self.record.add_ideas(rows)
+                    except ValueError as e:     # a title added since the check (the human's form, meanwhile)
+                        errors = [str(e)]
+                    else:
+                        r.referee = _referee_row(web, fetches, denied, verdicts=[
+                            {"title": v.title, "decision": v.decision, "reason": v.reason,
+                             "sources": list(v.sources)} for v in report.verdicts])
+                        return
+                user = prompt.fixup(base, reply.proposal, errors, what="referee report")
+            error = f"invalid: {errors[0]}"
+        except _CallFailed as e:
+            error, why = "model_call", _short(e.detail, REFEREE_ERROR_MAX)    # the CLI's text: the digest's only
+        except model.FenceBreach as e:
+            error = f"fence: {e}"
+        r.referee, r.referee_why = _referee_row(web, fetches, denied, error=_short(error, REFEREE_ERROR_MAX)), why
+
+    def _check_report(self, raw: dict, note: contract.ResearchNote,
+                      web: bool) -> tuple[contract.RefereeReport | None, list[str]]:
+        """(the report, []) once it passes the contract and pairs with the note's cards; else the errors for its
+        fix-up."""
+        try:
+            report = contract.parse_referee(raw, self.pc.timeframes, self.pc.research_max_ideas)
+        except contract.ContractError as e:
+            return None, list(e.errors)
+        return report, research.check_report(report, note, self.record, self.pc, web=web)
 
     def _check_note(self, raw: dict, capped: bool = False) -> tuple[contract.ResearchNote | None, list[str]]:
         """(the note, []) once it passes the contract and every idea passes the human-card rules; else the errors
@@ -894,9 +982,12 @@ class _Session:
 
     def _research_end(self, r: _Research, outcome: str, detail: str | None = None) -> None:
         self.record.update_research(r.id, reply=r.reply, added=r.added, tokens_in=r.tokens[0],
-                                    tokens_out=r.tokens[1], outcome=outcome)
+                                    tokens_out=r.tokens[1], outcome=outcome, referee=r.referee)
         stop, summary = (len(r.note.stop), r.note.summary) if r.note is not None else (0, None)
-        self.digest.research(r.added, stop, outcome, summary, detail, r.held)
+        referee = r.referee
+        if r.referee_why:
+            referee = {**referee, "error": f"{referee['error']}: {r.referee_why}"}
+        self.digest.research(r.added, stop, outcome, summary, detail, r.held, referee=referee)
 
     # -- crash recovery
     def _recover(self) -> None:
@@ -1072,8 +1163,8 @@ def default_deps(cfg, pc, repo: Path) -> Deps:
         pin.check(repo, pinned["pin"], pc.claude_bin)
 
     return Deps(
-        call_model=lambda system, user, schema, transcript: model.call_with_retries(pc, system, user, schema,
-                                                                                    transcript),
+        call_model=lambda system, user, schema, transcript, web_domains=(): model.call_with_retries(
+            pc, system, user, schema, transcript, web_domains=web_domains),
         preflight=preflight, judge=judge, now=lambda: datetime.now(UTC), sleep=time.sleep, pin_check=pin_check,
         pin_take=pin_take, cli_version=lambda: model.cli_version(pc), probe=lambda t: model.probe(pc, t),
         kill_judge=kill_judge)
