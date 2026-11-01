@@ -880,10 +880,7 @@ class _Session:
         round is ok whatever the referee did, so its stop list and summary stand."""
         stop = self._stop_list()
         capped = self.record.untried_research_ideas() >= self.pc.research_open_cap
-        parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
-                 prompt.human_stop_section(self._human_stops()), prompt.stop_section(stop),
-                 prompt.research_instruction(self.pc, revising=bool(stop), capped=capped))
-        base = "\n".join(x for x in parts if x) + "\n"
+        base = self._research_prompt(stop, prompt.research_instruction(self.pc, revising=bool(stop), capped=capped))
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
             reply = self._call(None, user, self.research_schema, r.transcript)
@@ -909,6 +906,13 @@ class _Session:
             user = prompt.fixup(base, reply.proposal, errors, what="research note")
         return "invalid", _short(errors[0])
 
+    def _research_prompt(self, stop: list[str], *rest: str) -> str:
+        """A research round's prompt, and its referee's: the record, the human's stop list and the research step's
+        list in force, then `rest`, what the call is for; empty parts are skipped."""
+        parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
+                 prompt.human_stop_section(self._human_stops()), prompt.stop_section(stop), *rest)
+        return "\n".join(x for x in parts if x) + "\n"
+
     @staticmethod
     def _count(r: _Research, reply: model.Reply) -> None:
         """A round's call's tokens on its row (the call itself is logged with seq None, so the day counts it)."""
@@ -927,10 +931,7 @@ class _Session:
         web = self.pc.research_referee_web
         domains = tuple(self.pc.referee_domains) if web else ()
         fetches, denied = [], []
-        parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
-                 prompt.human_stop_section(self._human_stops()), prompt.stop_section(stop), prompt.note_cards(note),
-                 prompt.referee_instruction(self.pc, web=web))
-        base = "\n".join(x for x in parts if x) + "\n"
+        base = self._research_prompt(stop, prompt.note_cards(note), prompt.referee_instruction(self.pc, web=web))
         user = base
         why = None
         try:
