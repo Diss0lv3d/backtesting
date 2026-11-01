@@ -243,11 +243,20 @@ Return at most {max_ideas} idea cards (none, when the record points nowhere new)
 one-line directions the builder should stop trying (each later round sees it, in place of the last one), and a \
 summary for the human. This round's reply contract is the one below, not the one under "Your reply":"""
 
+# When the record holds research_open_cap untried research ideas: the loop sets aside any card the round returns.
+RESEARCH_RETURN_CAPPED = """\
+Return no idea cards this round: the record already holds the untried research ideas the cap allows, so a card \
+would be set aside. Revise only the stop list (at most {stop} one-line directions the builder should stop trying; \
+each later round sees it, in place of the last one) and the summary for the human. This round's reply contract is \
+the one below, not the one under "Your reply":"""
 
-def research_instruction(pc, *, revising: bool = False) -> str:
+
+def research_instruction(pc, *, revising: bool = False, capped: bool = False) -> str:
     """A research round's instruction: fixed text and the research contract, from the config alone. `revising`,
-    when a stop list is in force, asks the round to revise it."""
-    ret = RESEARCH_RETURN.format(max_ideas=pc.research_max_ideas, stop=contract.STOP_MAX_ITEMS)
+    when a stop list is in force, asks the round to revise it; `capped`, when untried research ideas are at their
+    cap, asks for no cards."""
+    ret = (RESEARCH_RETURN_CAPPED if capped else RESEARCH_RETURN).format(max_ideas=pc.research_max_ideas,
+                                                                          stop=contract.STOP_MAX_ITEMS)
     parts = [RESEARCH_INSTRUCTION, REVISE_STOP if revising else None, ret,
              contract.describe_research(pc.timeframes, pc.research_max_ideas)]
     return "\n\n".join(x for x in parts if x)

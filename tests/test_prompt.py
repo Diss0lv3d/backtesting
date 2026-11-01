@@ -293,6 +293,21 @@ def test_a_research_round_with_a_stop_list_in_force_is_asked_to_revise_it(cfg):
     assert later.replace(prompt.REVISE_STOP + "\n\n", "", 1) == first
 
 
+def test_a_capped_research_round_is_asked_for_no_cards_only_the_stop_list_and_summary(cfg):
+    pc = settings.load(cfg)
+    for revising in (False, True):
+        text = prompt.research_instruction(pc, revising=revising, capped=True)
+        assert text.endswith(contract.describe_research(pc.timeframes, pc.research_max_ideas))
+        words = " ".join(text.split())
+        for s in ("Return no idea cards this round: the record already holds the untried research ideas the cap "
+                  "allows", "Revise only the stop list", "and the summary for the human",
+                  "Each stop item names a direction", "not the one under \"Your reply\""):
+            assert s in words, s
+        assert f"at most {pc.research_max_ideas} idea cards" not in words
+        assert ("The stop list above is the one in force" in words) is revising
+    assert "Return no idea cards" not in prompt.research_instruction(pc)
+
+
 def test_the_research_instruction_follows_the_configured_limit(cfg):
     pc = settings.load(cfg)
     text = prompt.research_instruction(replace(pc, research_max_ideas=2))

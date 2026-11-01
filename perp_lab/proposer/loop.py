@@ -187,6 +187,7 @@ class _Research:
     reply: dict | None = None             # the last reply, valid or not: the row keeps it for the human
     note: contract.ResearchNote | None = None
     added: list[int] = field(default_factory=list)
+    held: int = 0                         # the cards a capped round returned anyway, set aside
     tokens: list[int] = field(default_factory=lambda: [0, 0])
 
 
@@ -836,10 +837,15 @@ class _Session:
         """(the outcome, a detail for the digest): calls and checks until a note is valid and written (ok, or
         capped), or it is refused after the fix-ups (invalid, with its last attempt's first error, as a dropped
         proposal's line has). The prompt is the record, the stop list in force (as a proposal sees it) and the
-        research instruction, which asks the round to revise that list: nothing else."""
+        research instruction, which asks the round to revise that list: nothing else.
+
+        The cap is checked before the call: a round at the cap is asked for no cards and revises only the stop list
+        and the summary. Cards it returns anyway are set aside, never checked, so they can't cost a fix-up or the
+        stop list."""
         stop = self._stop_list()
+        capped = self.record.untried_research_ideas() >= self.pc.research_open_cap
         parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
-                 prompt.stop_section(stop), prompt.research_instruction(self.pc, revising=bool(stop)))
+                 prompt.stop_section(stop), prompt.research_instruction(self.pc, revising=bool(stop), capped=capped))
         base = "\n".join(x for x in parts if x) + "\n"
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
@@ -847,10 +853,11 @@ class _Session:
             tin, tout = _tokens(reply.usage)
             r.tokens = [r.tokens[0] + tin, r.tokens[1] + tout]
             r.reply = reply.proposal
-            note, errors = self._check_note(reply.proposal)
+            note, errors = self._check_note(reply.proposal, capped)
             if not errors:
-                if note.ideas and self.record.untried_research_ideas() >= self.pc.research_open_cap:
-                    r.note = note
+                if capped:
+                    ideas = reply.proposal.get("ideas") if isinstance(reply.proposal, dict) else None
+                    r.note, r.held = note, len(ideas) if isinstance(ideas, list) else 0
                     return "capped", None
                 try:
                     r.added = self.record.add_ideas([research.row(i) for i in note.ideas])
@@ -862,9 +869,11 @@ class _Session:
             user = prompt.fixup(base, reply.proposal, errors, what="research note")
         return "invalid", _short(errors[0])
 
-    def _check_note(self, raw: dict) -> tuple[contract.ResearchNote | None, list[str]]:
+    def _check_note(self, raw: dict, capped: bool = False) -> tuple[contract.ResearchNote | None, list[str]]:
         """(the note, []) once it passes the contract and every idea passes the human-card rules; else the errors
-        for its fix-up."""
+        for its fix-up. A capped round's ideas are set aside unchecked: its note is its stop list and summary."""
+        if capped and isinstance(raw, dict):
+            raw = {**raw, "ideas": []}
         try:
             note = contract.parse_research(raw, self.pc.timeframes, self.pc.research_max_ideas)
         except contract.ContractError as e:
@@ -875,8 +884,7 @@ class _Session:
         self.record.update_research(r.id, reply=r.reply, added=r.added, tokens_in=r.tokens[0],
                                     tokens_out=r.tokens[1], outcome=outcome)
         stop, summary = (len(r.note.stop), r.note.summary) if r.note is not None else (0, None)
-        held = len(r.note.ideas) if r.note is not None and outcome == "capped" else 0
-        self.digest.research(r.added, stop, outcome, summary, detail, held)
+        self.digest.research(r.added, stop, outcome, summary, detail, r.held)
 
     # -- crash recovery
     def _recover(self) -> None:

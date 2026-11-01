@@ -1408,6 +1408,40 @@ def test_the_cap_holds_back_a_rounds_ideas_but_not_its_stop_list(lab, untried, o
     assert line in digest(lab)
 
 
+def capped(lab):
+    """The record at its cap of untried research ideas, before the session."""
+    for k in range(lab.pc.research_open_cap):
+        lab.rec.add_idea(f"Untried {k}", card(f"Untried {k}"), "research", "1h")
+
+
+def test_a_capped_round_is_asked_for_no_cards(lab):
+    """R-RL5: the cap is checked before the call, and the round is told so."""
+    capped(lab)
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    lab.fake.notes = [note()]                            # no cards: as asked
+    assert run(lab, replace(lab.pc, research_every=1), trials=1) == "trials"
+    assert order(lab) == "RP"
+    assert research_calls(lab)[0].user == record + "\n" + prompt.research_instruction(lab.pc, capped=True) + "\n"
+    assert [(r["outcome"], r["added"]) for r in rounds(lab)] == [("capped", [])]
+    assert "research: 0 ideas not added (cap); stop list 1 item" in digest(lab)
+
+
+def test_a_capped_rounds_cards_are_set_aside_unchecked_and_its_stop_list_kept(lab):
+    """R-RL5: cards a capped round returns anyway are ignored, not refused: a bad one costs no fix-up."""
+    capped(lab)
+    bad = {"ideas": [{"title": "Half a card"}, {**card("Placeholder"), "timeframe": "1h", "builds_on": "b"}],
+           "stop": ["Stop A"], "summary": "S"}
+    lab.fake.notes = [bad]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert order(lab) == "PRP"                           # one research call: no fix-up
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["added"], row["reply"]) == ("capped", [], bad)      # kept in the row for the human
+    assert "- Stop A" in proposal_calls(lab)[1].user
+    assert "research: 2 ideas not added (cap); stop list 1 item" in digest(lab)
+    assert [i["title"] for i in lab.rec.ideas() if i["title"] == "Half a card"] == []
+
+
 def test_a_refused_note_goes_back_as_a_fixup(lab):
     nothing_answerable(lab)
     short = {"ideas": [], "stop": []}
