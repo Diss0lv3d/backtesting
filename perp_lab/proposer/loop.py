@@ -329,16 +329,6 @@ def _card(c: contract.IdeaCard) -> dict:
             "columns": list(c.columns)}
 
 
-def _research_row(idea: contract.ResearchIdea) -> dict:
-    """A research idea as the record keeps a human card (human._parse): its fields stripped. builds_on is for the
-    human: it stays in the research row's reply, never on the card the model reads."""
-    e = research.entry(idea)
-    tf = e.pop("timeframe")
-    card = {k: v.strip() if isinstance(v, str) else v for k, v in e.items()}
-    card["trades_per_coin_per_year"] = float(card["trades_per_coin_per_year"])
-    return {"title": card["title"], "card": card, "origin": "research", "timeframe": tf}
-
-
 def _short(s: str, n: int = 160) -> str:
     s = " ".join(str(s).split())
     return s if len(s) <= n else s[: n - 1] + "…"
@@ -857,7 +847,7 @@ class _Session:
                     r.note = note
                     return "capped"
                 try:
-                    r.added = self.record.add_ideas([_research_row(i) for i in note.ideas])
+                    r.added = self.record.add_ideas([research.row(i) for i in note.ideas])
                 except ValueError as e:         # a title added since the check (the human's form, meanwhile)
                     errors = [str(e)]
                 else:

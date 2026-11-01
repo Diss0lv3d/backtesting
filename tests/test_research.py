@@ -86,3 +86,13 @@ def test_every_idea_is_checked_and_every_error_reported(rec):
 def test_an_unseeded_record_takes_no_research_idea(tmp_path):
     assert research.check_note(note(idea()), Record(tmp_path / "state"), PC) == [
         f"idea #1 (Basis squeeze): {human.NOT_SEEDED}"]
+
+
+def test_an_idea_is_kept_as_the_human_path_keeps_the_same_card(rec):
+    """research.row and human.add must not drift: the record holds one card shape, whoever wrote the card."""
+    i = idea(title=" Basis squeeze ", mechanism=" m ", trades_per_coin_per_year=12)
+    kept = rec.idea(human.add(rec, PC, research.entry(i)))
+    assert research.row(i) == {"title": kept["title"], "card": kept["card"], "origin": "research",
+                               "timeframe": kept["timeframe"]}
+    assert kept["title"] == "Basis squeeze" and kept["card"]["mechanism"] == "m"
+    assert isinstance(research.row(i)["card"]["trades_per_coin_per_year"], float) and "builds_on" not in kept["card"]

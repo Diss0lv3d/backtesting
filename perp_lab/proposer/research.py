@@ -22,6 +22,16 @@ def entry(idea: ResearchIdea) -> dict:
     return {**e, "columns": list(idea.columns)}
 
 
+def row(idea: ResearchIdea) -> dict:
+    """The idea as Record.add_ideas takes it: the card in the shape human.add keeps a human card (its fields
+    stripped, trades a float, columns a list), origin research. builds_on stays in the research row's reply."""
+    e = entry(idea)
+    tf = e.pop("timeframe")
+    card = {k: v.strip() if isinstance(v, str) else v for k, v in e.items()}
+    card["trades_per_coin_per_year"] = float(card["trades_per_coin_per_year"])
+    return {"title": card["title"], "card": card, "origin": "research", "timeframe": tf}
+
+
 def check_note(note: ResearchNote, record: Record, pc) -> list[str]:
     """Every reason the note's ideas can't all be added, each prefixed `idea #k (title): `; [] when they can."""
     errors, seen = [], {}
