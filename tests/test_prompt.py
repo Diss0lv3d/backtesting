@@ -376,6 +376,7 @@ REFEREE_CHECKS = (
     "round-trip cost", "bar columns a plugin may read",
     "Revise only to correct a claim, sharpen the rule, neutralise the exit or fix the timeframe",
     "a different idea is a reject", "no numbers from the record", "one verdict per card, in the cards' order",
+    "A revised card keeps its own title or takes one no idea in the record and no other card in this report uses.",
     "not the one under \"Your reply\"")
 
 

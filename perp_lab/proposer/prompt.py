@@ -319,8 +319,9 @@ Check it against the data: its signal must be computable from the columns it lis
 a plugin may read.
 
 Revise only to correct a claim, sharpen the rule, neutralise the exit or fix the timeframe, keeping the idea: a \
-different idea is a reject. A revised card keeps its card's title or takes one no idea in the record has. A card, \
-revised or not, cites no numbers from the record: mechanism, literature and rule only.
+different idea is a reject. A revised card keeps its own title or takes one no idea in the record and no other \
+card in this report uses. A card, revised or not, cites no numbers from the record: mechanism, literature and rule \
+only.
 
 Return one verdict per card, in the cards' order, each with its reason. This round's reply contract is the one \
 below, not the one under "Your reply":"""
