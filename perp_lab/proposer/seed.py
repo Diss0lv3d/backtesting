@@ -90,11 +90,11 @@ def _rows(cfg, strategies: Path, per_idea: int) -> tuple[list[dict], list[dict]]
                       "timeframe": tf, "port_of": ids[e["port_of"]] if e.get("port_of") else None,
                       "family": family, "root_plugin": plugins[0] if plugins else None,
                       "excluded_reason": e.get("excluded_reason")})
-    # Statuses last: a family's spent exam closes every idea in it, the seeded ports included.
+    # Statuses last: a family's spent exam closes every idea with a judged plugin in it, the seeded ports included.
     outcomes = piles.family_outcomes([p["verdict"] for p in props if p["verdict"] is not None])
     for idea in ideas:
-        idea["status"] = piles.idea_status(idea, [p for p in props if p["idea_id"] == idea["id"]],
-                                           outcomes.get(idea["family"]), per_idea)
+        mine = [p for p in props if p["idea_id"] == idea["id"]]
+        idea["status"] = piles.idea_status(idea, mine, piles.idea_outcome(mine, outcomes), per_idea)
     return ideas, props
 
 

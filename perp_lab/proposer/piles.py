@@ -62,6 +62,16 @@ def _judged(proposals: list[dict]) -> list[dict]:
     return [p for p in proposals if p.get("judge_exit") is not None]
 
 
+def idea_outcome(proposals: list[dict], outcomes: dict[str, str]) -> str | None:
+    """The idea's exam outcome: "passed" or "failed" when any of its judged plugins is in a family whose holdout
+    read was spent (R43). An idea can hold two families (a first plugin with a walk-forward but a broken pile sets
+    its family, and the next refinement, with no champion, is a root), so its own family isn't enough. If two
+    families disagree, "passed" wins: that edge is what the human is after."""
+    verdicts = [p.get("verdict") for p in _judged(proposals)]
+    found = {outcomes.get(v.get("lineage_id")) for v in verdicts if isinstance(v, dict)}
+    return "passed" if "passed" in found else "failed" if "failed" in found else None
+
+
 def _pile_of(p: dict) -> str:
     return pile(p.get("verdict"))
 

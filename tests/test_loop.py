@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from perp_lab.plugins import blob_hash, parse_meta
-from perp_lab.proposer import loop, proc, settings
+from perp_lab.proposer import loop, piles, proc, settings
 from perp_lab.proposer.model import ModelCallError, ModelConfigError, Reply, UsageLimit
 from perp_lab.proposer.pin import Pin, PinError
 from perp_lab.proposer.record import Record
@@ -769,6 +769,31 @@ def test_the_snapshot_rereads_every_verdict_and_settles_the_ideas(lab):
     assert run(lab, trials=0) == "trials"
     assert props(lab)[0]["verdict"]["holdout_status"] == "passed"
     assert (lab.rec.idea(i)["status"], lab.rec.idea(i)["family"]) == ("passed", "family:prior")
+
+
+def test_an_exam_in_an_ideas_second_family_closes_the_idea(lab):
+    """R43: the first plugin had a walk-forward but a broken pile, so it set the idea's family; with no champion,
+    the next refinement was a root, a second family, which was promoted and then passed its exam."""
+    i = lab.rec.add_idea("Two families", card("Two families"), "proposer", "1h")
+    data = SRC.encode()
+    broken = {**verdict(), "lineage_id": "family:two_v1"}
+    broken["diagnostics"]["gates"] = {**broken["diagnostics"]["gates"], "oos_trades": 10}      # too few: broken
+    pending = {**verdict(decision="promote", holdout_status="pending", holdout_reason="awaiting_exam"),
+               "lineage_id": "family:two_v2"}
+    lab.rec.add_proposal(idea_id=i, plugin="two_v1", timeframe="1h", kind="new", hash=blob_hash(data), source=SRC,
+                         state="judged", judge_exit=0, verdict=broken, pile="broken")
+    lab.rec.add_proposal(idea_id=i, plugin="two_v2", timeframe="1h", kind="refinement", hash=blob_hash(data),
+                         source=SRC, state="judged", judge_exit=0, verdict=pending, pile="promoted")
+    loop.settle(lab.rec, lab.pc)
+    assert (lab.rec.idea(i)["family"], lab.rec.idea(i)["status"]) == ("family:two_v1", "open")
+    vdir = Path(lab.cfg["judge"]["verdicts_dir"])
+    vdir.mkdir(parents=True)
+    passed = {**pending, "holdout_status": "passed"}
+    (vdir / f"two_v2@1h@{blob_hash(data)[:10]}.json").write_text(json.dumps(passed))
+    assert run(lab, trials=0) == "trials"
+    mine = lab.rec.idea(i)
+    assert (mine["family"], mine["status"]) == ("family:two_v1", "passed")
+    assert piles.idea_group(mine, lab.rec.proposals(i)) == "passed"
 
 
 def test_an_empty_record_is_seeded_and_refused_until_the_seed_is_refreshed(tmp_path, cfg, monkeypatch):  # noqa: F811

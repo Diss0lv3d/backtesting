@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from perp_lab.proposer.piles import best_pile, champion, family_outcomes, idea_status, pile
+from perp_lab.proposer.piles import best_pile, champion, family_outcomes, idea_outcome, idea_status, pile
 
 
 def verdict(*, net=-1.26, p95=-0.19, trades=3385, floor=64, gross=-0.9, gross_p95=0.1, decision="kill",
@@ -63,6 +63,18 @@ def prop(seq, v, *, exit=0, dup=None, idea=1):
 
 
 IDEA = {"id": 1, "origin": "proposer", "excluded_reason": None}
+
+
+def test_an_ideas_outcome_comes_from_any_family_its_judged_plugins_belong_to():
+    # R43: a broken first plugin set the idea's family; a later root started a second one
+    outcomes = {"B": "passed", "C": "failed"}
+    a, b, c = verdict(lineage="A"), verdict(lineage="B"), verdict(lineage="C")
+    assert idea_outcome([prop(1, a), prop(2, b)], outcomes) == "passed"
+    assert idea_outcome([prop(1, a), prop(2, c)], outcomes) == "failed"
+    assert idea_outcome([prop(1, c), prop(2, b)], outcomes) == "passed"      # the edge wins a disagreement
+    assert idea_outcome([prop(1, a)], outcomes) is None
+    assert idea_outcome([prop(1, b, exit=None), prop(2, None)], outcomes) is None   # never judged: no family
+    assert idea_outcome([], outcomes) is None
 
 
 def test_status_table():

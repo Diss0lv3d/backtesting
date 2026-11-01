@@ -169,8 +169,8 @@ def _walked(verdict) -> bool:
 
 def settle(record: Record, pc) -> None:
     """Every idea's family, root plugin and status, from its proposals' verdicts, in code. The first plugin with a
-    walk-forward run sets an unset family (spec, "Assemble and check"); a spent holdout read closes every idea in
-    its family; an excluded idea stays excluded."""
+    walk-forward run sets an unset family (spec, "Assemble and check"); a spent holdout read closes every idea with
+    a judged plugin in that family (R43); an excluded idea stays excluded."""
     props = record.proposals()
     outcomes = piles.family_outcomes([p["verdict"] for p in props if isinstance(p.get("verdict"), dict)])
     for idea in record.ideas():
@@ -182,8 +182,7 @@ def settle(record: Record, pc) -> None:
                 f["family"] = root["verdict"]["lineage_id"]
                 if idea.get("root_plugin") is None:
                     f["root_plugin"] = root["plugin"]
-        family = f.get("family", idea.get("family"))
-        status = piles.idea_status(idea, mine, outcomes.get(family), pc.proposals_per_idea)
+        status = piles.idea_status(idea, mine, piles.idea_outcome(mine, outcomes), pc.proposals_per_idea)
         if status != idea["status"]:
             f["status"] = status
         if f:

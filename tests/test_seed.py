@@ -12,7 +12,7 @@ import pytest
 
 import perp_lab.strategy
 from perp_lab.plugins import blob_hash, parse_meta
-from perp_lab.proposer import contract, settings
+from perp_lab.proposer import contract, piles, settings
 from perp_lab.proposer.assemble import Rejected, check_idea_rules
 from perp_lab.proposer.contract import Ports, Proposal, Refines
 from perp_lab.proposer.prompt import render_record
@@ -161,6 +161,25 @@ def test_statuses_follow_the_verdicts_and_a_spent_read_closes_the_seeded_port(la
     ideas = do_seed(lab)
     assert [ideas[t]["status"] for t in JUDGED] == ["passed", "passed", "dead", "dead", "dead", "dead", "open"]
     assert {p["pile"] for p in lab.rec.proposals()[2:7]} == {"no signal"}
+
+
+def test_an_exam_in_a_seeded_ideas_second_family_closes_the_idea(lab):
+    """R43, as in the loop: the idea's first plugin (its family) is broken, its second is another family's root,
+    promoted, and that family's exam passed."""
+    refreshed(lab)
+    for p in LCE:
+        write(lab, p, "5m", new(p, "5m", **LCE[p]))
+    first = new("donchian_atr", "4h")
+    first["diagnostics"]["gates"]["oos_trades"] = 10                         # too few: broken
+    write(lab, "donchian_atr", "4h", first)
+    second = {**new("donchian_atr_wide", "4h", holdout="passed"), "decision": "promote"}
+    write(lab, "donchian_atr_wide", "4h", {**second, "lineage_id": "family:donchian_atr_wide"})
+    ideas = do_seed(lab)
+    d = ideas["Donchian breakout"]
+    assert [p["pile"] for p in lab.rec.proposals(d["id"])] == ["broken", "promoted"]
+    assert (d["family"], d["status"]) == ("family:donchian_atr", "passed")
+    assert piles.idea_group(d, lab.rec.proposals(d["id"])) == "passed"
+    assert ideas["Donchian breakout, 1h"]["status"] == "dead"      # its plugin is in no examined family
 
 
 def test_without_verdict_files_a_trial_has_no_verdict_and_its_idea_no_family(lab):
