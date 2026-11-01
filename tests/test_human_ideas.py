@@ -72,6 +72,7 @@ def test_a_column_no_plugin_may_read_is_refused(rec):
     (err,) = human.check(rec, PC, entry(columns=["close", "slippage", "atr"]))
     assert err.startswith("columns: 'slippage', 'atr' are not among the bar columns a plugin may read: ")
     assert err.endswith(", ".join(context.PLUGIN_COLUMNS))
+    assert human.check(rec, PC, entry(columns=["slippage"]))[0].startswith("columns: 'slippage' is not among ")
 
 
 def test_every_error_is_reported_at_once(rec):

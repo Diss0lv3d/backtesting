@@ -46,8 +46,8 @@ def _parse(record: Record, pc, entry) -> tuple[dict | None, str | None, list[str
     bad = [c for c in cols if isinstance(c, str) and c and c not in PLUGIN_COLUMNS] \
         if isinstance(cols, (list, tuple)) else []
     if bad:
-        errors.append(f"columns: {', '.join(map(repr, bad))} are not among the bar columns a plugin may read: "
-                      f"{', '.join(PLUGIN_COLUMNS)}")
+        errors.append(f"columns: {', '.join(map(repr, bad))} {'is' if len(bad) == 1 else 'are'} not among the bar "
+                      f"columns a plugin may read: {', '.join(PLUGIN_COLUMNS)}")
     title = raw.get("title")
     if isinstance(title, str) and title.casefold() in {i["title"].strip().casefold() for i in record.ideas()}:
         errors.append(f"title: an idea titled {title!r} is already in the record")
