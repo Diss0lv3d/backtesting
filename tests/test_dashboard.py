@@ -17,11 +17,15 @@ def populated(cfg, monkeypatch):
     fake_run(cfg, "c1", strategy="alpha_child", sharpe=0.6, parent="p1", verdict="candidate")
     fake_run(cfg, "b1", strategy="beta", sharpe=-0.5)
     db.add_edge(cfg, "p1", "c1", "kill", "fails random-entry")
+    # no proposer record by default: the real state dir must never leak into a test
+    raw = yaml.safe_load(cfg.path.read_text())
+    raw["proposer"]["state_dir"] = str(cfg.path.parent / "no_proposer_state")
+    cfg.path.write_text(yaml.safe_dump(raw))
     monkeypatch.setenv("PERP_LAB_CONFIG", str(cfg.path))
     return cfg
 
 
-@pytest.mark.parametrize("page", ["Strategies", "Strategy detail", "Pairs", "Lineage"])
+@pytest.mark.parametrize("page", ["Strategies", "Strategy detail", "Pairs", "Lineage", "Ideas"])
 def test_page_renders(populated, page):
     at = AppTest.from_file("../dashboard/app.py", default_timeout=60)
     at.run()
@@ -141,3 +145,110 @@ def test_sidebar_without_a_universe_rule_says_it_is_not_stated(populated, tmp_pa
     assert not at.exception, [e.message for e in at.exception]
     assert any(c.value == "Universe rule not set in this config: survivor bias not stated."
                for c in at.sidebar.caption)
+
+
+# ---------------------------------------------------------------- the Ideas page
+
+def _ideas_at():
+    at = AppTest.from_file("../dashboard/app.py", default_timeout=60)
+    at.run()
+    at.sidebar.radio(key="page").set_value("Ideas").run()
+    return at
+
+
+def test_ideas_page_without_a_record_says_so_and_creates_nothing(populated):
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert any("No proposer record" in i.value for i in at.info)
+    assert not (populated.path.parent / "no_proposer_state").exists()
+
+
+def _record(cfg):
+    from perp_lab.proposer.record import Record
+    state = cfg.path.parent / "no_proposer_state"
+    r = Record(state)
+    diag = {"sides": {"long_share": 0.6, "long_net_bp": 4.0, "short_net_bp": -1.5},
+            "breadth": {"top_coin_share": 0.35}}      # no top_fold_share: reads n/a
+    kw = dict(origin="proposer", kind="new", judge_exit=0, state="judged")
+    ids = {t: r.add_idea(t, {"mechanism": f"card of {t}"}, "proposer", "4h", status=s)
+           for t, s in [("closed one", "dead"), ("open one", "open"), ("close one", "open"),
+                        ("promoted one", "open"), ("passed one", "passed")]}
+    promo = {"decision": "promote", "reasons": [], "holdout_status": "pending", "diagnostics": diag}
+    close = {"decision": "kill", "reasons": ["x"], "holdout_status": "n/a",
+             "diagnostics": {"gates": {"net_sharpe": 1.0, "random_p95": 0.5, "oos_trades": 90, "min_oos_trades": 30}}}
+    r.add_proposal(idea_id=ids["promoted one"], plugin="plug", timeframe="4h", hash="hh", source="SRC_PROMO",
+                   verdict=promo, **kw)
+    r.add_proposal(idea_id=ids["close one"], plugin="plug2", timeframe="4h", hash="h2", source="x", verdict=close, **kw)
+    r.add_proposal(idea_id=ids["open one"], plugin="plug3", timeframe="4h", hash="h3", source="x", origin="proposer",
+                   kind="new", state="broken", broken_reason="boom")
+    sid = r.start_session(model="m")
+    r.end_session(sid, "trials_total")
+    r.add_call(tokens_in=1234, tokens_out=56, session_id=sid)
+    fake_run(cfg, "w1", strategy="plug", strategy_hash="hh")
+    db.record_judgement(cfg, {"strategy": "plug", "timeframe": "4h", "strategy_hash": "hh", "child_run_id": "w1",
+                              "lineage_id": "w1", "decision": "promote", "reasons": [], "holdout_status": "pending",
+                              "holdout_reason": "pending"})
+    return r
+
+
+def test_ideas_page_header_groups_and_review_packet(populated):
+    _record(populated)
+    jid = db.get_judgement(populated, "hh", "4h")["id"]
+    n, _ = db.trial_stats(populated)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["Proposer trials"] == "2 / 100"
+    assert metrics["N store-wide"] == str(n)
+    assert metrics["Session"] == "stopped: trials_total"
+    assert "1,234" in metrics["Tokens today"]
+    heads = [h.value for h in at.subheader]
+    assert [h.split(" (")[0] for h in heads] == ["Passed", "Promoted", "Close call", "Other open ideas"]
+    assert any(e.label.startswith("Closed (1)") for e in at.expander)
+    assert any(e.label.startswith("Broken attempts (1)") for e in at.expander)
+    shown = [c.value for c in at.code]
+    assert f"lab exam --id {jid}" in shown and "SRC_PROMO" in shown
+    text = " ".join(m.value for m in at.markdown)
+    assert "top fold share of net: n/a" in text and "long share: 60.0%" in text
+    assert "Walk-forward run detail" in [b.label for b in at.button]
+
+
+def test_ideas_detail_button_opens_the_strategy_detail_page(populated):
+    _record(populated)
+    at = _ideas_at()
+    next(b for b in at.button if b.label == "Walk-forward run detail").click().run()
+    assert not at.exception, [e.message for e in at.exception]
+    assert at.sidebar.radio(key="page").value == "Strategy detail"
+    assert at.selectbox(key="detail_pick").value == "plug @ 4h"
+
+
+def test_ideas_page_says_so_when_a_promoted_plugin_has_no_judgement(populated):
+    r = _record(populated)
+    with db.engine(populated).begin() as c:
+        c.execute(db.judgements.delete())
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert any("No judgement found" in w.value for w in at.warning)
+    assert not any(c.value.startswith("lab exam") for c in at.code)
+
+
+def test_session_state_probes_the_lock_and_reads_the_last_pause(tmp_path):
+    import fcntl
+    from datetime import datetime, timedelta, timezone
+
+    from dashboard import ideas
+    assert not ideas.session_running(tmp_path)               # no lock file: stopped, and none is created
+    assert not (tmp_path / "session.lock").exists()
+    with open(tmp_path / "session.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert ideas.session_running(tmp_path)
+    assert not ideas.session_running(tmp_path)
+    now = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    (tmp_path / "sessions").mkdir()
+    pause = lambda t: f"- 11:00 · paused: usage limit; until {t:%Y-%m-%d %H:%M} UTC\n"  # noqa: E731
+    (tmp_path / "sessions" / "1.md").write_text("- 10:00 · 0001 · a@4h\n" + pause(now + timedelta(hours=2)))
+    assert ideas.sleeping_until(tmp_path, 1, now) == now + timedelta(hours=2)
+    (tmp_path / "sessions" / "1.md").write_text(pause(now + timedelta(hours=2)) + "- 13:00 · 0002 · b@4h\n")
+    assert ideas.sleeping_until(tmp_path, 1, now) is None    # work resumed after the pause
+    (tmp_path / "sessions" / "1.md").write_text(pause(now - timedelta(hours=1)))
+    assert ideas.sleeping_until(tmp_path, 1, now) is None

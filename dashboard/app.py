@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from dashboard import ideas as ideas_page  # noqa: E402
 from dashboard import trade_chart as tc  # noqa: E402
 from dashboard import tv_chart as tv  # noqa: E402
 from perp_lab.config import load_config  # noqa: E402
@@ -645,8 +646,12 @@ def page_lineage():
                           "trades", "parent_run_id", "created_at"]], hide_index=True, width="stretch")
 
 
+def page_ideas():
+    ideas_page.page_ideas(CFG)
+
+
 PAGES = {"Strategies": page_strategies, "Strategy detail": page_detail, "Pairs": page_pairs,
-         "Lineage": page_lineage}
+         "Lineage": page_lineage, "Ideas": page_ideas}
 page = st.sidebar.radio("Perp Lab", list(PAGES), key="page")
 
 
