@@ -150,7 +150,7 @@ Spec: `docs/superpowers/specs/2026-10-19-proposer-design.md`.
   - `research_max_ideas`: new idea cards per round.
   - `research_open_cap`: untried research ideas the record may hold before a round adds no more (the round still runs, asked for no cards, and refreshes the stop list and summary; cards it returns anyway are set aside, and the digest says how many).
   - There is no web access, on purpose: news from the holdout period would contaminate the exams. The round sees only the record.
-  - Where you see it: the digest's research line, the Ideas page (a "research" tag in an idea's meta line, and a collapsed "Research notes" expander with the latest round's time, outcome, summary, stop list and ideas added), and `lab ideas` (research ideas end their title with `(research)`).
+  - Where you see it: the digest's research line, the Ideas page (a "research" tag in an idea's meta line, and a collapsed "Research notes" expander with the latest round's time, outcome, summary, stop list and ideas added, each with what it builds on), and `lab ideas` (research ideas end their title with `(research)`).
 - State lives in `proposer/` (git-ignored): `record.db`, `staging/`, `logs/`, `transcripts/`, `sessions/<id>.md` (the digest, one line per proposal) and `cache/`.
 - What the human does: run the seven `lab verdict-refresh STRATEGY --tf TF` commands that `check_seed` lists (once, to refresh the seed's diagnostics), then `lab propose`, then read the Ideas page and run `lab exam --id N` on a promotion worth the holdout read. The proposer never runs exams.
 - Model calls go through the Claude Code CLI, logged in as you, so they share your Claude Code usage limits. A usage limit makes the session sleep until it resets.

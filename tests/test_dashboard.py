@@ -414,6 +414,24 @@ def test_ideas_page_shows_research_ideas_tagged_and_the_latest_research_notes(po
     assert f"#{i} basis squeeze" in text
 
 
+def test_research_notes_show_what_each_added_idea_builds_on(populated):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    j = r.add_idea("Carry unwind", {"mechanism": "m"}, "research", "4h")
+    reply = {"ideas": [None, {"title": 7, "builds_on": 8}, {"title": " Basis squeeze ", "builds_on": "the dead fades"},
+                       {"title": "Carry unwind", "builds_on": ["not", "a line"]}],
+             "stop": [], "summary": "s"}
+    r.add_research(session_id=r.start_session(model="m"), trials_used=5, reply=reply, added=[i, j], tokens_in=1,
+                   tokens_out=1, outcome="ok")
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    lines = [m.value for m in notes.markdown]
+    assert f"- #{i} Basis squeeze · builds on: the dead fades" in lines
+    assert f"- #{j} Carry unwind" in lines                    # a builds_on that is no line shows nothing
+    assert not [c for c in notes.caption if "unreadable" in c.value]
+
+
 def test_with_research_off_the_research_notes_say_no_stop_list_is_in_force(populated):
     raw = yaml.safe_load(populated.path.read_text())
     raw["proposer"]["research_every"] = 0

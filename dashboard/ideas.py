@@ -246,9 +246,15 @@ def _research_body(record: Record, pc, row: dict) -> None:
     added = row.get("added") if ok else None
     if ids := [i for i in added if isinstance(i, int) and not isinstance(i, bool)] if isinstance(added, list) else []:
         titles = {i["id"]: i["title"] for i in record.ideas()}
+        # what each builds on, for the human only: in the round's reply, by the title the record keeps it under
+        cards = note.get("ideas") if isinstance(note.get("ideas"), list) else []
+        builds = {c["title"].strip().casefold(): " ".join(c["builds_on"].split()) for c in cards
+                  if isinstance(c, dict) and isinstance(c.get("title"), str) and isinstance(c.get("builds_on"), str)}
         st.markdown("**Ideas added**")
         for i in ids:
-            st.markdown(f"- #{i} {titles.get(i, '?')}")
+            title = titles.get(i, "?")
+            on = builds.get(title.casefold())
+            st.markdown(f"- #{i} {title}" + (f" · builds on: {on}" if on else ""))
 
 
 def _research_notes(record: Record, pc) -> None:
