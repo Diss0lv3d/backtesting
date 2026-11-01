@@ -9,7 +9,10 @@ import pytest
 from perp_lab.proposer import context, contract, human, piles
 from perp_lab.proposer.record import Record
 
-PC = SimpleNamespace(timeframes=("15m", "1h", "4h"))     # proposer.timeframes
+PC = SimpleNamespace(timeframes=("15m", "1h", "4h"), proposals_per_idea=4)     # the proposer's settings
+SIGNAL = {"decision": "kill", "reasons": [], "holdout_status": "n/a", "diagnostics": {      # signal before costs
+    "gates": {"net_sharpe": -1, "random_p95": 0, "oos_trades": 100, "min_oos_trades": 64},
+    "before_costs": {"sharpe": 0.5, "random_p95": 0.1}}}
 
 
 def entry(**over):
@@ -105,3 +108,22 @@ def test_a_human_idea_is_never_filed_as_a_duplicate():
     dup = {"judge_exit": 0, "verdict": {"decision": "kill"}, "duplicate_of": 3}
     assert piles.idea_status({"origin": "proposer"}, [dup], None, 4) == "duplicate"
     assert piles.idea_status({"origin": "human"}, [dup], None, 4) == "open"
+
+
+def test_try_next_needs_an_idea_some_proposal_could_work_on(rec):
+    """A flag no proposal can answer would be asked for every round, each attempt refused, until five drops in a
+    row stop the session as stuck: the human trial at 5m takes no refinement, and a port only from a progress pile."""
+    lce = rec.add_idea("LCE", {}, "seed", "5m")
+    with pytest.raises(ValueError, match=f"no proposal can work on idea #{lce} \\(LCE\\) now"):
+        human.flag_next(rec, PC, lce)
+    assert rec.next_up() is None
+    rec.add_proposal(idea_id=lce, plugin="lce_atr", timeframe="5m", kind="new", state="judged", judge_exit=0,
+                     verdict=SIGNAL)
+    human.flag_next(rec, PC, lce)                       # a port can work on it now
+    assert rec.next_up()["id"] == lce
+    with pytest.raises(ValueError, match="there is no idea #99"):
+        human.flag_next(rec, PC, 99)
+    dead = rec.add_idea("Dead", {}, "seed", "1h", status="dead")
+    with pytest.raises(ValueError, match=f"idea #{dead} is dead; only an open idea"):
+        human.flag_next(rec, PC, dead)
+    assert rec.next_up()["id"] == lce

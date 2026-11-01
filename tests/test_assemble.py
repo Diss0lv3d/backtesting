@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from perp_lab.plugins import parse_meta
-from perp_lab.proposer.assemble import (Rejected, assemble, check_idea_rules, check_model_source,
+from perp_lab.proposer.assemble import (Rejected, answerable, assemble, check_idea_rules, check_model_source,
                                         check_overlap_rules, check_source, plugin_name)
 from perp_lab.proposer.contract import IdeaCard, Ports, Proposal, Refines
 from perp_lab.proposer.record import Record
@@ -137,6 +137,58 @@ def test_port_refused_on_same_timeframe_and_when_port_exists(rec):
     with pytest.raises(Rejected, match="already has a port"):
         check_idea_rules(port(i, "4h"), rec, PC)
     assert check_idea_rules(port(i, "15m"), rec, PC)
+
+
+# -- what a proposal could do for an idea now: the human's "try next" asks the rules check_idea_rules applies
+def _accepts_some(rec, i) -> bool:
+    for p in [refine(i, tf) for tf in PC.timeframes] + [port(i, tf) for tf in PC.timeframes]:
+        try:
+            check_idea_rules(p, rec, PC)
+            return True
+        except Rejected:
+            pass
+    return False
+
+
+def _ideas(rec) -> dict[str, int]:
+    """Ideas a refinement or a port can answer, or neither: the LCE ones are human trials at 5m, ports only."""
+    i = {"open 1h": rec.add_idea("Open", {}, "seed", "1h"),
+         "exhausted, signal": rec.add_idea("Exhausted", {}, "seed", "1h", status="exhausted"),
+         "dead": rec.add_idea("Dead", {}, "seed", "1h", status="dead"),
+         "5m, untested": rec.add_idea("LCE untested", {}, "seed", "5m"),
+         "5m, no signal": rec.add_idea("LCE no signal", {}, "seed", "5m"),
+         "5m, signal": rec.add_idea("LCE signal", {}, "seed", "5m"),
+         "5m, promoted": rec.add_idea("LCE promoted", {}, "seed", "5m"),
+         "5m, signal, ported everywhere": rec.add_idea("LCE ported", {}, "seed", "5m")}
+    judged(rec, i["exhausted, signal"], "x0", SBC)
+    judged(rec, i["5m, no signal"], "n0", NOSIG, tf="5m")
+    judged(rec, i["5m, signal"], "s0", SBC, tf="5m")
+    judged(rec, i["5m, promoted"], "m0", {**SBC, "decision": "promote"}, tf="5m")
+    judged(rec, i["5m, signal, ported everywhere"], "e0", SBC, tf="5m")
+    for tf in PC.timeframes:
+        rec.add_idea(f"LCE ported, {tf}", {}, "proposer", tf, port_of=i["5m, signal, ported everywhere"])
+    return i
+
+
+ANSWERABLE = {"open 1h": True, "exhausted, signal": True, "dead": False, "5m, untested": False, "5m, no signal": False,
+              "5m, signal": True, "5m, promoted": False, "5m, signal, ported everywhere": False}
+
+
+def test_answerable_is_check_idea_rules_accepting_a_refinement_or_a_port(rec):
+    ids = _ideas(rec)
+    for name, i in ids.items():
+        why = answerable(rec.idea(i), rec, PC)
+        assert (why is None) == ANSWERABLE[name] == _accepts_some(rec, i), (name, why)
+
+
+def test_answerable_says_why_no_proposal_can_work_on_an_idea(rec):
+    ids = _ideas(rec)
+    why = answerable(rec.idea(ids["5m, untested"]), rec, PC)
+    assert why == (f"no proposal can work on idea #{ids['5m, untested']} (LCE untested) now: a refinement is refused "
+                   "(timeframe '5m' is not one of 15m, 1h, 4h), and so is a port (idea "
+                   f"#{ids['5m, untested']} (LCE untested) has best pile none; only signal before costs or close call "
+                   "can be ported)")
+    assert "already has a port at 15m; " in answerable(rec.idea(ids["5m, signal, ported everywhere"]), rec, PC)
 
 
 # -- names

@@ -7,12 +7,15 @@ idea's, so the card must carry no result from real data: WARNING says so whereve
 
 A human idea waits for the seed: seed() adds nothing to a record that holds any idea, so one added first would keep
 the seed out for good.
+
+The human's "try next" goes only to an open idea some proposal could work on now (assemble.answerable).
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict
 
+from perp_lab.proposer.assemble import answerable
 from perp_lab.proposer.context import PLUGIN_COLUMNS
 from perp_lab.proposer.contract import ContractError, parse_card
 from perp_lab.proposer.record import Record
@@ -76,3 +79,21 @@ def add(record: Record, pc, entry) -> int:
         return record.add_idea(card["title"], card, "human", tf)
     except ValueError as e:                     # the same title, added since the check
         raise Refused([f"title: {e}"]) from e
+
+
+def why_not_next(record: Record, pc, idea: dict) -> str | None:
+    """Why the idea can't be tried next, or None: it must be open, and some proposal must be able to work on it."""
+    if idea["status"] != "open":
+        return f"idea #{idea['id']} is {idea['status']}; only an open idea can be tried next"
+    return answerable(idea, record, pc)
+
+
+def flag_next(record: Record, pc, id: int) -> None:
+    """Flag the idea to be tried next, or raise ValueError with the reason it can't be."""
+    try:
+        idea = record.idea(id)
+    except KeyError:
+        raise ValueError(f"there is no idea #{id}") from None
+    if why := why_not_next(record, pc, idea):
+        raise ValueError(why)
+    record.flag_next(id)                        # checks the status again, in its own write

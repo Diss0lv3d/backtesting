@@ -215,3 +215,11 @@ def test_idea_exclude_and_next_on_a_missing_record_exit_2(tmp_path):
         r = _idea_cmd(tmp_path, *args)
         assert r.exit_code == 2 and "refused: no proposer record yet" in r.output, (args, r.output)
     assert not (tmp_path / "proposer").exists()
+
+
+def test_idea_next_refuses_an_idea_no_proposal_could_work_on(tmp_path):
+    rec = _seeded(tmp_path)
+    lce = rec.add_idea("LCE", {}, "seed", "5m")                       # ports only, untested
+    r = _idea_cmd(tmp_path, "next", str(lce))
+    assert r.exit_code == 2 and f"no proposal can work on idea #{lce} (LCE) now" in r.output.replace("\n", " ")
+    assert rec.next_up() is None

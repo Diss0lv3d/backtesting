@@ -34,10 +34,73 @@ def _judged(record: Record, idea_id: int) -> list[dict]:
     return [x for x in record.proposals(idea_id) if x.get("judge_exit") is not None]
 
 
+def _timeframe_refused(timeframe, pc: ProposerConfig) -> str | None:
+    if timeframe not in pc.timeframes:
+        return f"timeframe {timeframe!r} is not one of {', '.join(pc.timeframes)}"
+    return None
+
+
+def _excluded(idea: dict) -> str | None:
+    if idea["status"] == "excluded" or idea.get("excluded_reason"):
+        return f"idea {_label(idea)} is excluded and takes neither refinements nor ports"
+    return None
+
+
+def refinement_refused(idea: dict, record: Record, pc: ProposerConfig, timeframe) -> str | None:
+    """Why a refinement of the idea at that timeframe is refused now, or None. check_idea_rules and answerable both
+    ask it, so the model's rules and the human's "try next" can't disagree."""
+    why = _timeframe_refused(timeframe, pc) or _excluded(idea)
+    if why:
+        return why
+    if idea["status"] != "open":
+        return f"idea {_label(idea)} is {idea['status']}, not open; it takes no more refinements"
+    if len(_judged(record, idea["id"])) >= pc.proposals_per_idea:
+        return f"idea {_label(idea)} has used its {pc.proposals_per_idea} judged plugins"
+    if timeframe != idea["timeframe"]:
+        return (f"a refinement keeps its idea's timeframe, {idea['timeframe']}; "
+                "to use another timeframe propose a port")
+    return None
+
+
+def port_refused(idea: dict, record: Record, pc: ProposerConfig, timeframe) -> str | None:
+    """Why a port of the idea to that timeframe is refused now, or None; shared as refinement_refused is."""
+    why = _timeframe_refused(timeframe, pc) or _excluded(idea)
+    if why:
+        return why
+    if idea["status"] not in ("open", "exhausted"):
+        return f"idea {_label(idea)} is {idea['status']}; only open or exhausted ideas can be ported"
+    best = best_pile([pile(x.get("verdict")) for x in record.proposals(idea["id"])
+                      if x.get("judge_exit") is not None and x.get("duplicate_of") is None])
+    if best == "promoted":
+        return f"idea {_label(idea)} is promoted; its family is headed for an exam and gets no port"
+    if best not in ("signal before costs", "close call"):
+        return (f"idea {_label(idea)} has best pile {best or 'none'}; only signal before costs "
+                "or close call can be ported")
+    if timeframe == idea["timeframe"]:
+        return f"a port needs a timeframe other than the idea's own, {idea['timeframe']}"
+    if any(i.get("port_of") == idea["id"] and i["timeframe"] == timeframe for i in record.ideas()):
+        return f"idea {_label(idea)} already has a port at {timeframe}"
+    return None
+
+
+def answerable(idea: dict, record: Record, pc: ProposerConfig) -> str | None:
+    """None when some proposal could work on the idea now, by check_idea_rules' own rules: a refinement at its
+    timeframe, or a port to one of proposer.timeframes. Otherwise why not. The human's "try next" needs one: a flag
+    no proposal can answer would be asked for every round, and each attempt refused."""
+    refine = refinement_refused(idea, record, pc, idea.get("timeframe"))
+    if refine is None:
+        return None
+    ports = [port_refused(idea, record, pc, tf) for tf in pc.timeframes]
+    if None in ports:
+        return None
+    return (f"no proposal can work on idea {_label(idea)} now: a refinement is refused ({refine}), and so is a port "
+            f"({'; '.join(dict.fromkeys(ports))})")
+
+
 def check_idea_rules(p: Proposal, record: Record, pc: ProposerConfig) -> dict | None:
     """The target idea (None for a new idea), or Rejected."""
-    if p.timeframe not in pc.timeframes:
-        raise Rejected(f"timeframe {p.timeframe!r} is not one of {', '.join(pc.timeframes)}")
+    if why := _timeframe_refused(p.timeframe, pc):
+        raise Rejected(why)
     if p.kind == "new":
         if p.idea is None:
             raise Rejected("a new idea needs an idea card")
@@ -49,34 +112,12 @@ def check_idea_rules(p: Proposal, record: Record, pc: ProposerConfig) -> dict | 
     block = p.refines if p.kind == "refinement" else p.ports if p.kind == "port" else None
     if block is None:
         raise Rejected(f"a {p.kind} needs its {'refines' if p.kind == 'refinement' else 'ports'} block")
-    ids = {i["id"]: i for i in record.ideas()}
-    idea = ids.get(block.idea_id)
+    idea = next((i for i in record.ideas() if i["id"] == block.idea_id), None)
     if idea is None:
         raise Rejected(f"there is no idea #{block.idea_id}")
-    if idea["status"] == "excluded" or idea.get("excluded_reason"):
-        raise Rejected(f"idea {_label(idea)} is excluded and takes neither refinements nor ports")
-    if p.kind == "refinement":
-        if idea["status"] != "open":
-            raise Rejected(f"idea {_label(idea)} is {idea['status']}, not open; it takes no more refinements")
-        if len(_judged(record, idea["id"])) >= pc.proposals_per_idea:
-            raise Rejected(f"idea {_label(idea)} has used its {pc.proposals_per_idea} judged plugins")
-        if p.timeframe != idea["timeframe"]:
-            raise Rejected(f"a refinement keeps its idea's timeframe, {idea['timeframe']}; "
-                           "to use another timeframe propose a port")
-        return idea
-    if idea["status"] not in ("open", "exhausted"):
-        raise Rejected(f"idea {_label(idea)} is {idea['status']}; only open or exhausted ideas can be ported")
-    best = best_pile([pile(x.get("verdict")) for x in record.proposals(idea["id"])
-                      if x.get("judge_exit") is not None and x.get("duplicate_of") is None])
-    if best == "promoted":
-        raise Rejected(f"idea {_label(idea)} is promoted; its family is headed for an exam and gets no port")
-    if best not in ("signal before costs", "close call"):
-        raise Rejected(f"idea {_label(idea)} has best pile {best or 'none'}; only signal before costs "
-                       "or close call can be ported")
-    if p.timeframe == idea["timeframe"]:
-        raise Rejected(f"a port needs a timeframe other than the idea's own, {idea['timeframe']}")
-    if any(i.get("port_of") == idea["id"] and i["timeframe"] == p.timeframe for i in ids.values()):
-        raise Rejected(f"idea {_label(idea)} already has a port at {p.timeframe}")
+    refused = refinement_refused if p.kind == "refinement" else port_refused
+    if why := refused(idea, record, pc, p.timeframe):
+        raise Rejected(why)
     return idea
 
 

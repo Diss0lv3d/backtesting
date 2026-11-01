@@ -508,17 +508,19 @@ def idea_exclude(idea: int = typer.Argument(..., help="the idea's id"),
 def idea_next(idea: Optional[int] = typer.Argument(None, help="the idea's id"),
               clear: bool = typer.Option(False, "--clear", help="clear the request instead"),
               config: Optional[str] = CfgOpt):
-    """Ask that the builder's next proposal work on an open idea (one idea at a time), or --clear the request.
-    It is a request: the idea rules don't change. It stands until a proposal on the idea is judged or it closes."""
+    """Ask that the builder's next proposal work on an open idea that a proposal could work on now (one idea at a
+    time), or --clear the request. It is a request: the idea rules don't change. It stands until a proposal on the
+    idea is judged or it closes."""
     if clear == (idea is not None):
         _refuse("name an idea's id, or pass --clear")
-    rec, _ = _proposer_record(config, "no proposer record yet")
+    from perp_lab.proposer import human
+    rec, pc = _proposer_record(config, "no proposer record yet")
     if clear:
         rec.clear_all_next()
         typer.echo("next up cleared")
         return
     try:
-        rec.flag_next(idea)
+        human.flag_next(rec, pc, idea)
     except ValueError as e:
         _refuse(str(e))
     typer.echo(f"idea #{idea} is next up")

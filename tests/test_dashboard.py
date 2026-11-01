@@ -361,3 +361,19 @@ def test_try_next_flags_one_open_idea_and_clear_unflags_it(populated):
     at.button(key=f"clear_next_{b}").click().run()
     assert not at.exception, [e.message for e in at.exception]
     assert r.next_up() is None
+
+
+def test_try_next_is_offered_only_for_an_idea_a_proposal_could_work_on(populated):
+    r = _seeded(populated)
+    untested = r.add_idea("LCE untested", {}, "seed", "5m")          # ports only, and no pile a port needs
+    portable = r.add_idea("LCE signal", {}, "seed", "5m")
+    r.add_proposal(idea_id=portable, plugin="lce_atr", timeframe="5m", kind="new", state="judged", judge_exit=0,
+                   verdict={"decision": "kill", "reasons": [], "holdout_status": "n/a", "diagnostics": {
+                       "gates": {"net_sharpe": -1, "random_p95": 0, "oos_trades": 100, "min_oos_trades": 64},
+                       "before_costs": {"sharpe": 0.5, "random_p95": 0.1}}})
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    keys = {b.key for b in at.button}
+    assert f"try_next_{untested}" not in keys and f"try_next_{portable}" in keys
+    assert any(c.value.startswith(f"Try next: no proposal can work on idea #{untested} (LCE untested) now")
+               for c in at.caption)

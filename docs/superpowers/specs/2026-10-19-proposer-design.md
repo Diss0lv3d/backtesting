@@ -1011,7 +1011,11 @@ proposer from the Ideas page and from `lab idea`, with structured cards and butt
   `excluded` and `excluded_reason`, as candidate E is seeded. Never a passed, failed, duplicate or
   excluded one. The model reads the reason on the idea's closed line.
 - **Try next.** `ideas.next_up` holds when the human asked for an idea to be tried next. One idea
-  holds it at most: only an open idea takes it, and setting it clears it from any other. While the
+  holds it at most, and setting it clears it from any other. Only an open idea some proposal could
+  work on now takes it: a refinement at its own timeframe, or a port under the port rules
+  (`assemble.answerable`, built from the same per-kind refusals `check_idea_rules` raises, so the
+  two can't disagree). A flag no proposal could answer would be asked for every round, each attempt
+  refused, until five drops in a row stop the session as `stuck`. While the
   flagged idea is open, the round's instruction ends with one fixed sentence, "The human asks that
   this round's proposal work on idea #<id>.", and nothing else: never the flag's time, never the
   human's words. It is a request, and the idea rules don't change. The flag clears when a proposal

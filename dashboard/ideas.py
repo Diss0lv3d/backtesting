@@ -185,15 +185,18 @@ def _exclude(record: Record, i: int) -> None:
     _act(i, f"Excluded idea #{i}", record.exclude_idea, i, st.session_state.get(f"exclude_reason_{i}", ""))
 
 
-def _controls(record: Record, idea: dict) -> None:
+def _controls(record: Record, pc, idea: dict) -> None:
     i, status = idea["id"], idea["status"]
     if idea.get("next_up") is not None:
         c = st.columns([5, 1])
         c[0].markdown("**next up**: the builder's next round is asked to work on this idea")
         c[1].button("Clear", key=f"clear_next_{i}", on_click=_act, args=(i, "Next up cleared", record.clear_next, i))
     elif status == "open":
-        st.button("Try next", key=f"try_next_{i}", on_click=_act,
-                  args=(i, f"Idea #{i} is next up", record.flag_next, i))
+        if why := human.why_not_next(record, pc, idea):
+            st.caption(f"Try next: {why}")
+        else:
+            st.button("Try next", key=f"try_next_{i}", on_click=_act,
+                      args=(i, f"Idea #{i} is next up", human.flag_next, record, pc, i))
     if status in EXCLUDABLE and st.checkbox("Exclude this idea", key=f"exclude_open_{i}"):
         st.warning(human.WARNING)
         st.text_input("Why: the builder reads this reason", key=f"exclude_reason_{i}")
@@ -202,11 +205,11 @@ def _controls(record: Record, idea: dict) -> None:
         st.error(err)
 
 
-def _idea(cfg, record: Record, idea: dict, props: list[dict], wf: set[tuple[str, str]]) -> None:
+def _idea(cfg, record: Record, pc, idea: dict, props: list[dict], wf: set[tuple[str, str]]) -> None:
     st.markdown(f"#### {idea['title']}")
     st.caption(f"idea {idea['id']} · {idea['origin']} · {idea.get('timeframe') or '?'} · {idea['status']}"
                + (f" · excluded: {idea['excluded_reason']}" if idea.get("excluded_reason") else ""))
-    _controls(record, idea)
+    _controls(record, pc, idea)
     for k, v in (idea.get("card") or {}).items():
         st.markdown(f"**{k}:** {v}")
     for p in props:
@@ -258,11 +261,11 @@ def page_ideas(cfg) -> None:
         if g == "closed":
             with st.expander(f"Closed ({len(groups[g])}): dead, exhausted, failed, duplicate, excluded"):
                 for i in groups[g]:
-                    _idea(cfg, record, i, by_idea[i["id"]], wf)
+                    _idea(cfg, record, pc, i, by_idea[i["id"]], wf)
         else:
             st.subheader(f"{_TITLES[g]} ({len(groups[g])})")
             for i in groups[g]:
-                _idea(cfg, record, i, by_idea[i["id"]], wf)
+                _idea(cfg, record, pc, i, by_idea[i["id"]], wf)
     titles = {i["id"]: i["title"] for i in ideas}
     broken = [p for ps in by_idea.values() for p in ps if _broken(p)]
     if broken:
