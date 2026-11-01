@@ -134,3 +134,34 @@ def test_a_title_must_be_one_line(rec, title):
     """The record's closed-idea entry and the open idea's heading are one line each (prompt.render_record)."""
     assert human.check(rec, PC, entry(title=title)) == ["title: must be one line"]
     assert human.check(rec, PC, entry(title="  Basis squeeze \n")) == []          # an edge is trimmed, not refused
+
+
+def test_add_all_adds_every_card_or_none(rec):
+    ids = human.add_all(rec, PC, [entry(title="One"), entry(title="Two", timeframe="4h")])
+    assert [(rec.idea(i)["title"], rec.idea(i)["timeframe"], rec.idea(i)["origin"]) for i in ids] == [
+        ("One", "1h", "human"), ("Two", "4h", "human")]
+    with pytest.raises(human.Refused) as refused:
+        human.add_all(rec, PC, [entry(title="Three"), entry(title="Four", mechanism=""), "a card?",
+                                entry(title="three "), entry(title="one")])
+    assert refused.value.errors == [
+        "card #2 (Four): mechanism: must be a non-empty string",
+        "card #3: an idea is a mapping of the card's fields and its timeframe",
+        "card #4 (three): title: the same as card #1's",
+        "card #5 (one): title: an idea titled 'one' is already in the record"]
+    assert len(rec.ideas()) == 3                        # the seeded one, One and Two: Three was not added either
+
+
+def test_add_all_waits_for_the_seed_and_needs_a_card(tmp_path, rec):
+    with pytest.raises(human.Refused) as refused:
+        human.add_all(Record(tmp_path / "unseeded"), PC, [entry()])
+    assert refused.value.errors == [human.NOT_SEEDED]
+    with pytest.raises(human.Refused) as refused:
+        human.add_all(rec, PC, [])
+    assert refused.value.errors == ["the file holds no idea"]
+
+
+def test_add_ideas_is_one_transaction(rec):
+    with pytest.raises(ValueError, match="duplicate idea title"):
+        rec.add_ideas([{"title": "New", "card": {}, "origin": "human", "timeframe": "1h"},
+                       {"title": "seeded", "card": {}, "origin": "human", "timeframe": "1h"}])
+    assert [i["title"] for i in rec.ideas()] == ["Seeded"]

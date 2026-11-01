@@ -231,3 +231,24 @@ def test_idea_add_and_exclude_refuse_a_line_break(tmp_path):
     assert r.exit_code == 2 and "title: must be one line" in r.output and len(rec.ideas()) == 1
     r = _idea_cmd(tmp_path, "exclude", "1", "--reason", "sign flip\nof B")
     assert r.exit_code == 2 and "must be one line" in r.output and rec.idea(1)["status"] == "open"
+
+
+CARDS = REPO / "docs/research/2026-11-01-ideas/cards.yaml"
+
+
+def test_idea_add_takes_a_list_of_cards_the_research_notes_five(tmp_path):
+    rec = _seeded(tmp_path)
+    r = _idea_cmd(tmp_path, "add", str(CARDS))
+    assert r.exit_code == 0, r.output
+    added = [i for i in rec.ideas() if i["origin"] == "human"]
+    assert [i["title"] for i in added] == [c["title"] for c in yaml.safe_load(CARDS.read_text())]
+    assert len(added) == 5 and all(f"added idea #{i['id']}" in r.output for i in added)
+
+
+def test_idea_add_with_a_list_adds_none_when_any_card_fails(tmp_path):
+    rec = _seeded(tmp_path)
+    cards = [ENTRY, {**ENTRY, "title": "Second", "timeframe": "5m"}]
+    r = _idea_cmd(tmp_path, "add", _file(tmp_path, yaml.safe_dump(cards)))
+    assert r.exit_code == 2
+    assert "card #2 (Second): timeframe: must be one of ['15m', '1h', '4h'], got '5m'" in r.output
+    assert "added idea" not in r.output and len(rec.ideas()) == 1

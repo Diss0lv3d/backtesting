@@ -468,11 +468,12 @@ def _proposer_record(config: Optional[str], missing: str):
 
 
 @idea_app.command("add")
-def idea_add(file: Path = typer.Argument(..., help="a YAML file: the card's fields (title, mechanism, "
+def idea_add(file: Path = typer.Argument(..., help="a YAML file: one card (its fields, title, mechanism, "
                                          "why_it_persists, signal, trades_per_coin_per_year, likely_failure, "
-                                         "columns) and timeframe"),
+                                         "columns, and timeframe) or a list of them"),
              config: Optional[str] = CfgOpt):
-    """Add your own idea card. It is checked as the model's new ideas are, and waits for the seed."""
+    """Add your own idea cards: one, or a list, all or none. Each is checked as the model's new ideas are, and
+    none goes in before the seed."""
     import yaml
 
     from perp_lab.proposer import human
@@ -482,11 +483,13 @@ def idea_add(file: Path = typer.Argument(..., help="a YAML file: the card's fiel
         entry = yaml.safe_load(file.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
         _refuse(f"can't read {file}: {e}")
+    many = isinstance(entry, list)
     try:
-        i = human.add(rec, pc, entry)
+        ids = human.add_all(rec, pc, entry) if many else [human.add(rec, pc, entry)]
     except human.Refused as e:
-        _refuse("\n  ".join(["the idea was not added:", *e.errors]))
-    typer.echo(f"added idea #{i}")
+        _refuse("\n  ".join(["no idea was added:" if many else "the idea was not added:", *e.errors]))
+    for i in ids:
+        typer.echo(f"added idea #{i}")
 
 
 @idea_app.command("exclude")

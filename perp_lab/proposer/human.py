@@ -83,6 +83,33 @@ def add(record: Record, pc, entry) -> int:
         raise Refused([f"title: {e}"]) from e
 
 
+def add_all(record: Record, pc, entries: list) -> list[int]:
+    """Add every entry, in one transaction, and return their ids; or add none and raise Refused with each failing
+    entry's errors, prefixed by its number (from 1) and title. Titles within the list must differ too."""
+    if not record.seeded():
+        raise Refused([NOT_SEEDED])
+    if not entries:
+        raise Refused(["the file holds no idea"])
+    rows, errors, seen = [], [], {}
+    for n, entry in enumerate(entries, 1):
+        card, tf, errs = _parse(record, pc, entry)
+        title = entry.get("title") if isinstance(entry, dict) else None
+        label = f"card #{n} ({' '.join(title.split())})" if isinstance(title, str) else f"card #{n}"
+        if card is not None:
+            key = card["title"].casefold()
+            if key in seen:
+                errs = [f"title: the same as card #{seen[key]}'s"]
+            seen.setdefault(key, n)
+            rows.append({"title": card["title"], "card": card, "origin": "human", "timeframe": tf})
+        errors += [f"{label}: {e}" for e in errs]
+    if errors:
+        raise Refused(errors)
+    try:
+        return record.add_ideas(rows)
+    except ValueError as e:                     # a title added since the check
+        raise Refused([f"title: {e}"]) from e
+
+
 def why_not_next(record: Record, pc, idea: dict) -> str | None:
     """Why the idea can't be tried next, or None: it must be open, and some proposal must be able to work on it."""
     if idea["status"] != "open":

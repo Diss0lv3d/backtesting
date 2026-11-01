@@ -226,16 +226,26 @@ class Record:
     # -- ideas
     def add_idea(self, title: str, card: dict, origin: str, timeframe: str, *,
                  port_of: int | None = None, status: str = "open") -> int:
+        return self.add_ideas([{"title": title, "card": card, "origin": origin, "timeframe": timeframe,
+                                "port_of": port_of, "status": status}])[0]
+
+    def add_ideas(self, rows: list[dict]) -> list[int]:
+        """Add the ideas in one transaction, all or none: a title any idea has, whatever the case, refuses them
+        all. Each row has title, card, origin and timeframe, and may have port_of and status (default open)."""
+        now, out = _now(), []
         with self.engine.begin() as c:
             taken = {t.casefold() for (t,) in c.execute(sa.select(ideas.c.title))}
-            if title.casefold() in taken:
-                raise ValueError(f"duplicate idea title: {title!r}")
-            try:
-                return c.execute(sa.insert(ideas).values(
-                    title=title, card=card, origin=origin, timeframe=timeframe, port_of=port_of,
-                    status=status, created_at=_now())).inserted_primary_key[0]
-            except sa.exc.IntegrityError as e:
-                raise ValueError(f"duplicate idea title: {title!r}") from e
+            for row in rows:
+                title = row["title"]
+                if title.casefold() in taken:
+                    raise ValueError(f"duplicate idea title: {title!r}")
+                taken.add(title.casefold())
+                try:
+                    out.append(c.execute(sa.insert(ideas).values(
+                        **{"port_of": None, "status": "open", **row}, created_at=now)).inserted_primary_key[0])
+                except sa.exc.IntegrityError as e:
+                    raise ValueError(f"duplicate idea title: {title!r}") from e
+        return out
 
     def ideas(self) -> list[dict]:
         with self.engine.connect() as c:
