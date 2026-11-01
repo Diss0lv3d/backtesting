@@ -6,6 +6,11 @@ so every choice below not quoted from the user is the author's call, marked ★.
 Builds on the proposer spec, `docs/superpowers/specs/2026-10-19-proposer-design.md` (binding wherever this
 document doesn't change it), and on the human-ideas amendment at its end.
 
+Extended by `docs/superpowers/specs/2026-11-01-referee-and-human-stops-design.md` (binding where it changes this
+document): the human's stop list in every research prompt, beside the research step's own, and a referee call that
+reviews each round's cards before any enters the record, with web access fenced to academic hosts. The research
+step itself stays tool-less.
+
 ## Intent
 
 The user, 2026-11-01: "this idea, research, testing all of this should keep happening in a loop", "we can do
@@ -41,7 +46,9 @@ that already failed. The research round puts that step inside the loop.
   ideas toward what happened in the holdout, and the exams — the lab's only clean test — would be contaminated without
   anyone seeing it. So the research call is the same tool-less `claude -p` call as the proposer's, on the same pinned
   model whose training cutoff (2026-06-30) is guarded before `holdout_start`. It reasons from the record and its own
-  knowledge of the literature. (Web research with a recorded caveat can be designed later, behind a switch.)
+  knowledge of the literature. (Web research with a recorded caveat can be designed later, behind a switch.) The
+  referee-and-human-stops spec adds that switch for checking, not authoring: its referee may fetch from academic
+  hosts only, and every card it reviewed carries the `web_reviewed` caveat; this research call stays tool-less.
 - **Real-data statistics reach the model outside verdicts.** The research round sees exactly what the proposer sees
   (the static context and the rendered record), nothing else: no `data/`, `runs/`, `lab.db`, judge logs, research
   notes written by humans, or file access.
@@ -178,10 +185,11 @@ Where they differ from the sections above, these win.
   loop; after a restart the due round runs. If wrong: one research round sooner after a restart.
 - **R-RL3: a research idea takes the `duplicate` status** as the proposer's own ideas do, since a model wrote it;
   human and seeded ideas stay exempt (What it writes). If wrong: the human can add the idea back as a human card.
-- **R-RL4: with `research_every: 0` no stop list is in force.** The rounds stop and so does the last round's list:
-  no proposal prompt carries it, and the Ideas page's research notes say "research is off: no stop list is in
-  force". A human turns research off exactly when it steers badly; turning it on again brings back the latest valid
-  round's list.
+- **R-RL4: with `research_every: 0` the research step's stop list is not in force; the human's stays.** The rounds
+  stop and so does the last round's list: no proposal prompt carries it, and the Ideas page's research notes say
+  "research is off: the research step's stop list is not in force". The human's stop list (referee-and-human-stops
+  spec) is not research's, so it stays in every proposal prompt. A human turns research off exactly when it steers
+  badly; turning it on again brings back the latest valid round's list.
 - **R-RL5: the cap is checked before the call.** A round at `research_open_cap` is told to return no idea cards (the
   record already holds the untried research ideas the cap allows) and to revise only the stop list and the summary.
   Cards it returns anyway are set aside unchecked, never refused, so they cost no fix-up and can't lose the round
