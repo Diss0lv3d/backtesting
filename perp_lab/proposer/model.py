@@ -270,7 +270,8 @@ class _Fence:
     """One call's fetch audit (R-RF4). In a tool-less call a WebFetch means the CLI did not hold its flags. In a
     web call every assistant block must be text, thinking or a tool_use of StructuredOutput or WebFetch (a fetch's
     url the one in the message's `wire_tool_inputs`, when shown), and every user block a tool_result answering,
-    once, a tool_use already issued. A fetch off the allowlist is harmless only if the CLI refused it: its
+    once, a tool_use already issued; a user line the CLI marks isSynthetic (its own words to the model) may hold
+    text blocks alone (R-RF6). A fetch off the allowlist is harmless only if the CLI refused it: its
     tool_result is an error (checked as it arrives, since the model reads it next) and the result lists it in
     permission_denials. The texts of the CLI's denials differ by path, so none is read."""
 
@@ -294,8 +295,14 @@ class _Fence:
                 if block.get("type") == "tool_use":
                     self._use(block, msg)
         elif kind == "user":
-            for block in _blocks(msg, "a user"):
-                self._answer(block)
+            blocks = _blocks(msg, "a user")
+            if msg.get("isSynthetic") is True:  # the CLI's own message, such as its resume after a cut-off reply
+                for block in blocks:
+                    if block.get("type") != "text":
+                        raise FenceBreach(f"a synthetic user block of type {block.get('type')!r}")
+            else:
+                for block in blocks:
+                    self._answer(block)
         elif kind == "result":
             denials = msg.get("permission_denials")
             for d in denials if isinstance(denials, list) else ():
