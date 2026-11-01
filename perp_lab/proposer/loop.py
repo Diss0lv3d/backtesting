@@ -456,9 +456,13 @@ class _Session:
                 now = self.deps.now()
                 until = e.resets_at or now + timedelta(seconds=USAGE_BACKOFF_S)
                 until = max(until, now + timedelta(seconds=USAGE_MIN_S))
+                if self.deadline is not None:                         # --days ends the wait, as it ends a quota's
+                    until = min(until, self.deadline)
                 self._log_call(seq, 0, 0, None, "usage_limit")
                 self.digest.pause("the Claude Code usage limit is reached", until)
                 self._sleep_until(until)
+                if self.deadline is not None and self.deps.now() >= self.deadline:
+                    raise _Stop("days")
                 continue                                              # the same call again
             except (model.ModelCallError, OSError) as e:              # OSError: the CLI gone mid-session
                 self._log_call(seq, 0, 0, None, "model_call")

@@ -562,6 +562,14 @@ def test_a_usage_limit_sleeps_until_its_reset_then_repeats_the_same_call(lab, re
     assert "paused: the Claude Code usage limit" in digest(lab)
 
 
+def test_a_usage_limit_wait_ends_at_the_session_deadline(lab):
+    lab.fake.replies = [UsageLimit(T0 + timedelta(hours=10)), new("A")]
+    assert run(lab, days=0.25) == "days"
+    assert lab.fake.sleeps == [6 * 3600.0] and len(lab.fake.calls) == 1
+    assert [(p["state"], p["broken_reason"]) for p in props(lab)] == [("dropped", "days")]
+    assert "until 2026-11-02 16:00 UTC" in digest(lab)
+
+
 # -- the day changes
 def test_a_day_change_during_preflight_runs_it_again_before_the_copy(lab):
     """The clock passes midnight while preflight runs, so preflight runs again before the copy (R36). A day change
