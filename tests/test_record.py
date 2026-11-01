@@ -369,3 +369,12 @@ def test_untried_research_ideas_counts_only_open_unjudged_research_ideas(rec):
 def test_a_call_with_no_proposal_counts_toward_the_day(rec):
     rec.add_call(seq=None, tokens_in=7, tokens_out=3, outcome="research")
     assert rec.usage_on(datetime.now(UTC).date()) == (7, 3)
+
+
+def test_a_research_row_is_written_first_and_updated_at_its_rounds_end(rec):
+    rid = rec.add_research(session_id=None, trials_used=5, outcome="pending")
+    rec.update_research(rid, reply={"stop": []}, added=[3], tokens_in=1, tokens_out=2, outcome="ok")
+    r = rec.last_research()
+    assert (r["id"], r["outcome"], r["added"], r["reply"], r["trials_used"]) == (rid, "ok", [3], {"stop": []}, 5)
+    with pytest.raises(KeyError):
+        rec.update_research(rid + 1, outcome="ok")

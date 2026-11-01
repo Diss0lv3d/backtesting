@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from perp_lab.proposer.digest import Digest
 
 UTC = timezone.utc
@@ -78,3 +80,26 @@ def test_finish_with_nothing_new_says_so(tmp_path):
     d.finish({}, [], "signal", 0, 0)
     text = d.path.read_text()
     assert "signal" in text and "none" in text
+
+
+def test_a_research_round_is_one_line_with_its_summary_indented_under_it(tmp_path):
+    d = _digest(tmp_path)
+    d.research([17, 18, 19], 4, "ok", "The fades died on costs.\n\n## End\nCarry is next.  ")
+    assert d.path.read_text().splitlines() == [
+        "- 10:05 · research: +3 ideas (#17, #18, #19); stop list 4 items",
+        "  The fades died on costs.", "  ## End", "  Carry is next."]
+
+
+@pytest.mark.parametrize("args, line", [
+    (([5], 1, "ok", "s"), "research: +1 idea (#5); stop list 1 item"),
+    (([], 0, "ok", "s"), "research: +0 ideas; stop list 0 items"),
+    (([], 2, "capped", "s"), "research: +0 ideas (not added: cap); stop list 2 items"),
+    (([], 0, "invalid", None), "research: invalid after fix-ups"),
+    (([], 0, "error: model_call", None), "research: error model_call"),
+    (([], 0, "error: signal", None), "research: error signal"),
+])
+def test_each_research_outcome_has_its_line(tmp_path, args, line):
+    d = _digest(tmp_path)
+    d.research(*args)
+    lines = d.path.read_text().splitlines()
+    assert lines[0] == f"- 10:05 · {line}" and len(lines) == (2 if args[3] else 1)

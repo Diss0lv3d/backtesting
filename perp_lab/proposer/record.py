@@ -380,6 +380,9 @@ class Record:
         f.setdefault("at", _now())
         return self._insert(research, f)
 
+    def update_research(self, id: int, **f) -> None:
+        self._update(research, research.c.id, id, f)
+
     def _latest_research(self, *where) -> dict | None:
         q = sa.select(research).where(*where).order_by(research.c.id.desc()).limit(1)
         with self.engine.connect() as c:
