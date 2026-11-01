@@ -498,3 +498,14 @@ def test_a_research_row_has_no_referee_until_one_is_written(rec):
     assert rec.last_research()["referee"] is None
     rec.update_research(rid, referee={"error": "model_call"})
     assert rec.last_research()["referee"] == {"error": "model_call"}
+
+
+def test_every_rounds_referee_report_comes_back_in_round_order(rec):
+    """R-RF8: the loop reads the referee's rejections from them. A round with none written gives None."""
+    a = rec.add_research(session_id=None, trials_used=0, outcome="ok", referee={"web": True, "verdicts": []})
+    rec.add_research(session_id=None, trials_used=1, outcome="ok")
+    c = rec.add_research(session_id=None, trials_used=2, outcome="pending")
+    rec.update_research(c, referee=None)
+    rec.update_research(a, referee={"web": False, "error": "model_call"})
+    rec.add_research(session_id=None, trials_used=3, outcome="ok", referee=[1])
+    assert rec.referee_reports() == [{"web": False, "error": "model_call"}, None, None, [1]]

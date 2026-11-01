@@ -413,6 +413,12 @@ class Record:
         """The latest round with a valid stop list: ok, or capped (its ideas were held back, its stop list kept)."""
         return self._latest_research(research.c.outcome.in_(("ok", "capped")))
 
+    def referee_reports(self) -> list:
+        """Every research round's referee JSON, in round order: None for a round no referee reviewed. As the loop
+        wrote it, but read as untrusted."""
+        with self.engine.connect() as c:
+            return [r for (r,) in c.execute(sa.select(research.c.referee).order_by(research.c.id))]
+
     def untried_research_ideas(self) -> int:
         """Open research ideas no judge has run on: what the cap counts."""
         judged = sa.exists().where(proposals.c.idea_id == ideas.c.id, proposals.c.judge_exit.is_not(None))

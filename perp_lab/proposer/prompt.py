@@ -13,7 +13,9 @@ text only, never when they were added.
 
 A round's cards then go to a referee call (referee-and-human-stops spec, "The referee") before any enters the
 record: the same record and stop sections, the cards as the research step wrote them (note_cards) and a fixed
-instruction of its own (referee_instruction), from the config alone.
+instruction of its own (referee_instruction), from the config alone. Of its review, only the titles of the cards it
+rejected reach a later research prompt (rejected_section, R-RF8): the research step's own words, never the
+referee's reasons or sources, which are web-informed.
 """
 
 from __future__ import annotations
@@ -260,6 +262,22 @@ REVISE_STOP = """\
 The stop list above is the one in force. Revise it: keep what still holds, drop what the record has since \
 answered, and add what it now shows."""
 
+REJECTED_HEADING = "Cards the referee rejected (do not propose them again):"
+
+
+def rejected_section(titles: list[str]) -> str:
+    """The titles of the cards the referee rejected in earlier rounds, for every research prompt after the stop
+    sections; "" when there are none."""
+    if not titles:
+        return ""
+    return "\n".join([REJECTED_HEADING, *_items(titles)]) + "\n"
+
+
+# Only when the prompt lists rejected cards (rejected_section), between the stop sections and this instruction.
+REJECTED_NOTE = """\
+The cards listed above as rejected by the referee were reviewed and turned down: do not propose them again, under \
+their titles or new ones."""
+
 RESEARCH_RETURN = """\
 Return at most {max_ideas} idea cards (none, when the record points nowhere new), a stop list of at most {stop} \
 one-line directions the builder should stop trying (each later round sees it, in place of the last one), and a \
@@ -273,13 +291,14 @@ each later round sees it, in place of the last one) and the summary for the huma
 the one below, not the one under "Your reply":"""
 
 
-def research_instruction(pc, *, revising: bool = False, capped: bool = False) -> str:
+def research_instruction(pc, *, revising: bool = False, capped: bool = False, rejected: bool = False) -> str:
     """A research round's instruction: fixed text and the research contract, from the config alone. `revising`,
     when a stop list is in force, asks the round to revise it; `capped`, when untried research ideas are at their
-    cap, asks for no cards."""
+    cap, asks for no cards; `rejected`, when the prompt lists cards the referee rejected, asks for none of them
+    again."""
     ret = (RESEARCH_RETURN_CAPPED if capped else RESEARCH_RETURN).format(max_ideas=pc.research_max_ideas,
                                                                           stop=contract.STOP_MAX_ITEMS)
-    parts = [RESEARCH_INSTRUCTION, REVISE_STOP if revising else None, ret,
+    parts = [RESEARCH_INSTRUCTION, REVISE_STOP if revising else None, REJECTED_NOTE if rejected else None, ret,
              contract.describe_research(pc.timeframes, pc.research_max_ideas)]
     return "\n\n".join(x for x in parts if x)
 

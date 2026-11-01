@@ -433,3 +433,28 @@ def test_a_referee_fixup_asks_for_a_corrected_report():
     text = prompt.fixup("THE ROUND'S PROMPT", {"verdicts": 1}, ["verdicts: must be an array"], what="referee report")
     assert text.rstrip().endswith("Return a corrected referee report: one JSON object, as the reply contract "
                                   "describes.")
+
+
+# R-RF8: rejected cards don't come back
+REJECTED_HEADING = "Cards the referee rejected (do not propose them again):"
+
+
+def test_the_rejected_section_is_its_heading_and_one_line_per_title():
+    assert prompt.rejected_section([]) == ""
+    assert prompt.rejected_section(["Round-number stop cascade", "High-volume\nreturn  premium "]) == \
+        f"{REJECTED_HEADING}\n- Round-number stop cascade\n- High-volume return premium\n"
+
+
+REJECTED_NOTE = ("The cards listed above as rejected by the referee were reviewed and turned down: do not propose "
+                 "them again, under their titles or new ones.")
+
+
+def test_a_research_round_with_rejected_cards_is_told_not_to_propose_them_again(cfg):
+    pc = settings.load(cfg)
+    for revising in (False, True):
+        for capped in (False, True):
+            plain = prompt.research_instruction(pc, revising=revising, capped=capped)
+            told = prompt.research_instruction(pc, revising=revising, capped=capped, rejected=True)
+            assert REJECTED_NOTE in " ".join(told.split()) and REJECTED_NOTE not in " ".join(plain.split())
+            assert told.replace(prompt.REJECTED_NOTE + "\n\n", "", 1) == plain
+            assert told.endswith(contract.describe_research(pc.timeframes, pc.research_max_ideas))

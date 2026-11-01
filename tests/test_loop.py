@@ -1993,12 +1993,15 @@ def test_no_time_summary_or_later_card_text_reaches_any_prompt_with_the_referee(
     lab.rec.add_research(session_id=None, at=PLANTED, trials_used=0, added=[], outcome="ok",
                          reply=note(stop=["Old stop"], summary="SUMMARY-0"))
     lab.fake.notes = [note("Basis squeeze", summary="SUMMARY-1"), note("Carry unwind", summary="SUMMARY-2")]
-    lab.fake.reports = [report(v("Basis squeeze", "reject", "REASON-1")),
+    lab.fake.reports = [report(v("Basis squeeze", "reject", "REASON-1", sources=[ARXIV])),
                         report(v("Carry unwind", reason="REASON-2"))]
     assert run(lab, refereed(lab, research_every=1), trials=3) == "trials"
     assert order(lab) == "PRVPRVP"
+    # the second round is told the first round's rejected card, by its title alone (R-RF8)
+    assert prompt.rejected_section(["Basis squeeze"]) in research_calls(lab)[1].user
+    assert "Cards the referee rejected" not in research_calls(lab)[0].user
     for c in lab.fake.calls:
-        for gone in ("SUMMARY", "REASON", "05:06", "10:00", "2029"):
+        for gone in ("SUMMARY", "REASON", "05:06", "10:00", "2029", ARXIV):     # nothing of the referee's review
             assert gone not in c.user, gone
         # one date only, the lab's holdout start in the referee's instruction (R-RF7)
         assert DATE.findall(c.user) == ([f"{lab.pc.holdout_start:%Y-%m-%d}"] if refereeing(c) else []), c.user
@@ -2014,3 +2017,69 @@ def test_the_real_deps_pass_the_web_domains_to_the_model_call(lab, monkeypatch):
     assert deps.call_model("s", "u", {}, t) == "R"
     assert deps.call_model("s", "u", {}, t, web_domains=("arxiv.org",)) == "R"
     assert seen == [("s", "u", {"web_domains": ()}), ("s", "u", {"web_domains": ("arxiv.org",)})]
+
+
+
+# R-RF8: the titles of the cards the referee rejected reach every later research prompt; nothing else of its review
+REJECTED_HEADING = "Cards the referee rejected (do not propose them again):"
+
+
+def refereed_round(lab, rejected=(), accepted=(), stop=(), reason="REASON-0", extra=()):
+    """An earlier refereed round, with a planted time: its rejected and accepted cards' verdicts (and any extra
+    entries, as a row may hold anything)."""
+    verdicts = [*({"title": t, "decision": d, "reason": reason, "sources": [ARXIV]}
+                  for d, ts in (("accept", accepted), ("reject", rejected)) for t in ts), *extra]
+    lab.rec.add_research(session_id=None, at=PLANTED, trials_used=0, added=[], outcome="ok",
+                         reply=note(stop=list(stop)), referee={"web": True, "fetches": [ARXIV, GECKO],
+                                                               "denied": [GECKO], "verdicts": verdicts})
+
+
+def test_a_research_prompt_carries_the_rejected_cards_titles_after_the_stop_sections(lab):
+    human_stops(lab, "Round-number stop cascades")
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    refereed_round(lab, rejected=["Round-number\n  stop cascade", "Volume premium"], accepted=["Kept card"],
+                   reason="REASON-A")
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="error: model_call", reply=None,
+                         referee={"web": True, "error": "model_call"})
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok", reply=note(), referee=[1])
+    refereed_round(lab, rejected=["volume PREMIUM", "Funding fade"], stop=["Exit-only changes"], reason="REASON-B",
+                   extra=["a verdict", {"decision": "reject", "title": 7}, {"decision": "reject"},
+                          {"title": "Odd", "decision": "REJECT"}])
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    pc = refereed(lab, research_every=1)
+    assert run(lab, pc, trials=1) == "trials"
+    assert order(lab) == "RP"                            # no cards: no referee this round
+    (r,) = research_calls(lab)
+    # each title once (its latest), oldest first, on one line; the human's list, the research step's, then these
+    rejected = (f"{REJECTED_HEADING}\n- Round-number stop cascade\n- volume PREMIUM\n- Funding fade\n")
+    assert r.user == (record + "\n" + f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n" + "\n"
+                      + f"{STOP_HEADING}\n- Exit-only changes\n" + "\n" + rejected + "\n"
+                      + prompt.research_instruction(pc, revising=True, rejected=True) + "\n")
+    for gone in ("REASON", "Kept card", "Odd", ARXIV, GECKO):
+        assert gone not in r.user, gone
+    assert "Cards the referee rejected" not in proposal_calls(lab)[0].user     # research prompts only
+
+
+def test_only_the_latest_rejected_titles_reach_the_prompt(lab):
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    refereed_round(lab, rejected=[f"Card {k}" for k in range(loop.REJECTED_MAX + 5)])
+    assert run(lab, refereed(lab, research_every=1), trials=1) == "trials"
+    want = prompt.rejected_section([f"Card {k}" for k in range(5, loop.REJECTED_MAX + 5)])
+    assert loop.REJECTED_MAX == 30 and want in research_calls(lab)[0].user and "- Card 4\n" not in want
+
+
+def test_with_no_rejection_or_the_referee_off_no_rejected_section_is_in_a_prompt(lab):
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    refereed_round(lab, accepted=["Kept card"])
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    assert run(lab, refereed(lab, research_every=1), trials=1) == "trials"
+    assert research_calls(lab)[0].user == record + "\n" + prompt.research_instruction(lab.pc) + "\n"
+
+
+def test_with_the_referee_off_its_past_rejections_reach_no_prompt(lab):
+    """As research off drops the research step's stop list: a human turns the referee off when it judges badly."""
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    refereed_round(lab, rejected=["Volume premium"])
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=1), trials=1) == "trials"
+    assert research_calls(lab)[0].user == record + "\n" + prompt.research_instruction(lab.pc) + "\n"

@@ -70,6 +70,7 @@ STOPS = ("trials_total", "days", "trials", "infra_errors", "stuck", "model_call"
 RAN = ("ok", "capped", "invalid", "error: model_call")
 REFEREE_ERROR_MAX = 300     # a referee error as the row and the digest keep it: one line, this long at most
 REFEREE_FETCHES_MAX = 50    # the fetches, and the denials, a research row keeps
+REJECTED_MAX = 30           # the rejected cards' titles a research prompt lists: the latest
 
 
 @dataclass(frozen=True)
@@ -555,6 +556,26 @@ class _Session:
         stop = reply.get("stop") if isinstance(reply, dict) else None
         return [s for s in stop if isinstance(s, str)] if isinstance(stop, list) else []
 
+    def _rejected(self) -> list[str]:
+        """The titles of the cards the referee rejected in earlier rounds, so they don't come back (R-RF8): each
+        once, the latest REJECTED_MAX, oldest first, on one line. Only the titles, which the research step wrote:
+        never the referee's reasons or sources, which are web-informed. None while the referee is off: a human
+        turns it off exactly when it judges badly, as research off drops the research step's list."""
+        if not self.pc.research_referee:
+            return []
+        out, seen = [], set()
+        for ref in reversed(self.record.referee_reports()):                     # the latest round first
+            verdicts = ref.get("verdicts") if isinstance(ref, dict) else None
+            for v in reversed(verdicts) if isinstance(verdicts, list) else ():
+                title = v.get("title") if isinstance(v, dict) and v.get("decision") == "reject" else None
+                title = " ".join(title.split()) if isinstance(title, str) else ""
+                if title and title.casefold() not in seen:
+                    seen.add(title.casefold())
+                    out.append(title)
+                    if len(out) == REJECTED_MAX:
+                        return out[::-1]
+        return out[::-1]
+
     def _human_stops(self) -> list[str]:
         """The human's stop list, read for every prompt, so a session picks up the human's edits without a restart.
         In force whatever research_every says: it's the human's, not research's. Only the items' text."""
@@ -869,8 +890,9 @@ class _Session:
         """(the outcome, a detail for the digest): calls and checks until a note is valid and written (ok, or
         capped), or it is refused after the fix-ups (invalid, with its last attempt's first error, as a dropped
         proposal's line has). The prompt is the record, the human's stop list, the research step's list in force
-        (as a proposal sees them) and the research instruction, which asks the round to revise its own list and
-        leave the human's alone: nothing else.
+        (as a proposal sees them), the titles of the cards the referee rejected in earlier rounds (_rejected) and
+        the research instruction, which asks the round to revise its own list and leave the human's alone, and to
+        propose no rejected card again: nothing else.
 
         The cap is checked before the call: a round at the cap is asked for no cards and revises only the stop list
         and the summary. Cards it returns anyway are set aside, never checked, so they can't cost a fix-up or the
@@ -878,9 +900,10 @@ class _Session:
 
         With research_referee, a valid note's cards go to the referee (_referee), which adds what it passes; the
         round is ok whatever the referee did, so its stop list and summary stand."""
-        stop = self._stop_list()
+        stop, rejected = self._stop_list(), self._rejected()
         capped = self.record.untried_research_ideas() >= self.pc.research_open_cap
-        base = self._research_prompt(stop, prompt.research_instruction(self.pc, revising=bool(stop), capped=capped))
+        base = self._research_prompt(stop, prompt.rejected_section(rejected), prompt.research_instruction(
+            self.pc, revising=bool(stop), capped=capped, rejected=bool(rejected)))
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
             reply = self._call(None, user, self.research_schema, r.transcript)
