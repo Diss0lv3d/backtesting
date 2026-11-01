@@ -483,6 +483,7 @@ def test_a_plugin_error_in_a_child_with_a_parent_records_no_edge(cfg, plugins):
               validate=_failing(v, "donchian_atr_wide", PluginError("exception", "KeyError", "x")))
     assert j["decision"] == "kill" and j["reasons"] == ["plugin_error: exception: KeyError: x"]
     assert j["child_run_id"] is None and db.read_table(cfg, db.lineage_edges).empty
+    assert db.trial_stats(cfg)[0] == 2                   # the parent's run and the child's registered trial
 
 
 def test_a_parent_that_fails_in_the_sandbox_refuses_the_child(cfg, plugins):
