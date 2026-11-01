@@ -16,12 +16,16 @@ that is still served. An error result's `api_error_status` decides whether a ret
 change on a retry, so 429 is the usage limit and any other 4xx a ModelConfigError; the rest is retried.
 
 A call given web domains (the referee's) is the one place web access enters the loop, so it is fenced twice.
-The CLI gets `--tools WebFetch` (never WebSearch, whose snippets come from any site) and one allow rule,
-`WebFetch(domain:...)`, per domain; with `--permission-prompts none` it denies every other fetch. Then, in code,
-init must list exactly `StructuredOutput` and `WebFetch`, every WebFetch the model issues is recorded, and one off
-the allowlist is harmless only if the CLI denied it: its tool_result, which the model reads next, must be the CLI's
-denial, and the result's `permission_denials` must list it. Anything else kills the call with ModelConfigError
-before its result is used. The audit runs on every call; a tool-less one allows no host.
+The CLI's allowlist is the first layer: `--tools WebFetch` (never WebSearch, whose snippets come from any site),
+one allow rule, `WebFetch(domain:...)`, per domain, `--setting-sources ""` so no user, project or local settings
+(allow rules, a default mode) apply, and CLAUDE_CODE_EVAL_CONFINED=1 in the environment, which turns off the hosts
+the CLI otherwise fetches with no rule (about 90 documentation sites; probe of 2026-11-02, R-RF3); with
+`--permission-prompts none` it denies the rest. That variable is undocumented, so the layer can't be relied on:
+the code fence is the guarantee. Init must list exactly `StructuredOutput` and `WebFetch` with `permissionMode`
+"default", every WebFetch the model issues is recorded, and one off the allowlist is harmless only if the CLI
+denied it: its tool_result, which the model reads next, must be the CLI's denial, and the result's
+`permission_denials` must list it. Anything else kills the call with ModelConfigError before its result is used.
+The audit runs on every call; a tool-less one allows no host.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ from urllib.parse import urlsplit
 from perp_lab.proposer import proc
 
 TOOLS = ["StructuredOutput"]  # the --json-schema mechanism; --tools "" removes every built-in
+CONFINED = {"CLAUDE_CODE_EVAL_CONFINED": "1"}  # a web call's env: no preapproved hosts (undocumented; R-RF3)
 WEB_TOOLS = ["StructuredOutput", "WebFetch"]  # a call with web domains: in any order, nothing else
 DENIAL = "Permission for this tool use was denied."  # how the CLI's tool_result for a fetch it refused begins
 # An allowed domain: two labels or more, nothing else. re.A, as in NETLOC: with re.I alone, [a-z] also matches
@@ -102,15 +107,16 @@ def argv(pc, system: str, schema: dict, *, web_domains: tuple[str, ...] = ()) ->
         bad = [d for d in web_domains if not (isinstance(d, str) and DOMAIN.fullmatch(d))]
         if bad:  # a rule is the CLI's syntax: a domain that isn't a plain hostname could widen it
             raise ModelConfigError(f"not a hostname for the web allowlist: {bad[0]!r}")
-        tools = ["WebFetch", "--allowedTools", *(f"WebFetch(domain:{d})" for d in web_domains)]
+        tools = ["WebFetch", "--allowedTools", *(f"WebFetch(domain:{d})" for d in web_domains),
+                 "--setting-sources", ""]
     return [pc.claude_bin, "-p", "--model", pc.model, "--effort", pc.effort, "--tools", *tools,
             "--strict-mcp-config", "--safe-mode", "--disable-slash-commands", "--no-session-persistence",
             "--permission-prompts", "none", "--system-prompt", system, "--json-schema", json.dumps(schema),
             "--output-format", "stream-json", "--verbose", "--include-hook-events"]
 
 
-def env() -> dict[str, str]:
-    return {"HOME": os.environ["HOME"], "PATH": os.environ["PATH"]}
+def env(web: bool = False) -> dict[str, str]:
+    return {"HOME": os.environ["HOME"], "PATH": os.environ["PATH"], **(CONFINED if web else {})}
 
 
 @contextlib.contextmanager
@@ -122,9 +128,9 @@ def _workdir():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def _start(pc, args: list[str], cwd: str, **kw):
+def _start(pc, args: list[str], cwd: str, web: bool = False, **kw):
     # Its own session, so a kill reaches every process it started and none is left holding the pipe open.
-    return proc.run(args, claude_bin=pc.claude_bin, cwd=cwd, env=env(), start_new_session=True, **kw)
+    return proc.run(args, claude_bin=pc.claude_bin, cwd=cwd, env=env(web), start_new_session=True, **kw)
 
 
 def _end(p) -> None:
@@ -194,13 +200,15 @@ def _parse(raw: bytes) -> dict:
     return msg
 
 
-def _check_init(pc, init: dict, tools: list[str]) -> None:
+def _check_init(pc, init: dict, web: bool) -> None:
     bad = []
     if init.get("model") != pc.model:
         bad.append(f"model {init.get('model')!r}, not {pc.model!r}")
-    got = init.get("tools")
+    tools, got = WEB_TOOLS if web else TOOLS, init.get("tools")
     if not (isinstance(got, list) and len(got) == len(tools) and all(t in got for t in tools)):
         bad.append(f"tools {got!r}, not {tools!r}")
+    if web and init.get("permissionMode") != "default":  # any other mode could allow a fetch with no rule
+        bad.append(f"permissionMode {init.get('permissionMode')!r}, not 'default'")
     bad += [f"{k} {init[k]!r}" for k in EMPTY_IN_INIT if init.get(k)]
     if bad:
         raise ModelConfigError("the CLI's init failed the check: " + "; ".join(bad))
@@ -316,7 +324,7 @@ def _read(pc, lines, log, fence: _Fence) -> tuple[bool, dict | None]:
             raise ModelConfigError(f"a hook event in the stream ({kind}/{sub}): --safe-mode did not hold")
         if not init:
             if kind == "system" and sub == "init":
-                _check_init(pc, msg, WEB_TOOLS if fence.domains else TOOLS)
+                _check_init(pc, msg, bool(fence.domains))
                 init = True
             elif kind != "system":
                 raise ModelCallError(f"a {kind!r} message before init")
@@ -364,7 +372,7 @@ def call(pc, system: str, user: str, schema: dict, transcript: Path, web_domains
     fence = _Fence(tuple(web_domains))
     transcript.parent.mkdir(parents=True, exist_ok=True)
     with _workdir() as cwd, tempfile.TemporaryFile() as err, open(transcript, "ab") as log:
-        p = _start(pc, args, cwd, stdin=proc.PIPE, stdout=proc.PIPE, stderr=err)
+        p = _start(pc, args, cwd, bool(web_domains), stdin=proc.PIPE, stdout=proc.PIPE, stderr=err)
         try:
             deadline = time.monotonic() + pc.call_timeout_s
             try:

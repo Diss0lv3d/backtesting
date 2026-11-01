@@ -411,21 +411,22 @@ def test_a_web_argv_has_webfetch_and_one_allow_rule_per_domain_before_the_next_f
     assert model.argv(pc, "the static context", SCHEMA, web_domains=DOMAINS) == [
         "claude", "-p", "--model", "claude-opus-5-5", "--effort", "high", "--tools", "WebFetch", "--allowedTools",
         "WebFetch(domain:arxiv.org)", "WebFetch(domain:export.arxiv.org)",
-        "WebFetch(domain:api.semanticscholar.org)", "WebFetch(domain:www.nber.org)", "--strict-mcp-config",
-        "--safe-mode", "--disable-slash-commands", "--no-session-persistence", "--permission-prompts", "none",
-        "--system-prompt", "the static context", "--json-schema", json.dumps(SCHEMA), "--output-format",
-        "stream-json", "--verbose", "--include-hook-events"]
+        "WebFetch(domain:api.semanticscholar.org)", "WebFetch(domain:www.nber.org)", "--setting-sources", "",
+        "--strict-mcp-config", "--safe-mode", "--disable-slash-commands", "--no-session-persistence",
+        "--permission-prompts", "none", "--system-prompt", "the static context", "--json-schema",
+        json.dumps(SCHEMA), "--output-format", "stream-json", "--verbose", "--include-hook-events"]
 
 
 def test_no_web_domains_is_todays_tool_less_argv(pc):
     a = model.argv(pc, "s", SCHEMA, web_domains=())
     assert a == model.argv(pc, "s", SCHEMA)
     assert a[a.index("--tools") + 1] == "" and "--allowedTools" not in a and not any("WebFetch" in x for x in a)
+    assert "--setting-sources" not in a
 
 
 @pytest.mark.parametrize("domain", ["", "org", "arxiv.org) Bash(", "arxiv.org,evil.com", "arxiv.org evil.com",
-                                    "*.arxiv.org", "https://arxiv.org", "arxiv.org/abs", "аrxiv.org", "arx\u0131v.org",
-                                    "\u212aaggle.com", None])
+                                    "*.arxiv.org", "https://arxiv.org", "arxiv.org/abs", "аrxiv.org",
+                                    "arx\u0131v.org", "\u212aaggle.com", None])
 def test_a_web_domain_that_is_not_a_hostname_is_refused_before_any_process(fake, pc, transcript, domain):
     fake.scenario(OK)
     with pytest.raises(model.ModelConfigError, match="not a hostname"):
@@ -445,7 +446,9 @@ def test_a_web_call_runs_the_fenced_argv_and_records_an_allowed_fetch(fake, pc, 
     fake.scenario([*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a")), _result()])
     reply = model.call(pc, "the static context", "the cards", SCHEMA, transcript, web_domains=DOMAINS)
     assert fake.seen["argv"][1:] == model.argv(pc, "the static context", SCHEMA, web_domains=DOMAINS)[1:]
-    assert fake.seen["env"] == {"HOME": os.environ["HOME"], "PATH": os.environ["PATH"]}
+    # R-RF3: no user, project or local settings (--setting-sources ""), and the CLI's preapproved hosts off
+    assert fake.seen["env"] == {"HOME": os.environ["HOME"], "PATH": os.environ["PATH"],
+                                "CLAUDE_CODE_EVAL_CONFINED": "1"}
     assert reply.proposal == {"ok": True} and reply.usage == _msg(RESULT)["usage"]
     assert reply.fetches == [ARXIV] and reply.denied == []
     assert transcript.read_text().splitlines() == [*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a")), _result()]
@@ -469,6 +472,23 @@ def test_a_web_init_must_list_exactly_structured_output_and_webfetch(fake, pc, t
         model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
     assert time.monotonic() - start < QUICK_S
     assert _gone(fake.seen["pid"])
+
+
+@pytest.mark.parametrize("mode", ["acceptEdits", "bypassPermissions", "plan", "dontAsk", "", None, "missing"])
+def test_a_web_init_whose_permission_mode_is_not_default_kills_the_call(fake, pc, transcript, mode):
+    init = _line(INIT, drop=("permissionMode",), tools=WEB_TOOLS) if mode == "missing" else \
+        _line(INIT, tools=WEB_TOOLS, permissionMode=mode)
+    fake.scenario([OK[UI], init, 30, *OK[ASSISTANT:]])
+    start = time.monotonic()
+    with pytest.raises(model.ModelConfigError, match="permissionMode"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+
+
+def test_a_tool_less_call_does_not_check_the_permission_mode(fake, pc, transcript):
+    fake.scenario([OK[UI], _line(INIT, permissionMode="acceptEdits"), *OK[ASSISTANT:]])
+    assert model.call(pc, "s", "u", SCHEMA, transcript).proposal == {"ok": True}
 
 
 def test_a_tool_less_call_refuses_an_init_with_webfetch(fake, pc, transcript):
