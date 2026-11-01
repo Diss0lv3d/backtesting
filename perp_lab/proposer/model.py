@@ -24,10 +24,10 @@ the CLI otherwise fetches with no rule (about 90 documentation sites; probe of 2
 the code fence is the guarantee. Init must list exactly `StructuredOutput` and `WebFetch` with `permissionMode`
 "default", every WebFetch the model issues is recorded, and one off the allowlist is harmless only if the CLI
 denied it: its tool_result, which the model reads next, must be an error, and the result's `permission_denials`
-must list it; a stream shape the audit can't vouch for fails closed the same way (`_Fence`). Anything else is a
-FenceBreach: the call is killed before its result is used, and it is not retried; the caller fails closed for that
-call and goes on (R-RF5). An init that fails the check is still a ModelConfigError, and so is a WebFetch in a
-tool-less call: the CLI did not hold `--tools ""`.
+must list it; a stream shape the audit can't vouch for, or any line after the result, fails closed the same way
+(`_Fence`). Anything else is a FenceBreach: the call is killed before its result is used, and it is not retried;
+the caller fails closed for that call and goes on (R-RF5). An init that fails the check is still a
+ModelConfigError, and so is a WebFetch in a tool-less call: the CLI did not hold `--tools ""`.
 """
 
 from __future__ import annotations
@@ -368,6 +368,8 @@ def _read(pc, lines, log, fence: _Fence) -> tuple[bool, dict | None]:
     for raw in lines:
         log.write(raw + b"\n")
         log.flush()
+        if result is not None and fence.domains:  # the audit ends at the result: a fetch after it would go unseen
+            raise FenceBreach("a stream line after the result")
         msg = _parse(raw)
         kind, sub = str(msg.get("type", "")), str(msg.get("subtype", ""))
         if "hook" in kind or "hook" in sub:

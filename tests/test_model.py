@@ -793,3 +793,30 @@ def test_any_other_url_is_off_the_allowlist(url):
 
 def test_nothing_is_on_an_empty_allowlist():
     assert not model.on_allowlist(ARXIV, ())
+
+
+@pytest.mark.parametrize("after", [
+    [_fetch("toolu_b", GECKO), _fetched("toolu_b", "Bitcoin closed at 67,000.")],
+    [_fetch("toolu_b", GECKO)],
+    [_fetch("toolu_c", ARXIV), _fetched("toolu_c")],
+    [OK[RATE]],
+    [OK[UI]],
+    [_result()],
+    ["not json"],
+], ids=["off-list-fetch-that-ran", "off-list-fetch", "allowed-fetch", "rate-limit-event", "system", "a-second-result",
+        "not-json"])
+def test_any_line_after_a_web_calls_result_is_a_breach(fake, pc, transcript, after):
+    """Task 4's review: nothing reaches a web call's result after it, so a fetch there would go unaudited."""
+    head = [*_web(_fetch("toolu_a", ARXIV), _fetched("toolu_a")), _result()]
+    fake.scenario([*head, *after, 30])
+    start = time.monotonic()
+    with pytest.raises(model.FenceBreach, match="^a stream line after the result$"):
+        model.call(pc, "s", "u", SCHEMA, transcript, web_domains=DOMAINS)
+    assert time.monotonic() - start < QUICK_S
+    assert _gone(fake.seen["pid"])
+    assert transcript.read_text().splitlines() == [*head, after[0]]
+
+
+def test_a_tool_less_call_still_reads_past_its_result(fake, pc, transcript):
+    fake.scenario([*OK, OK[RATE]])
+    assert model.call(pc, "s", "u", SCHEMA, transcript).proposal == {"ok": True}
