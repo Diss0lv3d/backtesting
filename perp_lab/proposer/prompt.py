@@ -222,7 +222,8 @@ on those lessons rather than repeat them. Each card needs a mechanism: who pays,
 join the record as open ideas that later rounds can propose plugins for.
 
 Redundant, and so not wanted: a near-copy of any judged plugin's mechanism; a sign flip of a closed idea; a \
-filter added to a closed idea's entry; an idea whose edge would come from its exit rather than its entry.
+filter added to a closed idea's entry; an idea whose edge would come from its exit rather than its entry; a \
+restatement of an open idea in the record.
 
 A stop with no target earns on trends whatever the entry, so an exit alone can make an entry look like an edge. \
 Say in each card how its exits stay neutral, so that its result measures its entry.

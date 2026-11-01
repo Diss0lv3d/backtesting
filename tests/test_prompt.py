@@ -270,6 +270,7 @@ def test_the_research_instruction_says_what_the_round_is_for_and_ends_with_its_c
     for s in ("research round, not a proposal", "the piles, the diagnostics of every judged proposal, and what "
               "closed each idea", "build on", "near-copy of any judged plugin's mechanism", "sign flip of a closed "
               "idea", "filter added to a closed idea's entry", "from its exit rather than its entry",
+              "a restatement of an open idea in the record",
               "A stop with no target earns on trends whatever the entry", "exits stay neutral",
               "must not cite numbers from the record", "mechanism, literature and rule only",
               f"at most {pc.research_max_ideas} idea cards", f"at most {contract.STOP_MAX_ITEMS}", "summary",
