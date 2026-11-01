@@ -334,6 +334,26 @@ def test_a_retry_past_the_days_quota_waits_for_the_next_utc_day(lab):
     assert "paused: the day's 1 judge calls are used; until 2026-11-03 00:00 UTC" in digest(lab)
 
 
+def test_a_retry_waits_60_s_first(lab):
+    """R48: a load-related failure gets a minute to clear before the same bytes are judged again."""
+    lab.fake.judge_exits = [1, 1, 0]
+    assert run(lab, trials=1) == "trials"
+    assert lab.fake.sleeps == [loop.JUDGE_RETRY_WAIT_S] * 2 == [60.0] * 2
+    (p,) = props(lab)
+    assert (p["state"], p["judged_at"]) == ("judged", T0 + timedelta(seconds=120))
+
+
+def test_a_signal_pending_before_a_retry_stops_with_no_wait_or_pause(lab):
+    """R48: the pending signal is checked before the retry's waits, so a spent quota writes no pause line and the
+    session stops `signal`, not `days`."""
+    lab.fake.judge_exits = [1]
+    lab.fake.on_judge = lambda f: signal.raise_signal(signal.SIGINT)
+    assert run(lab, replace(lab.pc, trials_per_day=1)) == "signal"
+    assert lab.fake.sleeps == [] and len(lab.fake.judges) == 1
+    assert "paused" not in digest(lab)
+    assert [p["state"] for p in props(lab)] == ["copied"]
+
+
 def test_a_signal_during_a_failing_judge_stops_before_its_retry(lab):
     lab.fake.judge_exits = [1]
     lab.fake.on_judge = lambda f: signal.raise_signal(signal.SIGINT)

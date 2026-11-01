@@ -45,6 +45,7 @@ from perp_lab.proposer.settings import StartRefused
 UTC = timezone.utc
 INFRA_MAX = 3              # judge or preflight exits of 1 in a row
 JUDGE_TRIES = 3            # a judge exit 1 is tried again twice on the same bytes (R45)
+JUDGE_RETRY_WAIT_S = 60.0  # before each retry: a load-related failure gets time to clear (R48)
 STUCK_MAX = 5              # proposals in a row dropped after their fix-ups
 USAGE_BACKOFF_S = 3600     # a usage limit that gives no reset time
 USAGE_MIN_S = 60           # a reset time already past must not turn the retry into a busy loop
@@ -641,10 +642,14 @@ class _Session:
         """`lab judge` on the copied bytes. An exit of 1 (an infrastructure error) is tried again, up to
         JUDGE_TRIES calls in all, so a transient failure doesn't file an honest plugin as broken and cost its idea
         a slot; the same bytes add no trial (R45). Each call is made after its own pin and signal checks, and
-        within the day's quota."""
+        within the day's quota. A retry first stops on a pending signal, then waits JUDGE_RETRY_WAIT_S for a
+        load-related failure to clear (R48)."""
         logs = self.state / "logs"
         for attempt in range(JUDGE_TRIES):
             if attempt:
+                if self.sig.count:              # before any wait: no pause line, and `signal`, not `days`
+                    raise _Stop("signal")
+                self._sleep_until(self.deps.now() + timedelta(seconds=JUDGE_RETRY_WAIT_S))
                 self._judge_quota()
             self._pin_check()
             logs.mkdir(parents=True, exist_ok=True)
