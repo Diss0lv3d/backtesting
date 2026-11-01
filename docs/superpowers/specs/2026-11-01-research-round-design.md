@@ -161,3 +161,45 @@ proposer:
   until their exams (the proposer spec's Model section).
 - The research instruction asks the model not to cite numbers from the record in its cards; the record it sees holds
   only verdict figures, which the proposer already sees, so a card that quotes them leaks nothing new.
+
+## Amended during the build (2026-11-01)
+
+The controller's rulings (R-RL1…R-RL5) and the conventions the build settled, including its final review's fixes.
+Where they differ from the sections above, these win.
+
+- **R-RL1: the "no open idea a proposal could work on" trigger considers every idea**, not only the open ones
+  (`assemble.answerable` over all of them): a port of an exhausted idea in a progress pile is work the builder can
+  do, and the trigger is for when the builder would otherwise only invent from scratch. If wrong: one research
+  round fewer when only an exhausted idea is portable.
+- **R-RL2: a round a stop cut short is not "the last round".** Trials "since the last research round" count from the
+  latest round that ran to an outcome: `ok`, `capped`, `invalid` or `error: model_call`. It is an allow-list
+  (`loop.RAN`), so an outcome a later stop reason brings counts as cut short until it is listed. A round cut short
+  (`error: signal`, `error: days`, `error: model_config`, `error: interrupted`) ended its session, so this can't
+  loop; after a restart the due round runs. If wrong: one research round sooner after a restart.
+- **R-RL3: a research idea takes the `duplicate` status** as the proposer's own ideas do, since a model wrote it;
+  human and seeded ideas stay exempt (What it writes). If wrong: the human can add the idea back as a human card.
+- **R-RL4: with `research_every: 0` no stop list is in force.** The rounds stop and so does the last round's list:
+  no proposal prompt carries it, and the Ideas page's research notes say "research is off: no stop list is in
+  force". A human turns research off exactly when it steers badly; turning it on again brings back the latest valid
+  round's list.
+- **R-RL5: the cap is checked before the call.** A round at `research_open_cap` is told to return no idea cards (the
+  record already holds the untried research ideas the cap allows) and to revise only the stop list and the summary.
+  Cards it returns anyway are set aside unchecked, never refused, so they cost no fix-up and can't lose the round
+  its stop list; the row keeps them, and the digest line says how many were not added.
+- **The `capped` outcome.** A research row's outcome is `ok`, `capped` (a valid note at the cap: no idea added, its
+  stop list in force), `invalid` or `error: <code>`. The stop list in force is the latest `ok` or `capped` round's.
+- **The row comes first.** A round's row is written before its call, with the outcome `error: interrupted`, and its
+  id names the transcript (`transcripts/research-<id>.jsonl`); the round's end writes the real outcome. A session
+  that dies mid-round leaves `error: interrupted` behind, never a round that looks under way.
+- **"under way".** While the session that owns the latest research row is running (the Ideas page's lock probe),
+  that row's `error: interrupted` shows as "under way": a call, or a usage-limit wait, can take hours.
+- **What a round is told.** Its prompt carries the stop list in force between the record and the instruction (the
+  section a proposal sees), and the instruction asks it to revise that list: keep what still holds, drop what the
+  record has since answered, add what it now shows. A first round's prompt has neither. A stop item names a
+  direction (a mechanism or a family of rules), never an open idea of the record: only the human closes an idea.
+  A restatement of an open idea counts as redundant.
+- **The human's request comes first.** In a proposal's prompt the stop section ends with one fixed sentence: "When
+  the human asks for an idea below, that request comes before this list."
+- **Why a round failed.** A note refused after its fix-ups puts its last attempt's first error on its digest line,
+  as a dropped proposal does; a failed call puts the CLI's error text there.
+- **What each idea builds on** (`builds_on`) shows beside the idea in the Ideas page's research notes.

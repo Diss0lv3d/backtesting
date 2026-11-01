@@ -62,8 +62,9 @@ STOPS = ("trials_total", "days", "trials", "infra_errors", "stuck", "model_call"
          "harness_changed", "signal", "budget_spent")
 # The outcomes of a research round that ran: its note was taken (ok, capped), refused after its fix-ups, or its call
 # failed. Any other never ran to an outcome (a stop cut it short, or the session died mid-round), so it is not "the
-# last round" when the next is due, and a restart runs it (R-RL2); a stop ends the session, so this can't loop. An
-# allow-list: an outcome a later stop reason brings counts as cut short until it is listed here.
+# last round" when the next is due, and a restart runs it; a stop ends the session, so this can't loop. An
+# allow-list: an outcome a later stop reason brings counts as cut short until it is listed here (research-round
+# spec, Amended during the build).
 RAN = ("ok", "capped", "invalid", "error: model_call")
 
 
@@ -809,7 +810,8 @@ class _Session:
             return True
         if last is not None and since == used:
             return False
-        # Every idea, not only the open ones: a port of an exhausted idea in a progress pile is work too (R-RL1).
+        # Every idea, not only the open ones: a port of an exhausted idea in a progress pile is work too (see the
+        # research-round spec, Amended during the build).
         return all(assemble.answerable(i, self.record, self.pc) is not None for i in self.record.ideas())
 
     def _research(self) -> None:
