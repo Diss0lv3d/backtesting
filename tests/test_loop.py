@@ -1295,13 +1295,15 @@ def test_with_nothing_answerable_a_round_runs_once_until_a_trial_is_spent(lab):
     assert [r["trials_used"] for r in rounds(lab)] == [0, 1]
 
 
-# R-RL2: a round a stop cut short never ran to an outcome, so it is not "the last round"; one that ran (its call
-# failed, or its note was refused) is.
-CUT_SHORT = [("error: signal", False), ("error: days", False), ("error: interrupted", False),
-             ("error: model_config", False), ("error: model_call", True), ("invalid", True)]
+# R-RL2: a round a stop cut short never ran to an outcome, so it is not "the last round"; one that ran (its note
+# was taken, its call failed, or its note was refused) is. An allow-list: an outcome a later stop reason brings
+# (error: harness_changed, say) counts as cut short until it is listed as one that ran.
+OUTCOMES = [("error: signal", False), ("error: days", False), ("error: interrupted", False),
+            ("error: model_config", False), ("error: harness_changed", False), ("error: model_call", True),
+            ("invalid", True), ("ok", True), ("capped", True)]
 
 
-@pytest.mark.parametrize("outcome, counts", CUT_SHORT)
+@pytest.mark.parametrize("outcome, counts", OUTCOMES)
 def test_a_round_a_stop_cut_short_does_not_count_as_the_last_round(lab, outcome, counts):
     for k in range(2):                                   # two proposer trials so far
         lab.rec.add_proposal(plugin=f"done{k}", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())
@@ -1311,7 +1313,7 @@ def test_a_round_a_stop_cut_short_does_not_count_as_the_last_round(lab, outcome,
     assert order(lab) == ("P" if counts else "RP")       # due 2 trials after the ok round, unless the later one ran
 
 
-@pytest.mark.parametrize("outcome, counts", CUT_SHORT)
+@pytest.mark.parametrize("outcome, counts", OUTCOMES)
 def test_with_nothing_answerable_a_round_cut_short_runs_again_after_a_restart(lab, outcome, counts):
     nothing_answerable(lab)
     lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome=outcome, reply=None)

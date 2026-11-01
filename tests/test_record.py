@@ -380,9 +380,9 @@ def test_a_research_row_is_written_first_and_updated_at_its_rounds_end(rec):
         rec.update_research(rid + 1, outcome="ok")
 
 
-def test_last_research_can_skip_outcomes(rec):
+def test_last_research_can_be_limited_to_some_outcomes(rec):
     ran = _research(rec, "invalid")
     cut = _research(rec, "error: signal")
     assert rec.last_research()["id"] == cut
-    assert rec.last_research(skip=("error: signal", "error: days"))["id"] == ran
-    assert rec.last_research(skip=("invalid", "error: signal")) is None
+    assert rec.last_research(among=("ok", "invalid"))["id"] == ran
+    assert rec.last_research(among=("ok", "capped")) is None

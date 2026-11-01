@@ -60,9 +60,11 @@ SLEEP_CHUNK_S = 300        # a wait re-reads the wall clock this often: a suspen
 PROGRESS = ("promoted", "close call", "signal before costs")
 STOPS = ("trials_total", "days", "trials", "infra_errors", "stuck", "model_call", "model_config",
          "harness_changed", "signal", "budget_spent")
-# A research round a stop cut short never ran to an outcome: it is not "the last round" when the next is due, so a
-# restart runs it (R-RL2). A stop ends the session, so this can't loop. A failed call or a refused note did run.
-CUT_SHORT = ("error: signal", "error: days", "error: interrupted", "error: model_config")
+# The outcomes of a research round that ran: its note was taken (ok, capped), refused after its fix-ups, or its call
+# failed. Any other never ran to an outcome (a stop cut it short, or the session died mid-round), so it is not "the
+# last round" when the next is due, and a restart runs it (R-RL2); a stop ends the session, so this can't loop. An
+# allow-list: an outcome a later stop reason brings counts as cut short until it is listed here.
+RAN = ("ok", "capped", "invalid", "error: model_call")
 
 
 @dataclass(frozen=True)
@@ -801,7 +803,7 @@ class _Session:
         between, so a round that keeps failing can't loop. research_every 0 turns research off."""
         if self.pc.research_every == 0:
             return False
-        last, used = self.record.last_research(skip=CUT_SHORT), self.record.trials_used()
+        last, used = self.record.last_research(among=RAN), self.record.trials_used()
         since = (last or {}).get("trials_used") or 0
         if used - since >= self.pc.research_every:
             return True
