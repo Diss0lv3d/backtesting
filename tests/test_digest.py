@@ -99,7 +99,8 @@ def test_a_failed_research_call_says_why_on_its_line(tmp_path):
 @pytest.mark.parametrize("args, line", [
     (([5], 1, "ok", "s"), "research: +1 idea (#5); stop list 1 item"),
     (([], 0, "ok", "s"), "research: +0 ideas; stop list 0 items"),
-    (([], 2, "capped", "s"), "research: +0 ideas (not added: cap); stop list 2 items"),
+    (([], 2, "capped", "s", None, 3), "research: 3 ideas not added (cap); stop list 2 items"),
+    (([], 0, "capped", "s", None, 1), "research: 1 idea not added (cap); stop list 0 items"),
     (([], 0, "invalid", None), "research: invalid after fix-ups"),
     (([], 0, "error: model_call", None), "research: error model_call"),
     (([], 0, "error: signal", None), "research: error signal"),

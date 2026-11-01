@@ -869,7 +869,8 @@ class _Session:
         self.record.update_research(r.id, reply=r.reply, added=r.added, tokens_in=r.tokens[0],
                                     tokens_out=r.tokens[1], outcome=outcome)
         stop, summary = (len(r.note.stop), r.note.summary) if r.note is not None else (0, None)
-        self.digest.research(r.added, stop, outcome, summary, detail)
+        held = len(r.note.ideas) if r.note is not None and outcome == "capped" else 0
+        self.digest.research(r.added, stop, outcome, summary, detail, held)
 
     # -- crash recovery
     def _recover(self) -> None:

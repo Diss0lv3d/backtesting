@@ -59,16 +59,17 @@ class Digest:
                     f"{_one_line(idea_title)} · {_one_line(outcome)}")
 
     def research(self, added_ids: list[int], stop_count: int, outcome: str, summary: str | None,
-                 detail: str | None = None) -> None:
+                 detail: str | None = None, held: int = 0) -> None:
         """One line per research round, and the note's summary indented under it (research-round spec). `detail`,
-        the CLI's error text for a failed call, goes on the line."""
+        the CLI's error text for a failed call, goes on the line; `held`, the ideas a capped round held back."""
         if outcome in ("ok", "capped"):
-            n = len(added_ids)
-            ideas = f"+{n} {'idea' if n == 1 else 'ideas'}"
             if outcome == "capped":
-                ideas += " (not added: cap)"
-            elif added_ids:
-                ideas += " (" + ", ".join(f"#{i}" for i in added_ids) + ")"
+                ideas = f"{held} {'idea' if held == 1 else 'ideas'} not added (cap)"
+            else:
+                n = len(added_ids)
+                ideas = f"+{n} {'idea' if n == 1 else 'ideas'}"
+                if added_ids:
+                    ideas += " (" + ", ".join(f"#{i}" for i in added_ids) + ")"
             what = f"{ideas}; stop list {stop_count} {'item' if stop_count == 1 else 'items'}"
         elif outcome == "invalid":
             what = "invalid after fix-ups"

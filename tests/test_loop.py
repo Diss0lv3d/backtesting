@@ -1370,7 +1370,7 @@ def test_the_cap_holds_back_a_rounds_ideas_but_not_its_stop_list(lab, untried, o
     added = [i["id"] for i in lab.rec.ideas() if i["title"] == "Basis squeeze"]
     assert row["added"] == added and len(added) == (outcome == "ok")
     assert "- Stop A" in proposal_calls(lab)[1].user
-    line = "research: +0 ideas (not added: cap); stop list 1 item" if outcome == "capped" else \
+    line = "research: 1 idea not added (cap); stop list 1 item" if outcome == "capped" else \
         f"research: +1 idea (#{added[0]}); stop list 1 item"
     assert line in digest(lab)
 
