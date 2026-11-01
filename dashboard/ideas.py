@@ -9,8 +9,8 @@ prints by.
 A research round's referee could read academic papers, some maybe published after the model's training cutoff
 (referee-and-human-stops spec, "Anti-goals"): an idea it reviewed carries a "web-reviewed" tag, and a promoted one's
 review packet says its exam is weaker evidence. A page it read could also have put anything in its text, and that
-text in a model's: every string the code didn't write is shown escaped (`_text`), never read as markdown, and the
-only links the page makes are to the referee's allowed hosts (`_link`).
+text in a model's: every string the code didn't write is shown escaped and defanged (`_text`), never read as
+markdown or linked, and the only links the page makes are to the referee's allowed hosts (`_link`).
 """
 
 from __future__ import annotations
@@ -39,8 +39,13 @@ WEB_REVIEWED_CAVEAT = ("A web-informed referee reviewed this card: academic pape
 _DECIDED = {"accept": "accepted", "revise": "revised", "reject": "rejected"}
 # Every ASCII punctuation character. CommonMark lets each be backslash-escaped and shows it as itself, so text
 # escaped so reads as written: no link, image, HTML, emphasis, code, heading, list or table, and none of Streamlit's
-# own markup ($ LaTeX, :colour[...], :emoji:). An escaped `:` and `.` also keep GFM from linking a bare URL.
+# own markup ($ LaTeX, :colour[...], :emoji:).
 _MD_PUNCT = re.compile(r"([!-/:-@\[-`{-~])")
+# What GFM links in text as shown, after the escapes are read (Streamlit's frontend does; a real browser showed it,
+# 2026-11-02): a URL, a www. host, an email address. Each is broken visibly, so no autolink can form: `://` becomes
+# `[:]//` (every scheme), `www.` `www[.]` (any case), `@` `[@]`. Hosts keep their dots: the text stays readable.
+_AUTOLINK = re.compile(r"://|(?i:www)\.|@")
+_DEFANGED = {"://": "[:]//", "@": "[@]"}
 _MD_DEST = re.compile(r"([()<>\\])")               # what would end or break a link's destination
 
 
@@ -114,13 +119,22 @@ def _broken(p: dict) -> bool:
     return p.get("state") == "broken" or (p.get("judge_exit") is not None and piles.pile(p.get("verdict")) == "broken")
 
 
+def _esc(s: str) -> str:
+    return _MD_PUNCT.sub(r"\\\1", s)
+
+
+def _defang(s: str) -> str:
+    return _AUTOLINK.sub(lambda m: _DEFANGED.get(m.group(), m.group()[:-1] + "[.]"), s)
+
+
 def _text(s: str, lines: bool = False) -> str:
-    """A string the code didn't write (a model's, a card's, a judge's reason), for st.markdown, st.caption or
-    st.error: shown as written, never read as markup. Its whitespace collapses to one line; with `lines`, its line
-    breaks stay, each line stripped (so none is an indented code block or ends in a hard break)."""
+    """A string the code didn't write (a model's, a card's, a judge's reason, a URL off the allowlist), for
+    st.markdown, st.caption or st.error: shown as written, never read as markup, with every URL, www. host and email
+    defanged so none becomes a link. Its whitespace collapses to one line; with `lines`, its line breaks stay, each
+    line stripped (so none is an indented code block or ends in a hard break)."""
     if lines:
-        return "\n".join(_MD_PUNCT.sub(r"\\\1", ln.strip()) for ln in s.splitlines())
-    return _MD_PUNCT.sub(r"\\\1", " ".join(s.split()))
+        return "\n".join(_esc(_defang(ln.strip())) for ln in s.splitlines())
+    return _esc(_defang(" ".join(s.split())))
 
 
 def _head(p: dict) -> str:
@@ -352,12 +366,12 @@ def _one(x) -> str:
 
 def _link(url: str, pc) -> str:
     """A URL the referee named or fetched: a link only when its host is on the referee's allowlist (the fence's rule,
-    model.on_allowlist), plain text otherwise, so the page links no host the referee was not allowed to read."""
-    text = _text(url)
+    model.on_allowlist), defanged text otherwise, so the page links no host the referee was not allowed to read. A
+    link's own text needs no defanging: GFM makes no link inside a link."""
     if not model.on_allowlist(url, pc.referee_domains):
-        return text
+        return _text(url)
     dest = _MD_DEST.sub(r"\\\1", url)
-    return f"[{text}]({dest})"
+    return f"[{_esc(url)}]({dest})"
 
 
 def _referee(ref: dict, ids: list[int], titles: dict[int, str], pc) -> None:

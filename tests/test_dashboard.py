@@ -525,6 +525,7 @@ def test_research_notes_show_the_stop_list_in_force_not_a_refused_rounds(populat
 ARXIV = "https://arxiv.org/abs/1707.06221"
 ARXIV_2 = "https://export.arxiv.org/abs/2501.01234"
 GECKO = "https://api.coingecko.com/api/v3/coins/bitcoin"
+GECKO_SHOWN = "https[:]//api.coingecko.com/api/v3/coins/bitcoin"       # off the allowlist: shown, never linked
 
 
 def _notes(at):
@@ -563,7 +564,8 @@ def test_research_notes_list_each_cards_verdict_with_its_sources_and_the_idea_it
     assert (_hrefs(shown[accepted]), _hrefs(shown[revised]), _hrefs(shown[rejected])) == ([ARXIV], [], [ARXIV_2])
     # the fetches and denials, compact: a denied host is shown as text, never linked
     (fetched,) = [c for c in captions if c.startswith("fetches")]
-    assert _shown(fetched) == f"fetches (3): {ARXIV}, {GECKO}, {ARXIV_2} · denied by the CLI (1): {GECKO}"
+    assert _shown(fetched) == \
+        f"fetches (3): {ARXIV}, {GECKO_SHOWN}, {ARXIV_2} · denied by the CLI (1): {GECKO_SHOWN}"
     assert _hrefs(fetched) == [ARXIV, ARXIV_2]
     assert not any("unreadable" in c for c in captions)
     metas = [c.value for c in at.caption]
@@ -590,7 +592,7 @@ def test_a_tool_less_referee_says_so_and_links_no_source_off_the_allowlist(popul
     lines, captions = _notes(at)
     shown = {_shown(x): x for x in lines}
     assert "Referee · 1 card: 1 accepted, 0 revised, 0 rejected · without web access" in shown
-    line = shown[f"Basis squeeze: accepted as #{i} · r · sources: {GECKO}, javascript:alert(1)"]
+    line = shown[f"Basis squeeze: accepted as #{i} · r · sources: {GECKO_SHOWN}, javascript:alert(1)"]
     assert _hrefs(line) == []
     assert not [c for c in captions if c.startswith("fetches")]
     assert f"idea {i} · research · 4h · open" in [c.value for c in at.caption]      # no web, no tag
@@ -624,17 +626,40 @@ def test_verdicts_that_do_not_pair_with_the_ideas_added_name_no_idea(populated):
 
 
 # What a page the referee read could have put in its text, and so in anything a model wrote: an image the viewer's
-# browser would fetch, a link, HTML, a bare URL GFM would link, and Streamlit's LaTeX and colour directives.
-EVIL = "![](https://evil.example/x) [a](https://evil.example) <img src=x> https://evil.example $x$ :red[r] *b* `c`"
+# browser would fetch, a link, HTML, bare URLs, www. hosts and an email GFM would link (Streamlit's frontend links
+# them in the text as shown, after the escapes are read: a real browser showed it), and Streamlit's LaTeX and colour
+# directives. As shown: every URL, www. host and email broken, the rest as written.
+EVIL = ("![](https://evil.example/x) [a](https://evil.example) <img src=x> https://evil.example www.evil.example "
+        "WWW.Evil.example x@evil.example mailto:y@evil.example $x$ :red[r] *b* `c`")
+EVIL_SHOWN = ("![](https[:]//evil.example/x) [a](https[:]//evil.example) <img src=x> https[:]//evil.example "
+              "www[.]evil.example WWW[.]Evil.example x[@]evil.example mailto:y[@]evil.example $x$ :red[r] *b* `c`")
+OFF_LIST = ("https://evil.example/s", "https[:]//evil.example/s")     # a source off the allowlist, and as shown
+FETCHED = ("https://evil.example/f", "https[:]//evil.example/f")      # a fetch off it, denied
+# GFM's autolink literals: a URL, a www. host, an email address (mdast-util-gfm-autolink-literal's patterns)
+_AUTOLINK = re.compile(r"https?://|www(?=\.)|[-.\w+]+@[-\w]+(?:\.[-\w]+)+", re.I)
+
+
+def _unlinked(src: str) -> str:
+    """The text a source shows outside its links and code: what GFM would scan for a link to make."""
+    out, depth = [], 0
+    for t in _tokens(src):
+        depth += {"link_open": 1, "link_close": -1}.get(t.type, 0)
+        if depth == 0 and t.type == "text":
+            out.append(t.content)
+        elif t.type in ("softbreak", "hardbreak"):
+            out.append("\n")
+    return "".join(out)
 
 
 def _no_markup(texts: list[str]) -> None:
-    """No image, HTML or link off the allowlist anywhere in these sources; the code's own emphasis and code spans
-    may be there, so the shown text is what says the model's `*b*` and `c` stayed literal."""
+    """No image, HTML or link off the allowlist anywhere in these sources, and no URL, www. host or email in their
+    shown text outside a link, so no autolink can form. The code's own emphasis and code spans may be there, so the
+    shown text is what says the model's `*b*` and `c` stayed literal."""
     marks = [t for x in texts for t in _tokens(x)]
     assert not [t for t in marks if t.type in ("image", "html_inline", "html_block")]
     assert {t.attrGet("href") for t in marks if t.type == "link_open"} <= {ARXIV}
-    assert not [x for x in texts if "://evil" in x or "$x$" in x or ":red[" in x]
+    assert not [x for x in texts if "$x$" in x or ":red[" in x]
+    assert not [x for x in texts if _AUTOLINK.search(_unlinked(x))]
 
 
 def test_model_written_text_shows_as_written_and_never_as_markup(populated):
@@ -646,28 +671,31 @@ def test_model_written_text_shows_as_written_and_never_as_markup(populated):
     summary = f"{EVIL}\n# heading\n- item\n    code"
     reply = {"ideas": [{"title": f"Basis {EVIL}", "builds_on": EVIL}], "stop": [EVIL], "summary": summary}
     r.add_research(session_id=r.start_session(model="m"), trials_used=5, reply=reply, added=[i], tokens_in=1,
-                   tokens_out=1, outcome="ok", referee={"web": True, "fetches": [ARXIV], "denied": [], "verdicts": [
-                       {"title": EVIL, "decision": "accept", "reason": EVIL, "sources": [ARXIV]}]})
+                   tokens_out=1, outcome="ok", referee={
+                       "web": True, "fetches": [ARXIV, FETCHED[0]], "denied": [FETCHED[0]], "verdicts": [
+                           {"title": EVIL, "decision": "accept", "reason": EVIL, "sources": [ARXIV, OFF_LIST[0]]}]})
     at = _ideas_at()
     assert not at.exception, [e.message for e in at.exception]
     texts = [e.value for e in [*at.markdown, *at.caption, *at.error, *at.warning]]
     _no_markup(texts)
     shown = [_shown(x) for x in texts]
-    for line in (f"Basis {EVIL}", f"mechanism: {EVIL}", f"Summary: {EVIL}\n# heading\n- item\ncode", EVIL,
-                 f"#{i} Basis {EVIL} · builds on: {EVIL}",
-                 f"{EVIL}: accepted as #{i} · {EVIL} · sources: {ARXIV}"):
+    E = EVIL_SHOWN
+    for line in (f"Basis {E}", f"mechanism: {E}", f"Summary: {E}\n# heading\n- item\ncode", E,
+                 f"#{i} Basis {E} · builds on: {E}",
+                 f"{E}: accepted as #{i} · {E} · sources: {ARXIV}, {OFF_LIST[1]}",
+                 f"fetches (2): {ARXIV}, {FETCHED[1]} · denied by the CLI (1): {FETCHED[1]}"):
         assert line in shown
-    assert any(x.startswith(f"Try next: no proposal can work on idea #{seed} (LCE {EVIL}) now") for x in shown)
-    assert any(x.endswith(f"px_evil @ 4h · Basis {EVIL} · {EVIL}") for x in shown)        # the broken attempt
-    verdict = next(x for x in texts if _shown(x).startswith(f"{EVIL}: accepted"))
-    assert _hrefs(verdict) == [ARXIV]                                  # the allowlisted source is still a link
+    assert any(x.startswith(f"Try next: no proposal can work on idea #{seed} (LCE {E}) now") for x in shown)
+    assert any(x.endswith(f"px_evil @ 4h · Basis {E} · {E}") for x in shown)        # the broken attempt
+    verdict = next(x for x in texts if _shown(x).startswith(f"{E}: accepted"))
+    assert _hrefs(verdict) == [ARXIV]                       # the allowlisted source is still a link, the other not
 
 
 def test_a_referee_error_shows_as_written(populated):
     _refereed(_record(populated), {"web": True, "fetches": [], "denied": [], "error": f"invalid: {EVIL}"})
     lines, _ = _notes(_ideas_at())
     _no_markup(lines)
-    assert (f"Referee failed · with academic web access: invalid: {EVIL}. No card from this round was added."
+    assert (f"Referee failed · with academic web access: invalid: {EVIL_SHOWN}. No card from this round was added."
             in [_shown(x) for x in lines])
 
 
