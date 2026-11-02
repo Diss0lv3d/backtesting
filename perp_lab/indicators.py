@@ -70,6 +70,7 @@ def parkinson_vol(df: pd.DataFrame, n: int = 1) -> pd.Series:
 
 _HOUR_MS = 3_600_000
 _WEEK_MS = 7 * 86_400_000
+_SAME_HOUR_CELLS = 16_000_000      # values a chunk of rows holds at once: ~128 MB of float64
 
 
 def _whole_weeks(weeks) -> int:
@@ -86,26 +87,34 @@ def volume_vs_same_hour(df: pd.DataFrame, weeks: int = 4, col: str = "volume") -
     so a spike against an all-hours average partly reads the clock. Causal: only earlier weeks count, not bar t
     nor the rest of its hour this week; on bars under an hour, every bar of that hour in those weeks counts.
     NaN with fewer than max(2, weeks // 2) earlier values (so weeks >= 2 on bars of an hour or more), or a zero
-    median. Also for `trades`, `quote_volume` or `taker_buy_volume` via `col`."""
+    median. Also for `trades`, `quote_volume` or `taker_buy_volume` via `col`. Time grows with bars x weeks x
+    bars an hour; memory stays near 128 MB, the rows going in chunks."""
     weeks = _whole_weeks(weeks)
     ot = df.open_time.to_numpy(dtype=np.int64)
     x = df[col].to_numpy(dtype=float)
-    n = len(x)
-    start = (ot - ot % _HOUR_MS)[:, None] - _WEEK_MS * np.arange(1, weeks + 1)   # that hour, k weeks back
+    per_hour = int(np.unique(ot // _HOUR_MS, return_counts=True)[1].max(initial=1))   # most bars in one hour
+    rows = max(1, _SAME_HOUR_CELLS // (weeks * (per_hour + 8)))   # + 8: the (row, week) index arrays beside it
+    med = np.concatenate([np.empty(0)] + [_same_hour_median(ot, x, ot[a:a + rows], weeks, per_hour)
+                                          for a in range(0, len(x), rows)])
+    return pd.Series(x / med, index=df.index)
+
+
+def _same_hour_median(ot, x, t, weeks, per_hour):
+    """For bars opening at t: the median of x over their UTC hour in each of the `weeks` weeks before (open
+    times ot, sorted), from up to per_hour bars an hour; NaN with fewer than max(2, weeks // 2) values or 0."""
+    start = (t - t % _HOUR_MS)[:, None] - _WEEK_MS * np.arange(1, weeks + 1)     # that hour, k weeks back
     lo = np.searchsorted(ot, start, side="left")
     hi = np.searchsorted(ot, start + _HOUR_MS, side="left")
-    per_hour = int((hi - lo).max(initial=1))                                 # bars in an hour: 4 on 15m bars
-    past = np.full((n, weeks, per_hour), np.nan)
+    past = np.full((len(t), weeks, per_hour), np.nan)
     for j in range(per_hour):
         i = lo + j
-        past[:, :, j] = np.where(i < hi, x[np.minimum(i, n - 1)], np.nan)
-    past = past.reshape(n, weeks * per_hour)
+        past[:, :, j] = np.where(i < hi, x[np.minimum(i, len(x) - 1)], np.nan)
+    past = past.reshape(len(t), weeks * per_hour)
     past.sort(axis=1)                                                        # NaN sorts last
     c = past.shape[1] - np.isnan(past).sum(axis=1)                          # values per row
     mid = np.stack([np.maximum(c - 1, 0) // 2, c // 2], axis=1)              # the middle one or two of c values
     med = np.take_along_axis(past, mid, axis=1).mean(axis=1)
-    med = np.where((c >= max(2, weeks // 2)) & (med != 0), med, np.nan)
-    return pd.Series(x / med, index=df.index)
+    return np.where((c >= max(2, weeks // 2)) & (med != 0), med, np.nan)
 
 
 _DAY_MS = 86_400_000

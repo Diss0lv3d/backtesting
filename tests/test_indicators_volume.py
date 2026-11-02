@@ -1,11 +1,13 @@
 """The bar-range volatility and the same-hour volume ratio: exact on hand-built bars, causal on random ones."""
 
 import math
+import tracemalloc
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from perp_lab import indicators
 from perp_lab.indicators import parkinson_vol, volume_vs_same_hour
 from perp_lab.plugins import PluginSource
 from perp_lab.validate.causality import causality_failures, with_moving_columns
@@ -143,6 +145,39 @@ def test_a_whole_number_of_weeks_from_a_grid_is_taken_as_an_int(weeks):
 def test_any_other_weeks_is_a_clear_error(weeks):
     with pytest.raises(ValueError, match=r"^weeks must be a whole number of at least 1, got "):
         volume_vs_same_hour(make_bars(n=50), weeks)
+
+
+
+def _with_a_repeated_bar(b, at):
+    """b with row `at` twice: two bars open at one time, so one hour holds a bar more than the rest."""
+    return pd.concat([b.iloc[:at + 1], b.iloc[at:]])
+
+
+@pytest.mark.parametrize("cells", [1, 37, 1000])
+def test_rows_in_chunks_give_the_same_values_as_all_at_once(monkeypatch, cells):
+    cases = [(make_bars(seed=6, tf_ms=M15), 4), (make_bars(seed=6, tf_ms=M15), 2), (make_bars(seed=6), 6),
+             (_with_a_repeated_bar(make_bars(seed=6), 1500), 4)]
+    whole = [volume_vs_same_hour(b, w) for b, w in cases]
+    monkeypatch.setattr(indicators, "_SAME_HOUR_CELLS", cells)     # a few rows per chunk: thousands of chunks
+    for (b, w), want in zip(cases, whole):
+        assert len(b) > cells
+        pd.testing.assert_series_equal(volume_vs_same_hour(b, w), want, check_exact=True)
+
+
+@pytest.mark.parametrize("tf_ms", [M15, H])
+def test_memory_is_bounded_by_the_chunk_budget(monkeypatch, tf_ms):
+    """The budget holds the matrix and the (row, week) index arrays beside it: with one bar an hour these
+    are as large as the matrix."""
+    b = make_bars(seed=6, tf_ms=tf_ms)                                 # 3000 bars
+    budget = 30_000                                                    # 240 KB of float64
+    monkeypatch.setattr(indicators, "_SAME_HOUR_CELLS", budget)
+    tracemalloc.start()
+    try:
+        volume_vs_same_hour(b, weeks=52)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 3 * budget * 8                                       # all at once: ~9 MB on hourly bars
 
 
 # ------------------------------------------------------------------ causality on random bars
