@@ -117,6 +117,15 @@ def test_it_is_nan_until_max_2_weeks_halved_earlier_values():
     assert volume_vs_same_hour(b, weeks=1).isna().all()                # one earlier value is never 2
 
 
+
+def test_the_minimum_counts_values_so_one_earlier_week_of_15m_bars_can_suffice():
+    q = 7 * 96
+    b = _weeks_of(M15, 2, lambda w, j: w + 1)                          # week 0 holds 1s, week 1 holds 2s
+    assert (volume_vs_same_hour(b, weeks=8).iloc[q:] == 2.0).all()     # needs 4: one week's hour holds 4 bars
+    assert volume_vs_same_hour(b, weeks=10).iloc[q:].isna().all()      # needs 5
+    hourly = _weeks_of(H, 2, lambda w, j: w + 1)
+    assert volume_vs_same_hour(hourly, weeks=4).iloc[WEEK:].isna().all()   # 1 value an hour: 2 weeks needed
+
 def test_a_zero_median_or_a_missing_value_is_nan():
     b = _weeks_of(H, 3, lambda w, j: 5.0 if w == 2 else (0.0 if j == 7 else 1.0))
     b.loc[b.index[2 * WEEK + 9], "volume"] = np.nan

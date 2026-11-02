@@ -62,7 +62,7 @@ def parkinson_vol(df: pd.DataFrame, n: int = 1) -> pd.Series:
     """Per-bar volatility from the bar's range (Parkinson): sqrt(ln(high/low)^2 / (4 ln 2)), ~0.601 * ln(high/low),
     a log-return sigma about 5x as efficient as close-to-close. With n > 1, the root of the mean variance over
     the n bars up to and including t, so as a stop or target scale it uses only bars up to t. NaN where high
-    or low is not positive."""
+    or low is not positive, and with n > 1 wherever any bar in the window has one."""
     ok = (df.high > 0) & (df.low > 0)
     var = np.log(df.high.where(ok) / df.low.where(ok)) ** 2 / (4 * np.log(2.0))
     return np.sqrt(var.rolling(n, min_periods=n).mean().clip(lower=0))
@@ -83,12 +83,13 @@ def _whole_weeks(weeks) -> int:
 
 def volume_vs_same_hour(df: pd.DataFrame, weeks: int = 4, col: str = "volume") -> pd.Series:
     """Each bar's `col` over its median at the same UTC hour of the week (weekday x hour of open_time) in the
-    `weeks` weeks before; ~1 at a normal level for that hour. Raw volume rises at session opens and on weekdays,
-    so a spike against an all-hours average partly reads the clock. Causal: only earlier weeks count, not bar t
-    nor the rest of its hour this week; on bars under an hour, every bar of that hour in those weeks counts.
-    NaN with fewer than max(2, weeks // 2) earlier values (so weeks >= 2 on bars of an hour or more), or a zero
-    median. Also for `trades`, `quote_volume` or `taker_buy_volume` via `col`. Time grows with bars x weeks x
-    bars an hour; memory stays near 128 MB, the rows going in chunks."""
+    `weeks` weeks before (a whole number; 4.0 is taken as 4); ~1 at a normal level for that hour. Raw volume
+    rises at session opens and on weekdays, so a spike against an all-hours average partly reads the clock.
+    Causal: only earlier weeks count, not bar t nor the rest of its hour this week; on bars under an hour, every
+    bar of that hour in those weeks counts. NaN with a zero median or fewer than max(2, weeks // 2) earlier
+    values: values, not weeks, so one earlier week of 15m bars (4 values) can suffice, while bars of an hour or
+    more need weeks >= 2. Also for `trades`, `quote_volume` or `taker_buy_volume` via `col`. Time grows with
+    bars x weeks x bars an hour; memory stays near 128 MB, the rows going in chunks."""
     weeks = _whole_weeks(weeks)
     ot = df.open_time.to_numpy(dtype=np.int64)
     x = df[col].to_numpy(dtype=float)
