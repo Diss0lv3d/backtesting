@@ -1,9 +1,10 @@
 """The Ideas page: the proposer's record for the human (spec, "Where the user reads the record").
 
 Reads record.db, the session digest and lock, and lab.db. It writes only record.db: on the human's action (an idea
-card of their own, an exclusion, or the "try next" flag, each checked in code in human.py and Record, as `lab idea`
-does), and once more on its first load of a record made before the next_up column, when opening the record runs the
-column migration (Record). It never creates the state dir. The grouping is `piles.idea_group`, the rule `lab ideas`
+card of their own, an exclusion, the "try next" flag, or a stop item added or removed, each checked in code in
+human.py and Record, as `lab idea` and `lab stop` do), and once more on its first load of a record older than the
+tables and columns added since, when opening the record adds them (Record: a missing table such as stops, and the
+column migration's next_up and web_reviewed on ideas and referee on research). It never creates the state dir. The grouping is `piles.idea_group`, the rule `lab ideas`
 prints by.
 
 A research round's referee could read academic papers, some maybe published after the model's training cutoff
