@@ -12,9 +12,9 @@
 
 ## Global Constraints
 
-- The referee call is the shared caller (`_call`): the guarded model, usage-limit waits, seq None token accounting — with web access fenced in code: `--tools WebFetch`, one `--allowedTools WebFetch(domain:…)` per `referee_domains` entry, the init check expecting exactly StructuredOutput + WebFetch, and a fetch audit (an off-list fetch that wasn't denied → kill, `model_config`). No WebSearch, no file access, no new subprocess. `research_referee_web: false` → a tool-less referee.
+- The referee call is the shared caller (`_call`): the guarded model, usage-limit waits, seq None token accounting — with web access fenced in code: `--tools WebFetch`, one `--allowedTools WebFetch(domain:…)` per `referee_domains` entry, the init check expecting exactly StructuredOutput + WebFetch, and a fetch audit (an off-list fetch that wasn't denied → kill, `model_config`; amended during the build, spec R-RF5: → kill, a `FenceBreach` that fails the referee closed for that round, and the session goes on). No WebSearch, no file access, no new subprocess. `research_referee_web: false` → a tool-less referee.
 - The referee schema has no `oneOf`/`allOf`/`anyOf` at its top level; "revised iff revise" is checked in code.
-- Prompts carry nothing time-bearing and no CLI error text; the human's stop items are fixed text the human wrote (one line, ≤ 200 chars).
+- Prompts carry nothing time-bearing and no CLI error text; the human's stop items are fixed text the human wrote (one line, ≤ 200 chars). One exception, amended during the build (spec, R-RF7 and M3): the web referee's instruction names the lab's `holdout_start` (cite only sources from before it) and the day before it (where its searches end), from config; these are the only dates in any user prompt, in referee calls only, and no prompt carries a time of anything the lab did.
 - Fail closed: a referee failure adds no cards; it never loses the round's stop list and never stops the session (except `ModelConfigError`).
 - `perp_lab/proposer/` boundary rules hold (tests/test_proposer_boundaries.py).
 - record.db exists on the user's machine: new tables via `create_all`; the new `research.referee` column via the existing column migration in `Record.__init__`.
