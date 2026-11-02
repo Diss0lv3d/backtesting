@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlsplit
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 from sqlalchemy.dialects import sqlite as sqlite_dialect
 from sqlalchemy.schema import CreateTable
 from typer.testing import CliRunner
@@ -440,6 +441,21 @@ def test_cli_exam_gives_a_web_reviewed_ideas_promotion_its_caveat(cfg, plugins, 
     assert r.output.splitlines() == want
     assert budget.reads_used(cfg) == 0
 
+
+
+@pytest.mark.parametrize("change", [{"claude_bin": None}, {"trials_per_day": "many"}, {"timeframes": 4}],
+                         ids=["a-key-missing", "not-a-number", "not-a-list"])
+def test_cli_exam_prints_its_lines_whatever_the_proposer_block_holds(cfg, plugins, tmp_path, change):
+    """The mark is a display nicety: a proposer block settings.load can't read (here a KeyError, a ValueError and a
+    TypeError, not its own refusal) must not take `lab exam` down after it examined, before it printed."""
+    jid = _proposer_promotion(cfg)
+    raw = yaml.safe_load(Path(cfg.path).read_text())
+    raw["proposer"] = {k: v for k, v in {**raw["proposer"], **change}.items() if v is not None}
+    path = tmp_path / "lab_bad_proposer.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    r = CliRunner().invoke(app, ["exam", "--config", str(path)])
+    assert r.exit_code == 0, (r.output, r.exception)
+    assert r.output.splitlines() == [f"donchian_atr @ 4h: awaiting review: lab exam --id {jid}"]
 
 def _old_record(state: Path, j: dict) -> sqlite3.Connection:
     """A record.db from before the web_reviewed column (and the research and stops tables), in WAL mode as the

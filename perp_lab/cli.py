@@ -377,7 +377,7 @@ def _web_reviewed(cfg, judgements: list[dict]) -> set[int]:
         return set()
     try:
         pc = settings.load(cfg)
-    except settings.StartRefused:
+    except Exception:       # not only its refusal: load indexes the block, and exams were run before this
         return set()
     path = (context.ROOT / pc.state_dir / "record.db").resolve()
     if not path.exists():
