@@ -78,6 +78,8 @@ ideas = sa.Table(
     sa.Column("created_at", UTCDateTime, nullable=False),
     # When the human asked for the idea to be tried next; one idea at most. A time, so never in a prompt.
     sa.Column("next_up", UTCDateTime),
+    # Reviewed by a referee that could read academic papers, some maybe after the cutoff: weaker exam evidence.
+    sa.Column("web_reviewed", sa.Boolean, nullable=False, default=False, server_default=sa.text("0")),
     sa.Index("ux_ideas_title_nocase", sa.func.lower(sa.column("title")), unique=True),
 )
 
@@ -146,6 +148,18 @@ research = sa.Table(
     sa.Column("tokens_in", sa.Integer),
     sa.Column("tokens_out", sa.Integer),
     sa.Column("outcome", sa.String(64)),                # ok | capped | invalid | error: <code>
+    sa.Column("referee", sa.JSON),                      # the verdicts, fetches and denials, or the error; or null
+)
+
+# The human's stop list (referee-and-human-stops spec): directions the human rules out, in every proposal and
+# research prompt, until the human removes them. Only the text reaches a prompt; a removed item keeps its row.
+STOP_MAX_CHARS = 200
+stops = sa.Table(
+    "stops", md,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("text", sa.String(STOP_MAX_CHARS), nullable=False),
+    sa.Column("created_at", UTCDateTime, nullable=False),
+    sa.Column("removed_at", UTCDateTime),               # null while in force
 )
 
 
@@ -153,6 +167,8 @@ research = sa.Table(
 # record.db predates these.
 _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("ideas", "next_up", "DATETIME"),
+    ("ideas", "web_reviewed", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("research", "referee", "JSON"),
 ]
 
 
@@ -240,13 +256,14 @@ class Record:
 
     # -- ideas
     def add_idea(self, title: str, card: dict, origin: str, timeframe: str, *,
-                 port_of: int | None = None, status: str = "open") -> int:
+                 port_of: int | None = None, status: str = "open", web_reviewed: bool = False) -> int:
         return self.add_ideas([{"title": title, "card": card, "origin": origin, "timeframe": timeframe,
-                                "port_of": port_of, "status": status}])[0]
+                                "port_of": port_of, "status": status, "web_reviewed": web_reviewed}])[0]
 
     def add_ideas(self, rows: list[dict]) -> list[int]:
         """Add the ideas in one transaction, all or none: a title any idea has, whatever the case, refuses them
-        all. Each row has title, card, origin and timeframe, and may have port_of and status (default open)."""
+        all. Each row has title, card, origin and timeframe, and may have port_of, status (default open) and
+        web_reviewed (default false)."""
         now, out = _now(), []
         with self.engine.begin() as c:
             taken = {t.casefold() for (t,) in c.execute(sa.select(ideas.c.title))}
@@ -397,6 +414,12 @@ class Record:
         """The latest round with a valid stop list: ok, or capped (its ideas were held back, its stop list kept)."""
         return self._latest_research(research.c.outcome.in_(("ok", "capped")))
 
+    def referee_reports(self) -> list:
+        """Every research round's referee JSON, in round order: None for a round no referee reviewed. As the loop
+        wrote it, but read as untrusted."""
+        with self.engine.connect() as c:
+            return [r for (r,) in c.execute(sa.select(research.c.referee).order_by(research.c.id))]
+
     def untried_research_ideas(self) -> int:
         """Open research ideas no judge has run on: what the cap counts."""
         judged = sa.exists().where(proposals.c.idea_id == ideas.c.id, proposals.c.judge_exit.is_not(None))
@@ -404,6 +427,34 @@ class Record:
             ideas.c.origin == "research", ideas.c.status == "open", ~judged)
         with self.engine.connect() as c:
             return int(c.execute(q).scalar())
+
+    # -- the human's stop list
+    def add_stop(self, text: str) -> int:
+        """Rule a direction out, by the human: one line (each item is one line of the prompt), at most
+        STOP_MAX_CHARS once stripped."""
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("a stop item needs text")
+        if len(text.splitlines()) > 1:
+            raise ValueError("a stop item must be one line")
+        if len(text) > STOP_MAX_CHARS:
+            raise ValueError(f"a stop item must be at most {STOP_MAX_CHARS} characters, got {len(text)}")
+        return self._insert(stops, {"text": text, "created_at": _now()})
+
+    def remove_stop(self, id: int) -> None:
+        """Take an item in force out of force, by the human."""
+        with self.engine.begin() as c:              # the write first, as in flag_next
+            if c.execute(sa.update(stops).where(stops.c.id == id, stops.c.removed_at.is_(None))
+                         .values(removed_at=_now())).rowcount:
+                return
+            known = c.execute(sa.select(stops.c.id).where(stops.c.id == id)).first() is not None
+        raise ValueError(f"stop #{id} was already removed" if known else f"there is no stop #{id}")
+
+    def stops(self) -> list[dict]:
+        """The items in force, by id."""
+        q = sa.select(stops).where(stops.c.removed_at.is_(None)).order_by(stops.c.id)
+        with self.engine.connect() as c:
+            return [dict(r) for r in c.execute(q).mappings()]
 
     # -- judge calls
     def add_judge_call(self, **f) -> None:

@@ -1,10 +1,17 @@
 """The Ideas page: the proposer's record for the human (spec, "Where the user reads the record").
 
 Reads record.db, the session digest and lock, and lab.db. It writes only record.db: on the human's action (an idea
-card of their own, an exclusion, or the "try next" flag, each checked in code in human.py and Record, as `lab idea`
-does), and once more on its first load of a record made before the next_up column, when opening the record runs the
-column migration (Record). It never creates the state dir. The grouping is `piles.idea_group`, the rule `lab ideas`
-prints by.
+card of their own, an exclusion, the "try next" flag, or a stop item added or removed, each checked in code in
+human.py and Record, as `lab idea` and `lab stop` do), and once more on its first load of a record older than the
+tables and columns added since, when opening the record adds them (Record: a missing table such as stops, and the
+column migration's next_up and web_reviewed on ideas and referee on research). It never creates the state dir.
+The grouping is `piles.idea_group`, the rule `lab ideas` prints by.
+
+A research round's referee could read academic papers, some maybe published after the model's training cutoff
+(referee-and-human-stops spec, "Anti-goals"): an idea it reviewed carries a "web-reviewed" tag, and a promoted one's
+review packet says its exam is weaker evidence. A page it read could also have put anything in its text, and that
+text in a model's: every string the code didn't write is shown escaped and defanged (`_text`), never read as
+markdown or linked, and the only links the page makes are to the referee's allowed hosts (`_link`).
 """
 
 from __future__ import annotations
@@ -19,8 +26,9 @@ from pathlib import Path
 import streamlit as st
 
 from perp_lab import dsr
-from perp_lab.proposer import context, contract, human, piles, settings
+from perp_lab.proposer import context, contract, human, model, piles, settings
 from perp_lab.proposer.record import EXCLUDABLE, Record
+from perp_lab.proposer.research import WEB_REVIEWED_CAVEAT
 from perp_lab.store import db
 
 _TITLES = {"passed": "Passed", "promoted": "Promoted", "close call": "Close call",
@@ -28,6 +36,17 @@ _TITLES = {"passed": "Passed", "promoted": "Promoted", "close call": "Close call
 # The digest's own line shape (digest.pause): top level, so a model-written summary indented under a research line
 # can't match.
 _PAUSE = re.compile(r"^- \d\d:\d\d · paused: .*; until (\d{4}-\d\d-\d\d \d\d:\d\d) UTC\s*$")
+_DECIDED = {"accept": "accepted", "revise": "revised", "reject": "rejected"}
+# Every ASCII punctuation character. CommonMark lets each be backslash-escaped and shows it as itself, so text
+# escaped so reads as written: no link, image, HTML, emphasis, code, heading, list or table, and none of Streamlit's
+# own markup ($ LaTeX, :colour[...], :emoji:).
+_MD_PUNCT = re.compile(r"([!-/:-@\[-`{-~])")
+# What GFM links in text as shown, after the escapes are read (Streamlit's frontend does; a real browser showed it,
+# 2026-11-02): a URL, a www. host, an email address. Each is broken visibly, so no autolink can form: `://` becomes
+# `[:]//` (every scheme), `www.` `www[.]` (any case), `@` `[@]`. Hosts keep their dots: the text stays readable.
+_AUTOLINK = re.compile(r"://|(?i:www)\.|@")
+_DEFANGED = {"://": "[:]//", "@": "[@]"}
+_MD_DEST = re.compile(r"([()<>\\])")               # what would end or break a link's destination
 
 
 def state_dir(pc) -> Path:
@@ -100,12 +119,35 @@ def _broken(p: dict) -> bool:
     return p.get("state") == "broken" or (p.get("judge_exit") is not None and piles.pile(p.get("verdict")) == "broken")
 
 
-def _proposal(cfg, p: dict, wf: set[tuple[str, str]]) -> None:
+def _esc(s: str) -> str:
+    return _MD_PUNCT.sub(r"\\\1", s)
+
+
+def _defang(s: str) -> str:
+    return _AUTOLINK.sub(lambda m: _DEFANGED.get(m.group(), m.group()[:-1] + "[.]"), s)
+
+
+def _text(s: str, lines: bool = False) -> str:
+    """A string the code didn't write (a model's, a card's, a judge's reason, a URL off the allowlist), for
+    st.markdown, st.caption or st.error: shown as written, never read as markup, with every URL, www. host and email
+    defanged so none becomes a link. Its whitespace collapses to one line; with `lines`, its line breaks stay, each
+    line stripped (so none is an indented code block or ends in a hard break)."""
+    if lines:
+        return "\n".join(_esc(_defang(ln.strip())) for ln in s.splitlines())
+    return _esc(_defang(" ".join(s.split())))
+
+
+def _head(p: dict) -> str:
+    """A proposal's plugin and timeframe, as its lines start."""
+    plugin, tf = _text(str(p.get("plugin") or "no plugin")), _text(str(p.get("timeframe") or "?"))
+    return f"**#{p['seq']:04d} {plugin} @ {tf}**"
+
+
+def _proposal(cfg, p: dict, wf: set[tuple[str, str]], web_reviewed: bool = False) -> None:
     verdict = p.get("verdict")
     pile = piles.pile(verdict) if p.get("judge_exit") is not None else p.get("state", "?")
     dup = f" · duplicate of {p['duplicate_of']}" if p.get("duplicate_of") is not None else ""
-    st.markdown(f"**#{p['seq']:04d} {p.get('plugin') or 'no plugin'} @ {p.get('timeframe') or '?'}** · "
-                f"{p.get('kind') or '?'} · {pile}{dup}")
+    st.markdown(f"{_head(p)} · {_text(str(p.get('kind') or '?'))} · {_text(str(pile))}{dup}")
     if p.get("source"):
         st.code(p["source"], language="python")
     if verdict:
@@ -117,11 +159,13 @@ def _proposal(cfg, p: dict, wf: set[tuple[str, str]]) -> None:
     if (plugin, tf) in wf:
         st.button("Walk-forward run detail", key=f"detail_{p['seq']}", on_click=_go_to_detail, args=(plugin, tf))
     if pile == "promoted":
-        _review_packet(cfg, p)
+        _review_packet(cfg, p, web_reviewed)
 
 
-def _review_packet(cfg, p: dict) -> None:
+def _review_packet(cfg, p: dict, web_reviewed: bool = False) -> None:
     st.markdown("**Review packet**")
+    if web_reviewed:
+        st.warning(WEB_REVIEWED_CAVEAT)
     for name, value in review_checks(p.get("verdict")).items():
         st.markdown(f"- {name}: {value}")
     j = db.get_judgement(cfg, p["hash"], p["timeframe"]) if p.get("hash") and p.get("timeframe") else None
@@ -178,6 +222,54 @@ def _add_form(record: Record | None, pc) -> None:
             st.success(added)
 
 
+def _stop_done(done: str) -> None:
+    st.session_state["ideas_toast"] = done
+
+
+def _stop_add(record: Record) -> None:
+    try:
+        i = record.add_stop(st.session_state["new_stop"])
+    except ValueError as e:
+        st.session_state["stop_error"] = str(e)
+        return
+    _stop_done(f"Stop #{i} added")
+    st.session_state["new_stop"] = ""                     # a blank box for the next one
+
+
+def _stop_remove(record: Record, i: int) -> None:
+    try:
+        record.remove_stop(i)
+    except ValueError as e:
+        st.session_state["stop_error"] = str(e)
+        return
+    _stop_done(f"Stop #{i} removed")
+
+
+def _stop_list(record: Record) -> None:
+    """The human's stop list (spec: referee-and-human-stops, "The human's stop list"). Unlike an idea, an item needs no
+    seed: it adds nothing the seed check could miss."""
+    with st.expander("Your stop list"):
+        st.warning(human.WARNING)
+        try:
+            _stop_body(record)
+        except Exception:                                # noqa: BLE001 - a bad row must not take the page down
+            st.caption("Stop list unreadable")
+        if err := st.session_state.pop("stop_error", None):
+            st.caption(err)
+
+
+def _stop_body(record: Record) -> None:
+    stops = record.stops()
+    if not stops:
+        st.caption("Nothing ruled out yet.")
+    for s in stops:
+        c = st.columns([8, 1])
+        c[0].markdown(f"#{s['id']} {_text(s['text'])}")      # the human's, maybe pasted from a page they read
+        c[1].button("Remove", key=f"remove_stop_{s['id']}", on_click=_stop_remove, args=(record, s["id"]))
+    st.text_input("Rule out a direction (one line)", key="new_stop")
+    st.button("Add", key="add_stop", on_click=_stop_add, args=(record,))
+
+
 def _act(i: int, done: str, change, *args) -> None:
     try:
         change(*args)
@@ -199,7 +291,7 @@ def _controls(record: Record, pc, idea: dict) -> None:
         c[1].button("Clear", key=f"clear_next_{i}", on_click=_act, args=(i, "Next up cleared", record.clear_next, i))
     elif status == "open":
         if why := human.why_not_next(record, pc, idea):
-            st.caption(f"Try next: {why}")
+            st.caption(f"Try next: {_text(why)}")          # it names the idea by its title
         else:
             st.button("Try next", key=f"try_next_{i}", on_click=_act,
                       args=(i, f"Idea #{i} is next up", human.flag_next, record, pc, i))
@@ -208,19 +300,21 @@ def _controls(record: Record, pc, idea: dict) -> None:
         st.text_input("Why: the builder reads this reason", key=f"exclude_reason_{i}")
         st.button("Exclude", key=f"exclude_{i}", on_click=_exclude, args=(record, i))
     if err := st.session_state.pop(f"idea_error_{i}", None):
-        st.error(err)
+        st.error(_text(err))
 
 
 def _idea(cfg, record: Record, pc, idea: dict, props: list[dict], wf: set[tuple[str, str]]) -> None:
-    st.markdown(f"#### {idea['title']}")
+    st.markdown(f"#### {_text(idea['title'])}")
+    web = bool(idea.get("web_reviewed"))
     st.caption(f"idea {idea['id']} · {idea['origin']} · {idea.get('timeframe') or '?'} · {idea['status']}"
-               + (f" · excluded: {idea['excluded_reason']}" if idea.get("excluded_reason") else ""))
+               + (" · web-reviewed" if web else "")
+               + (f" · excluded: {_text(idea['excluded_reason'])}" if idea.get("excluded_reason") else ""))
     _controls(record, pc, idea)
     for k, v in (idea.get("card") or {}).items():
-        st.markdown(f"**{k}:** {v}")
+        st.markdown(f"**{_text(str(k))}:** {_text(str(v), lines=True)}")
     for p in props:
         if not _broken(p):
-            _proposal(cfg, p, wf)
+            _proposal(cfg, p, wf, web)
 
 
 def _lines(x) -> list[str]:
@@ -240,17 +334,20 @@ def _research_body(record: Record, pc, row: dict, running: bool) -> None:
     note = row.get("reply") if ok else (record.last_ok_research() or {}).get("reply")
     note = note if isinstance(note, dict) else {}
     if ok and isinstance(note.get("summary"), str) and note["summary"]:
-        st.markdown(f"**Summary:** {note['summary']}")
-    if pc.research_every == 0:                       # the loop's rule: research off, no list in force
-        st.markdown("**Research is off: no stop list is in force** (`proposer.research_every` is 0)")
+        st.markdown(f"**Summary:** {_text(note['summary'], lines=True)}")
+    if pc.research_every == 0:                       # the loop's rule: research off, no research stop list in force
+        st.markdown("**Research is off: the research step's stop list is not in force** (`proposer.research_every` is 0)")
     elif stop := _lines(note.get("stop")):
         st.markdown("**Stop list** (the builder is told to stop trying these)" if ok else
                     "**Stop list in force** (from the latest valid round)")
         for line in stop:
-            st.markdown(f"- {line}")
+            st.markdown(f"- {_text(line)}")
     added = row.get("added") if ok else None
-    if ids := [i for i in added if isinstance(i, int) and not isinstance(i, bool)] if isinstance(added, list) else []:
-        titles = {i["id"]: i["title"] for i in record.ideas()}
+    ids = [i for i in added if isinstance(i, int) and not isinstance(i, bool)] if isinstance(added, list) else []
+    titles = {i["id"]: i["title"] for i in record.ideas()} if ids else {}
+    if isinstance(row.get("referee"), dict):
+        _referee(row["referee"], ids, titles, pc)
+    if ids:
         # what each builds on, for the human only: in the round's reply, by the title the record keeps it under
         cards = note.get("ideas") if isinstance(note.get("ideas"), list) else []
         builds = {c["title"].strip().casefold(): " ".join(c["builds_on"].split()) for c in cards
@@ -259,7 +356,55 @@ def _research_body(record: Record, pc, row: dict, running: bool) -> None:
         for i in ids:
             title = titles.get(i, "?")
             on = builds.get(title.casefold())
-            st.markdown(f"- #{i} {title}" + (f" · builds on: {on}" if on else ""))
+            st.markdown(f"- #{i} {_text(title)}" + (f" · builds on: {_text(on)}" if on else ""))
+
+
+def _one(x) -> str:
+    """A field that should be a one-line string, escaped; anything else reads ?."""
+    return _text(x) if isinstance(x, str) else "?"
+
+
+def _link(url: str, pc) -> str:
+    """A URL the referee named or fetched: a link only when its host is on the referee's allowlist (the fence's rule,
+    model.on_allowlist), defanged text otherwise, so the page links no host the referee was not allowed to read. A
+    link's own text needs no defanging: GFM makes no link inside a link."""
+    if not model.on_allowlist(url, pc.referee_domains):
+        return _text(url)
+    dest = _MD_DEST.sub(r"\\\1", url)
+    return f"[{_esc(url)}]({dest})"
+
+
+def _referee(ref: dict, ids: list[int], titles: dict[int, str], pc) -> None:
+    """The referee's review of the round's cards (referee-and-human-stops spec, "Ideas page"): each card's verdict
+    with its reason and sources, and the idea an accepted or revised card became; or its error, when no card was
+    added (it fails closed). Then the fetches its calls issued and those the CLI denied. The verdicts pair in order
+    with the round's added ids (loop._referee_row); when their counts differ, no verdict names an idea. Like the
+    reply, nothing in the row is trusted to have a shape."""
+    web = "with academic web access" if ref.get("web") is True else "without web access"
+    if ref.get("error") is not None:
+        st.markdown(f"**Referee failed** · {web}: {_one(ref['error'])}. No card from this round was added.")
+    elif isinstance(ref.get("verdicts"), list):
+        verdicts = [v for v in ref["verdicts"] if isinstance(v, dict)]
+        n = {d: sum(v.get("decision") == d for v in verdicts) for d in _DECIDED}
+        st.markdown(f"**Referee** · {len(verdicts)} {'card' if len(verdicts) == 1 else 'cards'}: "
+                    f"{n['accept']} accepted, {n['revise']} revised, {n['reject']} rejected · {web}")
+        kept = sum(v.get("decision") in ("accept", "revise") for v in verdicts)
+        pair = iter(ids) if kept == len(ids) else None
+        for v in verdicts:
+            d = v.get("decision")
+            line = f"- {_one(v.get('title'))}: **{_DECIDED.get(d, '?') if isinstance(d, str) else '?'}**"
+            if pair is not None and d in ("accept", "revise"):
+                i = next(pair)
+                line += f" as #{i}" if d == "accept" else f" into #{i} {_text(titles.get(i, '?'))}"
+            if isinstance(v.get("reason"), str):
+                line += f" · {_one(v['reason'])}"
+            if sources := _lines(v.get("sources")):
+                line += " · sources: " + ", ".join(_link(u, pc) for u in sources)
+            st.markdown(line)
+    lists = (("fetches", _lines(ref.get("fetches"))), ("denied by the CLI", _lines(ref.get("denied"))))
+    parts = [f"{what} ({len(urls)}): " + ", ".join(_link(u, pc) for u in urls) for what, urls in lists if urls]
+    if parts:
+        st.caption(" · ".join(parts))
 
 
 def _research_notes(record: Record, pc, running: bool) -> None:
@@ -305,6 +450,7 @@ def page_ideas(cfg) -> None:
     c[2].metric("Session", session_state(record, state, running))
     c[3].metric("Tokens today", f"{tin:,} in / {tout:,} out")
     _research_notes(record, pc, running)
+    _stop_list(record)
     _add_form(record, pc)
 
     ideas = record.ideas()
@@ -331,5 +477,5 @@ def page_ideas(cfg) -> None:
     if broken:
         with st.expander(f"Broken attempts ({len(broken)})"):
             for p in sorted(broken, key=lambda p: p["seq"]):
-                st.markdown(f"**#{p['seq']:04d} {p.get('plugin') or 'no plugin'} @ {p.get('timeframe') or '?'}** · "
-                            f"{titles.get(p['idea_id'], '?')} · {p.get('broken_reason') or p.get('state')}")
+                st.markdown(f"{_head(p)} · {_text(str(titles.get(p['idea_id'], '?')))} · "
+                            f"{_text(str(p.get('broken_reason') or p.get('state')))}")

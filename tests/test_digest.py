@@ -110,3 +110,73 @@ def test_each_research_outcome_has_its_line(tmp_path, args, line):
     d.research(*args)
     lines = d.path.read_text().splitlines()
     assert lines[0] == f"- 10:05 · {line}" and len(lines) == (2 if args[3] else 1)
+
+
+# -- the referee (referee-and-human-stops spec, Digest)
+def _verdict(title, decision, reason="r"):
+    return {"title": title, "decision": decision, "reason": reason, "sources": []}
+
+
+def test_a_refereed_round_counts_its_verdicts_and_gives_each_rejections_reason_under_it(tmp_path):
+    d = _digest(tmp_path)
+    referee = {"web": True, "fetches": [], "denied": [], "verdicts": [
+        _verdict("Basis squeeze", "accept"), _verdict("Carry unwind", "revise"),
+        _verdict("Round-number\ncascade", "reject", "Urquhart (2017): no round-number\neffect survives costs"),
+        _verdict("Volume premium", "reject", "Garfinkel et al. (2025) find none")]}
+    d.research([17, 18], 1, "ok", "The fades died on costs.", referee=referee)
+    assert d.path.read_text().splitlines() == [
+        "- 10:05 · research: +2 ideas (#17, #18); stop list 1 item; 4 cards: 1 accepted, 1 revised, 2 rejected",
+        "  rejected: Round-number cascade: Urquhart (2017): no round-number effect survives costs",
+        "  rejected: Volume premium: Garfinkel et al. (2025) find none",
+        "  The fades died on costs."]
+
+
+def test_one_card_is_one_card(tmp_path):
+    d = _digest(tmp_path)
+    d.research([17], 0, "ok", None, referee={"web": False, "verdicts": [_verdict("Basis squeeze", "accept")]})
+    assert d.path.read_text().splitlines() == [
+        "- 10:05 · research: +1 idea (#17); stop list 0 items; 1 card: 1 accepted, 0 revised, 0 rejected"]
+
+
+def test_a_referee_that_failed_says_why_and_the_round_keeps_its_stop_list_and_summary(tmp_path):
+    d = _digest(tmp_path)
+    referee = {"web": True, "error": "model_call: claude exited 1;\nstderr: x"}
+    d.research([], 2, "ok", "Carry is next.", referee=referee)
+    assert d.path.read_text().splitlines() == [
+        "- 10:05 · research: +0 ideas; stop list 2 items; referee error: model_call: claude exited 1; stderr: x",
+        "  Carry is next."]
+
+
+# M5: the finish block sums the session's referee reviews, so a week of rejections or breaches shows in one place
+def _end_lines(d) -> list[str]:
+    text = d.path.read_text()
+    return text[text.index("## End"):].splitlines()
+
+
+def test_the_finish_block_counts_the_sessions_referee_verdicts_and_failures_by_kind(tmp_path):
+    d = _digest(tmp_path)
+    reviews = [{"web": True, "verdicts": [_verdict("A", "accept"), _verdict("B", "reject"),
+                                          _verdict("C", "reject")]},
+               {"web": True, "error": "fence: off-list fetch: evil.example: its tool_result is not an error"},
+               {"web": True, "error": "invalid: verdicts: 1 for 2 cards"},
+               {"web": True, "verdicts": [_verdict("D", "revise")]},
+               {"web": True, "error": "fence: a stream line after the result"},
+               {"web": True, "error": "signal"},
+               {"web": True, "error": "model_call"}]
+    d.finish({}, [], "signal", 10, 1, reviews)
+    assert "- Referee: 7 rounds, 4 cards: 1 accepted, 1 revised, 2 rejected; failed: model_call 1, fence 2, " \
+           "invalid 1, signal 1" in _end_lines(d)
+
+
+def test_a_finish_block_whose_reviews_all_passed_says_none_failed(tmp_path):
+    d = _digest(tmp_path)
+    d.finish({}, [], "trials", 10, 1, [{"web": False, "verdicts": [_verdict("A", "accept")]}])
+    assert "- Referee: 1 round, 1 card: 1 accepted, 0 revised, 0 rejected; failed: none" in _end_lines(d)
+
+
+def test_a_session_with_no_review_says_so(tmp_path):
+    d = _digest(tmp_path)
+    d.finish({}, [], "trials", 10, 1, [])
+    assert "- Referee: none" in _end_lines(d)
+    d.finish({}, [], "trials", 10, 1)                    # a caller with no reviews to give: no line
+    assert sum(ln.startswith("- Referee") for ln in d.path.read_text().splitlines()) == 1

@@ -21,9 +21,9 @@ import sqlalchemy as sa
 
 from perp_lab.plugins import blob_hash, parse_meta
 from perp_lab.proposer import context, contract, loop, piles, proc, prompt, settings
-from perp_lab.proposer.model import ModelCallError, ModelConfigError, Reply, UsageLimit
+from perp_lab.proposer.model import FenceBreach, ModelCallError, ModelConfigError, Reply, UsageLimit
 from perp_lab.proposer.pin import Pin, PinError
-from perp_lab.proposer.record import Record, calls, research
+from perp_lab.proposer.record import Record, calls, research, stops
 from perp_lab.proposer.settings import StartRefused
 from tests.test_seed import FAMILY, as_today, refreshed
 from tests.test_store import cfg  # noqa: F401  (fixture)
@@ -67,6 +67,15 @@ def note(*titles, tf="1h", stop=("Exit-only changes",), summary="What the record
             "summary": summary}
 
 
+def v(title, decision="accept", reason="It holds.", sources=(), revised=None):
+    """One verdict of a referee's report."""
+    return {"title": title, "decision": decision, "reason": reason, "sources": list(sources), "revised": revised}
+
+
+def report(*verdicts):
+    return {"verdicts": list(verdicts)}
+
+
 def verdict(pile="no signal", *, overlap=None, **f):
     gates = {"net_sharpe": -1.0, "random_p95": 0.2, "oos_trades": 500, "min_oos_trades": 64}
     before = {"sharpe": -0.5, "random_p95": 0.1}
@@ -96,6 +105,8 @@ class Fake:
         self.clock = T0
         self.replies = None            # None: a fresh new idea per call; a list: popped, then ModelCallError
         self.notes = None              # research calls, as replies: None, an empty note per call
+        self.reports = None            # referee calls, as replies (or a Reply): None, every card of the last note
+        self.last_note = None          # accepted
         self.n_new = 0
         self.calls = []
         self.preflights = []
@@ -108,7 +119,8 @@ class Fake:
         self.pin_error = None          # raised by pin_check, or a callable(n) -> error or None
         self.on_call = self.on_preflight = self.on_judge = self.on_sleep = None
         self.killed = False
-        self.start_error = {}          # "pin_take" | "cli_version" | "probe" -> exception
+        self.start_error = {}          # "pin_take" | "cli_version" | "probe" | "probe_web" -> exception
+        self.probes = []               # (transcript, web_domains), in order
         self.branch = "main"
 
     def deps(self):
@@ -117,13 +129,17 @@ class Fake:
                          pin_take=self.pin_take, cli_version=self.cli_version, probe=self.probe,
                          kill_judge=self.kill_judge)
 
-    def call_model(self, system, user, schema, transcript):
-        self.calls.append(SimpleNamespace(system=system, user=user, schema=schema, transcript=transcript))
+    def call_model(self, system, user, schema, transcript, web_domains=()):
+        self.calls.append(SimpleNamespace(system=system, user=user, schema=schema, transcript=transcript,
+                                          web_domains=web_domains))
         if self.on_call:
             self.on_call(self)
         researching = "stop" in schema["properties"]          # a research round's call
-        queue = self.notes if researching else self.replies
-        if queue is None and researching:
+        refereeing = "verdicts" in schema["properties"]       # its referee's
+        queue = self.reports if refereeing else self.notes if researching else self.replies
+        if queue is None and refereeing:
+            r = report(*(v(i["title"]) for i in self.last_note["ideas"]))
+        elif queue is None and researching:
             r = note()
         elif queue is None:
             self.n_new += 1
@@ -134,6 +150,10 @@ class Fake:
             raise ModelCallError("the fake has no more replies")
         if isinstance(r, BaseException):
             raise r
+        if isinstance(r, Reply):
+            return r
+        if researching:
+            self.last_note = r
         return Reply(proposal=r, usage=dict(USAGE), cost_usd=0.01)
 
     def preflight(self, path, tf):
@@ -183,16 +203,20 @@ class Fake:
             raise self.start_error["cli_version"]
         return "2.1.316 (Claude Code)"
 
-    def probe(self, transcript):
-        if "probe" in self.start_error:
-            raise self.start_error["probe"]
+    def probe(self, transcript, web_domains=()):
+        self.probes.append((Path(transcript), tuple(web_domains)))
+        step = "probe_web" if web_domains else "probe"
+        if step in self.start_error:
+            raise self.start_error[step]
 
 
 @pytest.fixture
 def lab(tmp_path, cfg, monkeypatch):  # noqa: F811
     monkeypatch.chdir(tmp_path)                    # strategies/ is the judge's, relative to the working directory
     (tmp_path / "strategies").mkdir()
-    pc = settings.load(cfg)
+    # The referee is on by default; these tests are about the loop and the research round as they were before it,
+    # which research_referee false keeps exactly. The referee's own tests turn it on (refereed).
+    pc = replace(settings.load(cfg), research_referee=False)
     state = tmp_path / pc.state_dir                # "proposer", resolved against the repo: here tmp_path
     rec = Record(state)
     # An idea, so the seed (Task 25) leaves the record alone: these tests are about the loop.
@@ -914,6 +938,20 @@ def test_a_port_is_exempt_from_the_closed_idea_it_ports(lab):
     assert (port_idea["port_of"], port_idea["timeframe"], port_idea["card"]) == (x, "4h", card("Breakout"))
 
 
+@pytest.mark.parametrize("reviewed", [True, False])
+def test_a_port_of_a_web_reviewed_idea_is_web_reviewed_too(lab, reviewed):
+    """A port copies its idea's card, so it keeps what the card went through: a web-informed referee's review, and
+    with it the exam's caveat."""
+    x = lab.rec.add_ideas([{"title": "Basis squeeze", "card": card("Basis squeeze"), "origin": "research",
+                            "timeframe": "1h", "web_reviewed": reviewed}])[0]
+    lab.rec.add_proposal(idea_id=x, plugin="bsq", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("signal before costs"), "lineage_id": "family:bsq"})
+    lab.fake.replies = [port(x)]
+    assert run(lab, trials=1) == "trials"
+    port_idea = idea(lab, "Basis squeeze, 4h")
+    assert (port_idea["port_of"], port_idea["web_reviewed"]) == (x, reviewed)
+
+
 def _port_group(lab):
     """A dead source idea at 1h, its port at 4h (open, signal before costs), and an unrelated dead idea."""
     x = closed_idea(lab, "Breakout", "brk")
@@ -983,6 +1021,47 @@ def test_a_usage_limit_at_the_start_probe_is_refused_as_such(lab, resets, said):
     with pytest.raises(StartRefused) as e:
         run(lab)
     assert "usage limit" in str(e.value) and said in str(e.value) and "logged in" not in str(e.value)
+    assert lab.fake.calls == [] and not (lab.state / "sessions").exists()
+
+
+# The referee's web call, probed at the start: a CLI update that breaks it is met while the human is there
+def test_a_web_referee_is_probed_at_the_start_after_the_plain_probe(lab):
+    pc = replace(lab.pc, research_referee=True)
+    assert pc.research_referee_web and pc.research_every
+    assert run(lab, pc, trials=0) == "trials"
+    assert lab.fake.probes == [(lab.state / "logs" / "probe.jsonl", ()),
+                               (lab.state / "logs" / "probe-web.jsonl", pc.referee_domains)]
+
+
+@pytest.mark.parametrize("over", [{"research_referee": False}, {"research_referee_web": False},
+                                  {"research_every": 0}], ids=["referee-off", "web-off", "research-off"])
+def test_no_web_probe_when_no_web_referee_runs(lab, over):
+    pc = replace(lab.pc, **{"research_referee": True, **over})
+    assert run(lab, pc, trials=0) == "trials"
+    assert lab.fake.probes == [(lab.state / "logs" / "probe.jsonl", ())]
+
+
+@pytest.mark.parametrize("error, cause", [
+    (FenceBreach("off-list fetch: docs.python.org: its tool_result is not an error"),
+     "the referee's web probe broke the fence: off-list fetch: docs.python.org: its tool_result is not an error"),
+    (ModelConfigError("the CLI's init failed the check: permissionMode 'acceptEdits', not 'default'"),
+     "the referee's web probe failed: the CLI's init failed the check: permissionMode 'acceptEdits', not 'default'"),
+    (ModelCallError("claude exited 1; stderr: unknown option '--setting-sources'"),
+     "the referee's web probe failed: claude exited 1; stderr: unknown option '--setting-sources'"),
+], ids=["fence", "model-config", "model-call"])
+def test_a_failed_web_probe_is_a_start_refusal_that_names_its_cause(lab, error, cause):
+    lab.fake.start_error["probe_web"] = error
+    with pytest.raises(StartRefused) as e:
+        run(lab, replace(lab.pc, research_referee=True))
+    assert str(e.value).startswith(cause) and "proposer.research_referee_web" in str(e.value)
+    assert lab.fake.calls == [] and not (lab.state / "sessions").exists()
+
+
+def test_a_usage_limit_at_the_web_probe_is_refused_as_such(lab):
+    lab.fake.start_error["probe_web"] = UsageLimit(datetime(2026, 11, 2, 13, 20, tzinfo=UTC))
+    with pytest.raises(StartRefused) as e:
+        run(lab, replace(lab.pc, research_referee=True))
+    assert "usage limit" in str(e.value) and "it resets at 2026-11-02 13:20 UTC" in str(e.value)
     assert lab.fake.calls == [] and not (lab.state / "sessions").exists()
 
 
@@ -1236,19 +1315,119 @@ def test_with_research_off_no_stop_list_is_in_force(lab):
     assert order(lab) == "P" and lab.fake.calls[0].user == want
 
 
+# -- the human's stop list (referee-and-human-stops spec)
+HUMAN_STOP_HEADING = "Directions the human has ruled out:"
+PLANTED = datetime(2029, 3, 4, 5, 6, 7, tzinfo=UTC)
+
+
+def human_stops(lab, *texts, removed=("Removed direction",)) -> None:
+    """The human's items in force, and some removed, with a planted time on every row."""
+    for t in (*texts, *removed):
+        lab.rec.add_stop(t)
+    for s in lab.rec.stops():
+        if s["text"] in removed:
+            lab.rec.remove_stop(s["id"])
+    with lab.rec.engine.begin() as c:
+        c.execute(sa.update(stops).values(created_at=PLANTED))
+        c.execute(sa.update(stops).where(stops.c.removed_at.is_not(None)).values(removed_at=PLANTED))
+
+
+def no_time_or_removed_item(user: str) -> None:
+    for gone in ("Removed direction", "2029", "05:06"):
+        assert gone not in user, gone
+
+
+def test_the_humans_stop_list_comes_before_the_research_steps_in_the_proposal_prompt(lab):
+    human_stops(lab, "Round-number stop cascades", "High-volume return premia")
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok",
+                         reply=note(stop=["Exit-only changes"]))
+    record = prompt.render_record(lab.rec, 0, lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=1000), trials=1) == "trials"
+    assert order(lab) == "P"
+    user = lab.fake.calls[0].user
+    human = f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n- High-volume return premia\n"
+    research_ = f"{STOP_HEADING}\n- Exit-only changes\n\n{HUMAN_FIRST}\n"
+    assert user == record + "\n" + human + "\n" + research_ + "\n" + prompt.instruction() + "\n"
+    no_time_or_removed_item(user)
+
+
+def test_with_no_research_list_the_humans_stop_list_stands_alone_before_the_instruction(lab):
+    human_stops(lab, "Round-number stop cascades")
+    record = prompt.render_record(lab.rec, 0, lab.pc.timeframes)
+    assert run(lab, trials=1) == "trials"
+    user = lab.fake.calls[0].user
+    assert user == (record + "\n" + f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n" + "\n"
+                    + prompt.instruction() + "\n")
+    assert STOP_HEADING not in user and HUMAN_FIRST not in user
+
+
+def test_with_only_removed_items_the_proposal_prompt_is_as_before(lab):
+    human_stops(lab)                                 # one item, removed
+    want = prompt.render_record(lab.rec, 0, lab.pc.timeframes) + "\n" + prompt.instruction() + "\n"
+    assert run(lab, trials=1) == "trials"
+    assert lab.fake.calls[0].user == want and HUMAN_STOP_HEADING not in want
+
+
+@pytest.mark.parametrize("research_list", [False, True])
+def test_the_humans_stop_list_comes_before_the_research_steps_in_a_research_prompt(lab, research_list):
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    human_stops(lab, "Round-number stop cascades")
+    if research_list:
+        lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok",
+                             reply=note(stop=["Exit-only changes"]))
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=1), trials=1) == "trials"
+    assert order(lab) == "RP"
+    research_ = f"{STOP_HEADING}\n- Exit-only changes\n" + "\n" if research_list else ""
+    user = research_calls(lab)[0].user
+    assert user == (record + "\n" + f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n" + "\n" + research_
+                    + prompt.research_instruction(lab.pc, revising=research_list) + "\n")
+    assert HUMAN_FIRST not in user
+    no_time_or_removed_item(user)
+
+
+def test_with_research_off_the_humans_stop_list_stays_in_force(lab):
+    """It's the human's, not research's: research_every 0 drops only the research step's list."""
+    human_stops(lab, "Round-number stop cascades")
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok", reply=note(stop=["Old direction"]))
+    record = prompt.render_record(lab.rec, 0, lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=0), trials=1) == "trials"
+    assert lab.fake.calls[0].user == (record + "\n" + f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n"
+                                      + "\n" + prompt.instruction() + "\n")
+
+
+def test_a_session_picks_up_the_humans_edits_at_its_next_prompt(lab):
+    a = lab.rec.add_stop("Round-number stop cascades")
+    edits = iter([lambda: lab.rec.add_stop("High-volume return premia"), lambda: lab.rec.remove_stop(a)])
+    lab.fake.on_judge = lambda fake: next(edits, lambda: None)()        # after the 1st and the 2nd trial
+    assert run(lab, trials=3) == "trials"
+    seen = [[t for t in ("Round-number stop cascades", "High-volume return premia") if f"- {t}\n" in c.user]
+            for c in lab.fake.calls]
+    assert seen == [["Round-number stop cascades"], ["Round-number stop cascades", "High-volume return premia"],
+                    ["High-volume return premia"]]
+
+
 
 # -- the research round (research-round spec)
 def researching(c) -> bool:
     return Path(c.transcript).name.startswith("research-")
 
 
+def refereeing(c) -> bool:
+    return "verdicts" in c.schema["properties"]
+
+
 def order(lab) -> str:
-    """The session's model calls in order: R a research round's, P a proposal's."""
-    return "".join("R" if researching(c) else "P" for c in lab.fake.calls)
+    """The session's model calls in order: R a research round's, V its referee's, P a proposal's."""
+    return "".join("V" if refereeing(c) else "R" if researching(c) else "P" for c in lab.fake.calls)
 
 
 def research_calls(lab):
-    return [c for c in lab.fake.calls if researching(c)]
+    return [c for c in lab.fake.calls if researching(c) and not refereeing(c)]
+
+
+def referee_calls(lab):
+    return [c for c in lab.fake.calls if refereeing(c)]
 
 
 def proposal_calls(lab):
@@ -1559,6 +1738,55 @@ def test_a_research_calls_tokens_count_toward_the_days_caps_and_the_session(lab)
     assert (s["tokens_in"], s["tokens_out"]) == (7700, 70)
 
 
+# The real referee call's result (2026-11-02, CLI 2.1.316, effort high): `usage` is its own model's tokens alone;
+# `modelUsage` has them too, and those of the model WebFetch summarises each fetched page with (M1).
+REAL_USAGE = {"input_tokens": 14, "cache_creation_input_tokens": 45054, "cache_read_input_tokens": 349044,
+              "output_tokens": 8594, "output_tokens_details": {"thinking_tokens": 3909},
+              "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0}, "service_tier": "standard",
+              "cache_creation": {"ephemeral_1h_input_tokens": 45054, "ephemeral_5m_input_tokens": 0}}
+REAL_MODEL_USAGE = {
+    "claude-opus-5-5": {"inputTokens": 14, "outputTokens": 8594, "cacheReadInputTokens": 349044,
+                        "cacheCreationInputTokens": 45054, "webSearchRequests": 0, "costUSD": 0.6021768000000001,
+                        "contextWindow": 1000000, "maxOutputTokens": 128000, "thinkingTokens": 3909,
+                        "cacheCreationEphemeral5mInputTokens": 0, "cacheCreationEphemeral1hInputTokens": 45054,
+                        "canonicalModel": "claude-opus-5-5", "provider": "firstParty", "costBasis": "list"},
+    "claude-haiku-5-5": {"inputTokens": 147413, "outputTokens": 13892, "cacheReadInputTokens": 13850,
+                         "cacheCreationInputTokens": 1385, "webSearchRequests": 0, "costUSD": 0.021998925000000003,
+                         "contextWindow": 1000000, "maxOutputTokens": 128000, "thinkingTokens": 7917,
+                         "cacheCreationEphemeral5mInputTokens": 1385, "cacheCreationEphemeral1hInputTokens": 0,
+                         "canonicalModel": "claude-haiku-5-5", "provider": "firstParty", "costBasis": "list"}}
+# every model's input, cache creation and cache reads; and output (thinking is in it, as in usage)
+REAL_TOKENS = (14 + 45054 + 349044 + 147413 + 13850 + 1385, 8594 + 13892)
+
+
+def test_a_calls_tokens_are_every_models_in_model_usage_once():
+    assert loop._tokens(Reply(proposal={}, usage=REAL_USAGE, cost_usd=0.62, model_usage=REAL_MODEL_USAGE)) == \
+        REAL_TOKENS == (556760, 22486)
+
+
+@pytest.mark.parametrize("model_usage", [None, {}, "x", {"claude-opus-5-5": "x"},
+                                         {"claude-opus-5-5": {"input_tokens": 9, "output_tokens": 9}}],
+                         ids=["absent", "empty", "a-string", "an-entry-not-a-dict", "keys-renamed"])
+def test_a_call_without_a_readable_model_usage_counts_its_usage(model_usage):
+    assert loop._tokens(Reply(proposal={}, usage=REAL_USAGE, cost_usd=None, model_usage=model_usage)) == \
+        (14 + 45054 + 349044, 8594)
+
+
+def test_a_referees_fetch_summaries_count_toward_the_round_the_day_and_the_session(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze")]
+    lab.fake.reports = [Reply(proposal=report(v("Basis squeeze", sources=[ARXIV])), usage=dict(REAL_USAGE),
+                              cost_usd=0.62, fetches=[ARXIV], model_usage=REAL_MODEL_USAGE)]
+    assert run(lab, refereed(lab), trials=1) == "trials"
+    assert order(lab) == "RVP"
+    (row,) = rounds(lab)
+    assert (row["tokens_in"], row["tokens_out"]) == (1100 + REAL_TOKENS[0], 10 + REAL_TOKENS[1])
+    assert [(c["seq"], c["tokens_in"], c["tokens_out"]) for c in call_rows(lab)][1] == (None, *REAL_TOKENS)
+    assert lab.rec.usage_on(T0.date()) == (2200 + REAL_TOKENS[0], 20 + REAL_TOKENS[1])
+    s = lab.rec.session(1)
+    assert (s["tokens_in"], s["tokens_out"]) == (2200 + REAL_TOKENS[0], 20 + REAL_TOKENS[1])
+
+
 def test_a_research_round_waits_out_the_days_judge_quota_first(lab):
     assert run(lab, replace(lab.pc, trials_per_day=5), trials=6) == "trials"
     assert order(lab) == "PPPPPRP"
@@ -1579,3 +1807,416 @@ def test_no_research_rounds_time_summary_or_builds_on_reaches_any_prompt(lab):
         for gone in ("SUMMARY", "BUILDS-ON", "05:06", "10:00", "2029"):
             assert gone not in c.user, gone
         assert not DATE.search(c.user), DATE.search(c.user)
+
+
+# -- the referee (referee-and-human-stops spec, "The referee")
+def holdout_dates(lab) -> set[str]:
+    """The only dates a prompt may hold: the referee's, the lab's holdout start and the day before it."""
+    return {f"{lab.pc.holdout_start:%Y-%m-%d}", f"{lab.pc.holdout_start - timedelta(days=1):%Y-%m-%d}"}
+
+
+ARXIV = "https://arxiv.org/abs/1707.06221"
+GECKO = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?days=120"
+
+
+def refereed(lab, **over):
+    """The config's default: a referee, with the web."""
+    pc = replace(lab.pc, research_referee=True, **over)
+    assert pc.research_referee_web or "research_referee_web" in over
+    return pc
+
+
+def revised(title, **over):
+    return {**card(title), "timeframe": "1h", "builds_on": "BUILDS-ON", **over}
+
+
+def research_ideas(lab) -> list[dict]:
+    return [i for i in lab.rec.ideas() if i["origin"] == "research"]
+
+
+def parsed(lab, reply):
+    return contract.parse_research(reply, lab.pc.timeframes, lab.pc.research_max_ideas)
+
+
+def test_a_referee_adds_the_accepted_and_revised_cards_and_records_its_verdicts_and_fetches(lab):
+    nothing_answerable(lab)
+    reply = note("Basis squeeze", "Carry unwind", "Round-number cascade", stop=["Stop A"], summary="SUMMARY-1")
+    rep = report(v("Basis squeeze", "accept", "The funding papers agree.", sources=[ARXIV]),
+                 v("Carry unwind", "revise", "The exit carried it.",
+                   revised=revised("Carry unwind, neutral exit", likely_failure="the carry is priced")),
+                 v("Round-number cascade", "reject", "Urquhart (2017): no round-number effect after costs."))
+    lab.fake.notes = [reply]
+    lab.fake.reports = [Reply(proposal=rep, usage=dict(USAGE), cost_usd=0.01, fetches=[ARXIV, GECKO],
+                              denied=[GECKO])]
+    assert run(lab, refereed(lab), trials=1) == "trials"
+    assert order(lab) == "RVP"
+    (r,), (j,) = research_calls(lab), referee_calls(lab)
+    # the referee's call: its own schema, the round's transcript, the static context, the allowlist
+    assert j.schema == contract.referee_schema(lab.pc.timeframes, lab.pc.research_max_ideas)
+    assert j.transcript == r.transcript and j.system == r.system == context.static_context(lab.cfg, lab.pc)
+    assert j.web_domains == lab.pc.referee_domains and r.web_domains == () and lab.fake.calls[2].web_domains == ()
+    assert [json.loads(ln)["user"] for ln in Path(r.transcript).read_text().splitlines()] == [r.user, j.user]
+    # accepted as written, revised as revised, rejected not at all; each marked: a web-informed referee saw it
+    added = research_ideas(lab)
+    corrected = {**card("Carry unwind, neutral exit"), "likely_failure": "the carry is priced"}
+    assert [(i["title"], i["card"], i["timeframe"], i["status"], i["web_reviewed"]) for i in added] == [
+        ("Basis squeeze", card("Basis squeeze"), "1h", "open", True),
+        ("Carry unwind, neutral exit", corrected, "1h", "open", True)]
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["added"], row["reply"]) == ("ok", [i["id"] for i in added], reply)
+    assert row["referee"] == {"web": True, "fetches": [ARXIV, GECKO], "denied": [GECKO], "verdicts": [
+        {"title": "Basis squeeze", "decision": "accept", "reason": "The funding papers agree.", "sources": [ARXIV]},
+        {"title": "Carry unwind", "decision": "revise", "reason": "The exit carried it.", "sources": []},
+        {"title": "Round-number cascade", "decision": "reject",
+         "reason": "Urquhart (2017): no round-number effect after costs.", "sources": []}]}
+    # tokens: the referee's call is the round's, counted toward the day's caps and the session (seq None)
+    assert (row["tokens_in"], row["tokens_out"]) == (2200, 20)
+    assert [(c["seq"], c["outcome"]) for c in call_rows(lab)] == [(None, "reply"), (None, "reply"), (1, "reply")]
+    assert lab.rec.usage_on(T0.date()) == (3300, 30)
+    assert (lab.rec.session(1)["tokens_in"], lab.rec.session(1)["tokens_out"]) == (3300, 30)
+    # the round's stop list is in force for the next proposal, which sees the added cards
+    assert "- Stop A" in lab.fake.calls[2].user and "### #2 Basis squeeze" in lab.fake.calls[2].user
+    assert "Round-number cascade" not in lab.fake.calls[2].user
+    lines = digest(lab).splitlines()
+    k = lines.index(f"- 10:00 · research: +2 ideas (#{added[0]['id']}, #{added[1]['id']}); stop list 1 item; "
+                    "3 cards: 1 accepted, 1 revised, 1 rejected")
+    assert lines[k + 1:k + 3] == [
+        "  rejected: Round-number cascade: Urquhart (2017): no round-number effect after costs.", "  SUMMARY-1"]
+
+
+def test_the_referees_prompt_is_the_record_both_stop_sections_the_cards_and_its_instruction(lab):
+    human_stops(lab, "Round-number stop cascades")
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    lab.rec.add_research(session_id=None, at=PLANTED, trials_used=0, added=[], outcome="ok",
+                         reply=note(stop=["Exit-only changes"], summary="SUMMARY-0"))
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    reply = note("Basis squeeze", "Carry unwind", stop=["Stop B"], summary="SUMMARY-1")
+    lab.fake.notes = [reply]
+    pc = refereed(lab, research_every=1)
+    assert run(lab, pc, trials=1) == "trials"
+    assert order(lab) == "RVP"
+    (j,) = referee_calls(lab)
+    human = f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n"
+    research_ = f"{STOP_HEADING}\n- Exit-only changes\n"
+    # the record, the human's list, the research step's list in force, the cards and the instruction: nothing else
+    assert j.user == (record + "\n" + human + "\n" + research_ + "\n" + prompt.note_cards(parsed(lab, reply)) + "\n"
+                      + prompt.referee_instruction(pc) + "\n")
+    assert j.system == context.static_context(lab.cfg, lab.pc)
+    for gone in ("SUMMARY", "Stop B", HUMAN_FIRST):
+        assert gone not in j.user, gone
+    no_time_or_removed_item(j.user)
+    assert set(DATE.findall(j.user)) == holdout_dates(lab)      # its sources' and searches' bounds: no other
+
+
+def test_with_the_web_off_the_referee_is_tool_less_names_no_source_and_marks_nothing(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze")]
+    lab.fake.reports = [report(v("Basis squeeze", sources=[ARXIV])), report(v("Basis squeeze"))]
+    pc = refereed(lab, research_referee_web=False)
+    assert run(lab, pc, trials=1) == "trials"
+    assert order(lab) == "RVVP"
+    j1, j2 = referee_calls(lab)
+    assert j1.web_domains == j2.web_domains == ()
+    assert j1.user.endswith(prompt.referee_instruction(pc, web=False) + "\n")
+    assert "verdict #1 (Basis squeeze): sources: must be empty: this referee had no web access" in j2.user
+    (added,) = research_ideas(lab)
+    assert (added["title"], added["web_reviewed"]) == ("Basis squeeze", False)
+    assert rounds(lab)[0]["referee"] == {"web": False, "fetches": [], "denied": [], "verdicts": [
+        {"title": "Basis squeeze", "decision": "accept", "reason": "It holds.", "sources": []}]}
+
+
+@pytest.mark.parametrize("bad, error", [
+    (report(v("Basis squeeze")), "verdicts: 1 for 2 cards; one verdict per card, in the cards' order"),
+    (report(v("Carry unwind"), v("Basis squeeze")),
+     "verdict #1 (Carry unwind): title: card #1 is 'Basis squeeze'; one verdict per card, in the cards' order"),
+    (report(v("Basis squeeze"), v("Funding fade")),
+     "verdict #2 (Funding fade): title: card #2 is 'Carry unwind'; one verdict per card, in the cards' order"),
+    (report(v("Basis squeeze", "revise"), v("Carry unwind")),
+     "verdict #1 (Basis squeeze): revised: required when decision is revise"),
+    (report(v("Basis squeeze", revised=revised("Basis squeeze")), v("Carry unwind")),
+     "verdict #1 (Basis squeeze): revised: must be null when decision is accept"),
+    (report(v("Basis squeeze", sources=[GECKO]), v("Carry unwind")),
+     f"verdict #1 (Basis squeeze): sources[0]: {GECKO!r} is not on the allowed academic hosts"),
+    (report(v("Basis squeeze", "revise", revised=revised("Placeholder")), v("Carry unwind")),
+     "verdict #1 (Basis squeeze): revised: title: an idea titled 'Placeholder' is already in the record"),
+    (report(v("Basis squeeze", "revise", revised=revised("Basis squeeze", columns=["close", "slippage"])),
+            v("Carry unwind")),
+     "verdict #1 (Basis squeeze): revised: columns: 'slippage' is not among the bar columns a plugin may read"),
+    ({"verdicts": [], "extra": 1}, "extra: unknown field"),
+], ids=["count", "order", "unknown-title", "revise-without-card", "accept-with-card", "off-list-source",
+        "revised-title-taken", "revised-fails-human-check", "contract"])
+def test_a_report_that_disagrees_with_the_note_goes_back_as_a_fixup_never_half_applied(lab, bad, error):
+    nothing_answerable(lab)
+    reply = note("Basis squeeze", "Carry unwind")
+    lab.fake.notes = [reply]
+    lab.fake.reports = [bad, report(v("Basis squeeze", "reject", "Known."), v("Carry unwind"))]
+    assert run(lab, refereed(lab), trials=1) == "trials"
+    assert order(lab) == "RVVP"
+    j1, j2 = referee_calls(lab)
+    # a fresh call: the referee's prompt, its refused reply and only its errors
+    assert j2.user.startswith(j1.user.rstrip("\n")) and json.dumps(bad, indent=1) in j2.user
+    assert error in j2.user
+    assert j2.user.rstrip().endswith("Return a corrected referee report: one JSON object, as the reply contract "
+                                     "describes.")
+    assert [i["title"] for i in research_ideas(lab)] == ["Carry unwind"]
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["reply"], row["tokens_in"]) == ("ok", reply, 3300)
+    assert [x["decision"] for x in row["referee"]["verdicts"]] == ["reject", "accept"]
+
+
+def test_a_title_taken_while_the_referee_ran_goes_back_to_it_as_a_fixup(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze")]
+    lab.fake.reports = [report(v("Basis squeeze")),
+                        report(v("Basis squeeze", "revise", "Renamed.", revised=revised("Basis squeeze, 1h")))]
+
+    def human_adds(fake):                                # the human's form adds the same title meanwhile
+        if refereeing(fake.calls[-1]) and len(referee_calls(lab)) == 1:
+            lab.rec.add_idea("Basis squeeze", card("Basis squeeze"), "human", "1h")
+    lab.fake.on_call = human_adds
+    assert run(lab, refereed(lab), trials=1) == "trials"
+    assert order(lab) == "RVVP" and "duplicate idea title: 'Basis squeeze'" in referee_calls(lab)[1].user
+    assert [i["title"] for i in research_ideas(lab)] == ["Basis squeeze, 1h"]
+    assert idea(lab, "Basis squeeze")["origin"] == "human"
+
+
+def failed_closed(lab, reply, error):
+    """No card added; the round ok, its stop list in force and its summary kept; the session went on."""
+    assert research_ideas(lab) == []
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["added"], row["reply"]) == ("ok", [], reply)
+    assert row["referee"] == {"web": True, "fetches": [], "denied": [], "error": error}
+    assert lab.rec.session(1)["stop_reason"] == "trials" and [p["state"] for p in props(lab)] == ["judged"]
+    assert "- Stop A" in proposal_calls(lab)[0].user
+    assert "Basis squeeze" not in proposal_calls(lab)[0].user
+
+
+def test_a_report_still_refused_after_its_fixups_fails_closed(lab):
+    nothing_answerable(lab)
+    reply = note("Basis squeeze", stop=["Stop A"], summary="SUMMARY-1")
+    lab.fake.notes = [reply]
+    lab.fake.reports = [{"bad": 1}] * (lab.pc.fixups_per_proposal + 1)
+    assert run(lab, refereed(lab), trials=1) == "trials"
+    assert order(lab) == "R" + "V" * (lab.pc.fixups_per_proposal + 1) + "P"
+    failed_closed(lab, reply, "invalid: bad: unknown field")
+    lines = digest(lab).splitlines()
+    k = lines.index("- 10:00 · research: +0 ideas; stop list 1 item; referee error: invalid: bad: unknown field")
+    assert lines[k + 1] == "  SUMMARY-1"
+
+
+def test_a_referee_call_that_fails_fails_closed_and_its_cli_text_reaches_the_digest_only(lab):
+    nothing_answerable(lab)
+    reply = note("Basis squeeze", stop=["Stop A"])
+    lab.fake.notes = [reply]
+    lab.fake.reports = [ModelCallError(f"claude exited 1; stderr: {SENTINEL}")]
+    assert run(lab, refereed(lab), trials=1) == "trials"
+    assert order(lab) == "RVP"
+    failed_closed(lab, reply, "model_call")
+    assert [(c["seq"], c["outcome"]) for c in call_rows(lab)] == [(None, "reply"), (None, "model_call"),
+                                                                 (1, "reply")]
+    assert (f"research: +0 ideas; stop list 1 item; referee error: model_call: claude exited 1; stderr: {SENTINEL}"
+            in digest(lab))
+    assert not [c for c in lab.fake.calls if SENTINEL in c.user or SENTINEL in c.system]
+    assert SENTINEL not in json.dumps(rounds(lab), default=str)
+
+
+def test_a_fence_breach_fails_the_referee_closed_once_and_the_session_goes_on(lab):
+    """R-RF5: nothing from the killed call is used, it is not tried again, and the session doesn't stop."""
+    nothing_answerable(lab)
+    reply = note("Basis squeeze", stop=["Stop A"])
+    lab.fake.notes = [reply]
+    long = "off-list fetch: api.coingecko.com: its tool_result is not an error\n" + "x" * 1000
+    lab.fake.reports = [FenceBreach(long)]
+    assert run(lab, refereed(lab), trials=1) == "trials"
+    assert order(lab) == "RVP"
+    error = rounds(lab)[0]["referee"]["error"]
+    assert error.startswith("fence: off-list fetch: api.coingecko.com: its tool_result is not an error x")
+    assert len(error) <= 300 and "\n" not in error
+    failed_closed(lab, reply, error)
+    assert [(c["seq"], c["outcome"]) for c in call_rows(lab)] == [(None, "reply"), (None, "fence_breach"),
+                                                                 (1, "reply")]
+    assert f"research: +0 ideas; stop list 1 item; referee error: {error}" in digest(lab)
+
+
+def test_the_sessions_end_counts_its_referee_verdicts_and_failures(lab):
+    """M5: a week of rejections or fence breaches shows in one place, the digest's finish block."""
+    lab.fake.notes = [note("Basis squeeze", "Carry unwind"), note("Funding fade")]
+    lab.fake.reports = [report(v("Basis squeeze"), v("Carry unwind", "reject", "R")),
+                        FenceBreach("off-list fetch: evil.example: its tool_result is not an error")]
+    assert run(lab, refereed(lab, research_every=1), trials=3) == "trials"
+    assert order(lab) == "PRVPRVP"
+    end = digest(lab).split("## End")[1].splitlines()
+    assert "- Referee: 2 rounds, 2 cards: 1 accepted, 0 revised, 1 rejected; failed: fence 1" in end
+
+
+def test_a_session_with_no_referee_review_says_so_at_its_end(lab):
+    assert run(lab, trials=1) == "trials"
+    assert "- Referee: none" in digest(lab).split("## End")[1].splitlines()
+
+
+def test_a_model_config_error_in_the_referee_stops_the_session_and_adds_nothing(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze")]
+    lab.fake.reports = [ModelConfigError("the CLI's init failed the check: tools ['Bash']")]
+    assert run(lab, refereed(lab)) == "model_config"
+    assert order(lab) == "RV" and props(lab) == [] and research_ideas(lab) == []
+    # the row says the note was valid and the referee's call was the one that stopped (review minor 2)
+    assert [(r["outcome"], r["added"], r["referee"]) for r in rounds(lab)] == [
+        ("error: model_config", [], {"web": True, "fetches": [], "denied": [], "error": "model_config"})]
+    assert "research: error model_config" in digest(lab)
+
+
+def test_a_usage_limit_in_the_referee_waits_and_repeats_the_same_call(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze")]
+    lab.fake.reports = [UsageLimit(T0 + timedelta(hours=2)), report(v("Basis squeeze"))]
+    assert run(lab, refereed(lab), trials=1) == "trials"
+    assert slept(lab) == 7200.0 and order(lab) == "RVVP"
+    j1, j2 = referee_calls(lab)
+    assert j1.user == j2.user and [i["title"] for i in research_ideas(lab)] == ["Basis squeeze"]
+    assert [c["outcome"] for c in call_rows(lab)] == ["reply", "usage_limit", "reply", "reply"]
+
+
+def test_a_signal_during_the_referee_stops_the_session_and_adds_nothing(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze")]
+    lab.fake.on_call = lambda f: refereeing(f.calls[-1]) and signal.raise_signal(signal.SIGTERM)
+    assert run(lab, refereed(lab)) == "signal"
+    assert order(lab) == "RV" and research_ideas(lab) == []
+    assert [(r["outcome"], r["referee"]) for r in rounds(lab)] == [
+        ("error: signal", {"web": True, "fetches": [], "denied": [], "error": "signal"})]
+
+
+def test_the_deadline_in_a_referees_usage_limit_wait_leaves_its_reason_and_fetches_on_the_row(lab):
+    nothing_answerable(lab)
+    lab.fake.notes = [note("Basis squeeze")]
+    lab.fake.reports = [Reply(proposal={"bad": 1}, usage=dict(USAGE), cost_usd=0.01, fetches=[ARXIV]),
+                        UsageLimit(T0 + timedelta(days=3))]
+    assert run(lab, refereed(lab), days=1) == "days"
+    assert order(lab) == "RVV" and research_ideas(lab) == []
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["added"], row["tokens_in"]) == ("error: days", [], 2200)
+    assert row["referee"] == {"web": True, "fetches": [ARXIV], "denied": [], "error": "days"}
+
+
+@pytest.mark.parametrize("case", ["no-cards", "capped", "off"])
+def test_the_referee_is_skipped_with_no_cards_in_a_capped_round_and_when_off(lab, case):
+    pc = refereed(lab, research_every=1) if case != "off" else replace(lab.pc, research_every=1)
+    if case == "capped":
+        capped(lab)
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    lab.fake.notes = [note() if case == "no-cards" else note("Basis squeeze")]
+    assert run(lab, pc, trials=1) == "trials"
+    assert order(lab) == "RP"
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["referee"]) == ("capped" if case == "capped" else "ok", None)
+    want = [("Basis squeeze", False)] if case == "off" else []
+    assert [(i["title"], i["web_reviewed"]) for i in research_ideas(lab) if i["title"] == "Basis squeeze"] == want
+    assert "cards:" not in digest(lab) and "referee" not in digest(lab)
+
+
+def test_no_time_summary_or_later_card_text_reaches_any_prompt_with_the_referee(lab):
+    """The referee sees its round's cards, builds_on included; nothing of a round reaches a later prompt but its
+    stop list, and no time reaches any."""
+    lab.rec.add_research(session_id=None, at=PLANTED, trials_used=0, added=[], outcome="ok",
+                         reply=note(stop=["Old stop"], summary="SUMMARY-0"))
+    lab.fake.notes = [note("Basis squeeze", summary="SUMMARY-1"), note("Carry unwind", summary="SUMMARY-2")]
+    lab.fake.reports = [report(v("Basis squeeze", "reject", "REASON-1", sources=[ARXIV])),
+                        report(v("Carry unwind", reason="REASON-2"))]
+    assert run(lab, refereed(lab, research_every=1), trials=3) == "trials"
+    assert order(lab) == "PRVPRVP"
+    # the second round is told the first round's rejected card, by its title alone (R-RF8)
+    assert prompt.rejected_section(["Basis squeeze"]) in research_calls(lab)[1].user
+    assert "Cards the referee rejected" not in research_calls(lab)[0].user
+    for c in lab.fake.calls:
+        for gone in ("SUMMARY", "REASON", "05:06", "10:00", "2029", ARXIV):     # nothing of the referee's review
+            assert gone not in c.user, gone
+        # no date but the lab's holdout start and the day before, in the referee's instruction (R-RF7, M3)
+        assert set(DATE.findall(c.user)) == (holdout_dates(lab) if refereeing(c) else set()), c.user
+        assert ("BUILDS-ON" in c.user) is refereeing(c)
+
+
+def test_the_real_deps_pass_the_web_domains_to_the_model_call(lab, monkeypatch):
+    seen = []
+    monkeypatch.setattr(loop.model, "call_with_retries",
+                        lambda pc, system, user, schema, transcript, **kw: seen.append((system, user, kw)) or "R")
+    deps = loop.default_deps(lab.cfg, lab.pc, lab.root)
+    t = lab.state / "t.jsonl"
+    assert deps.call_model("s", "u", {}, t) == "R"
+    assert deps.call_model("s", "u", {}, t, web_domains=("arxiv.org",)) == "R"
+    assert seen == [("s", "u", {"web_domains": ()}), ("s", "u", {"web_domains": ("arxiv.org",)})]
+
+
+def test_the_real_deps_pass_the_web_domains_to_the_probe(lab, monkeypatch):
+    seen = []
+    monkeypatch.setattr(loop.model, "probe", lambda pc, transcript, **kw: seen.append((transcript, kw)))
+    deps = loop.default_deps(lab.cfg, lab.pc, lab.root)
+    t = lab.state / "t.jsonl"
+    deps.probe(t)
+    deps.probe(t, web_domains=("arxiv.org",))
+    assert seen == [(t, {"web_domains": ()}), (t, {"web_domains": ("arxiv.org",)})]
+
+
+# R-RF8: the titles of the cards the referee rejected reach every later research prompt; nothing else of its review
+REJECTED_HEADING = "Cards the referee rejected (do not propose them again):"
+
+
+def refereed_round(lab, rejected=(), accepted=(), stop=(), reason="REASON-0", extra=()):
+    """An earlier refereed round, with a planted time: its rejected and accepted cards' verdicts (and any extra
+    entries, as a row may hold anything)."""
+    verdicts = [*({"title": t, "decision": d, "reason": reason, "sources": [ARXIV]}
+                  for d, ts in (("accept", accepted), ("reject", rejected)) for t in ts), *extra]
+    lab.rec.add_research(session_id=None, at=PLANTED, trials_used=0, added=[], outcome="ok",
+                         reply=note(stop=list(stop)), referee={"web": True, "fetches": [ARXIV, GECKO],
+                                                               "denied": [GECKO], "verdicts": verdicts})
+
+
+def test_a_research_prompt_carries_the_rejected_cards_titles_after_the_stop_sections(lab):
+    human_stops(lab, "Round-number stop cascades")
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    refereed_round(lab, rejected=["Round-number\n  stop cascade", "Volume premium"], accepted=["Kept card"],
+                   reason="REASON-A")
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="error: model_call", reply=None,
+                         referee={"web": True, "error": "model_call"})
+    lab.rec.add_research(session_id=None, trials_used=0, added=[], outcome="ok", reply=note(), referee=[1])
+    refereed_round(lab, rejected=["volume PREMIUM", "Funding fade"], stop=["Exit-only changes"], reason="REASON-B",
+                   extra=["a verdict", {"decision": "reject", "title": 7}, {"decision": "reject"},
+                          {"title": "Odd", "decision": "REJECT"}])
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    pc = refereed(lab, research_every=1)
+    assert run(lab, pc, trials=1) == "trials"
+    assert order(lab) == "RP"                            # no cards: no referee this round
+    (r,) = research_calls(lab)
+    # each title once (its latest), oldest first, on one line; the human's list, the research step's, then these
+    rejected = (f"{REJECTED_HEADING}\n- Round-number stop cascade\n- volume PREMIUM\n- Funding fade\n")
+    assert r.user == (record + "\n" + f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n" + "\n"
+                      + f"{STOP_HEADING}\n- Exit-only changes\n" + "\n" + rejected + "\n"
+                      + prompt.research_instruction(pc, revising=True, rejected=True) + "\n")
+    for gone in ("REASON", "Kept card", "Odd", ARXIV, GECKO):
+        assert gone not in r.user, gone
+    assert "Cards the referee rejected" not in proposal_calls(lab)[0].user     # research prompts only
+
+
+def test_only_the_latest_rejected_titles_reach_the_prompt(lab):
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    refereed_round(lab, rejected=[f"Card {k}" for k in range(loop.REJECTED_MAX + 5)])
+    assert run(lab, refereed(lab, research_every=1), trials=1) == "trials"
+    want = prompt.rejected_section([f"Card {k}" for k in range(5, loop.REJECTED_MAX + 5)])
+    assert loop.REJECTED_MAX == 30 and want in research_calls(lab)[0].user and "- Card 4\n" not in want
+
+
+def test_with_no_rejection_or_the_referee_off_no_rejected_section_is_in_a_prompt(lab):
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    refereed_round(lab, accepted=["Kept card"])
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    assert run(lab, refereed(lab, research_every=1), trials=1) == "trials"
+    assert research_calls(lab)[0].user == record + "\n" + prompt.research_instruction(lab.pc) + "\n"
+
+
+def test_with_the_referee_off_its_past_rejections_reach_no_prompt(lab):
+    """As research off drops the research step's stop list: a human turns the referee off when it judges badly."""
+    lab.rec.add_proposal(plugin="done", timeframe="1h", state="judged", judge_exit=0, verdict=verdict())  # a trial
+    refereed_round(lab, rejected=["Volume premium"])
+    record = prompt.render_record(lab.rec, loop.current_n(lab.rec), lab.pc.timeframes)
+    assert run(lab, replace(lab.pc, research_every=1), trials=1) == "trials"
+    assert research_calls(lab)[0].user == record + "\n" + prompt.research_instruction(lab.pc) + "\n"

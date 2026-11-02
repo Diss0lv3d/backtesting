@@ -355,22 +355,66 @@ def withdraw(strategy: Optional[str] = typer.Argument(None, help="the plugin, by
     typer.echo(f"verdict: {w['verdict_path']}")
 
 
+# What the web-reviewed mark's lookup reads, and nothing else: a record from before the column has no such idea.
+WEB_REVIEWED_VERSIONS = ("SELECT p.hash, p.timeframe FROM proposals AS p JOIN ideas AS i ON p.idea_id = i.id "
+                         "WHERE i.web_reviewed")
+
+
+def _web_reviewed(cfg, judgements: list[dict]) -> set[int]:
+    """The ids of the judgements whose plugin version is a proposal of a web-reviewed idea in the proposer's record
+    (referee-and-human-stops spec, the web_reviewed mark): their exam is weaker evidence. None when the proposer's
+    settings don't load, it has no record, the record predates the mark, or it can't be read: `lab exam` isn't the
+    proposer's, so it never fails for want of one.
+
+    It only reads. No Record(): opening one creates and migrates tables. The record runs in WAL mode: while a
+    session or the Ideas page holds it, its -wal and -shm files exist and a read-only open reads through them;
+    without them record.db holds everything, and an immutable open reads it without creating them, which a
+    read-only open would (SQLite 3.45, checked 2026-11-02)."""
+    import sqlite3
+    from contextlib import closing
+    from perp_lab.proposer import context, settings
+    if not judgements:
+        return set()
+    try:
+        pc = settings.load(cfg)
+    except Exception:       # not only its refusal: load indexes the block, and exams were run before this
+        return set()
+    path = (context.ROOT / pc.state_dir / "record.db").resolve()
+    if not path.exists():
+        return set()
+    held = all(path.with_name(path.name + side).exists() for side in ("-wal", "-shm"))
+    try:
+        with closing(sqlite3.connect(f"{path.as_uri()}?{'mode=ro' if held else 'immutable=1'}", uri=True)) as c:
+            if "web_reviewed" not in {row[1] for row in c.execute("PRAGMA table_info(ideas)")}:
+                return set()
+            versions = set(c.execute(WEB_REVIEWED_VERSIONS))
+    except sqlite3.Error:
+        return set()
+    return {j["id"] for j in judgements if (j.get("strategy_hash"), j.get("timeframe")) in versions}
+
+
 @app.command()
 def exam(judgement: Optional[int] = typer.Option(None, "--id", help="examine this one judgement, whoever judged it"),
          config: Optional[str] = CfgOpt):
     """Attempt the holdout exam for every pending promotion (budget rules apply), except a proposer's:
     those wait for `lab exam --id N`. The only command that runs exams; the proposer never runs it."""
     from perp_lab.judge.judge import JudgeRefused, exam_pending
+    from perp_lab.proposer.research import WEB_REVIEWED_CAVEAT
+    cfg = load_config(config)
     try:
-        done = exam_pending(load_config(config), only_id=judgement)
+        done = exam_pending(cfg, only_id=judgement)
     except JudgeRefused as e:
         typer.secho(f"refused: {e}", fg="red")
         raise typer.Exit(2)
     if not done:
         typer.echo("no pending exams")
+    web = _web_reviewed(cfg, [j for j in done if j.get("awaiting_review")])
     for j in done:
         if j.get("awaiting_review"):
-            typer.echo(f"{j['strategy']} @ {j['timeframe']}: awaiting review: lab exam --id {j['id']}")
+            mark = " (web-reviewed)" if j["id"] in web else ""
+            typer.echo(f"{j['strategy']} @ {j['timeframe']}: awaiting review{mark}: lab exam --id {j['id']}")
+            if mark:
+                typer.echo(f"  {WEB_REVIEWED_CAVEAT}")
             continue
         if j.get("in_progress"):
             typer.echo(f"{j['strategy']} @ {j['timeframe']}: in progress elsewhere (another `lab exam` is running)")
@@ -434,7 +478,8 @@ def ideas(config: Optional[str] = CfgOpt):
         mine = by_idea.get(i["id"], [])
         judged = [p for p in mine if p.get("judge_exit") is not None]
         best = piles.best_pile([piles.pile(p.get("verdict")) for p in judged if p.get("duplicate_of") is None])
-        tag = " (research)" if i["origin"] == "research" else ""
+        tag = ((" (research)" if i["origin"] == "research" else "")
+               + (" (web-reviewed)" if i.get("web_reviewed") else ""))     # as the Ideas page's tag
         groups[piles.idea_group(i, mine)].append(
             f"#{i['id']} {i['title']}{tag} \u2014 {i['timeframe']}, {i['status']}, {best or 'none'}, "
             f"judged {len(judged)}")
@@ -529,6 +574,49 @@ def idea_next(idea: Optional[int] = typer.Argument(None, help="the idea's id"),
     except ValueError as e:
         _refuse(str(e))
     typer.echo(f"idea #{idea} is next up")
+
+
+stop_app = typer.Typer(add_completion=False, no_args_is_help=True,
+                       help="Your stop list: directions every proposal and research prompt rules out.")
+app.add_typer(stop_app, name="stop")
+
+
+@stop_app.command("add")
+def stop_add(text: str = typer.Argument(..., help="one line, at most 200 characters: a direction to rule out"),
+             config: Optional[str] = CfgOpt):
+    """Rule a direction out: the builder and the research step read it in every prompt until you remove it, and
+    only you change the list."""
+    from perp_lab.proposer import human
+    typer.secho(human.WARNING, fg="yellow")
+    rec, _ = _proposer_record(config, "no proposer record yet")
+    try:
+        i = rec.add_stop(text)
+    except ValueError as e:
+        _refuse(str(e))
+    typer.echo(f"added stop #{i}")
+
+
+@stop_app.command("remove")
+def stop_remove(stop: int = typer.Argument(..., help="the item's id, as `lab stop list` shows it"),
+                config: Optional[str] = CfgOpt):
+    """Take a direction off the stop list: the next prompt no longer carries it."""
+    rec, _ = _proposer_record(config, "no proposer record yet")
+    try:
+        rec.remove_stop(stop)
+    except ValueError as e:
+        _refuse(str(e))
+    typer.echo(f"removed stop #{stop}")
+
+
+@stop_app.command("list")
+def stop_list(config: Optional[str] = CfgOpt):
+    """Print the stop list in force, by id."""
+    rec, _ = _proposer_record(config, "no proposer record yet")
+    items = rec.stops()
+    if not items:
+        typer.echo("no stop items")
+    for s in items:
+        typer.echo(f"#{s['id']} {s['text']}")
 
 
 @app.command()

@@ -6,8 +6,9 @@ import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+import sqlalchemy as sa
 
-from perp_lab.proposer.record import Record
+from perp_lab.proposer.record import Record, stops
 
 UTC = timezone.utc
 
@@ -386,3 +387,125 @@ def test_last_research_can_be_limited_to_some_outcomes(rec):
     assert rec.last_research()["id"] == cut
     assert rec.last_research(among=("ok", "invalid"))["id"] == ran
     assert rec.last_research(among=("ok", "capped")) is None
+
+
+# -- the human's stop list (referee-and-human-stops spec)
+def test_the_humans_stop_list_holds_the_items_in_force_by_id(rec):
+    assert rec.stops() == []
+    a = rec.add_stop("  Round-number stop cascades  ")
+    b = rec.add_stop("High-volume return premia")
+    assert [(s["id"], s["text"]) for s in rec.stops()] == [(a, "Round-number stop cascades"),
+                                                          (b, "High-volume return premia")]
+    assert rec.stops()[0]["created_at"].tzinfo is not None and rec.stops()[0]["removed_at"] is None
+    rec.remove_stop(a)
+    assert [s["id"] for s in rec.stops()] == [b]
+    with rec.engine.connect() as c:                  # a removed item keeps its row, with the time it went
+        gone = c.execute(sa.select(stops).where(stops.c.id == a)).mappings().one()
+    assert gone["text"] == "Round-number stop cascades" and gone["removed_at"] is not None
+    assert [s["id"] for s in Record(rec.state_dir).stops()] == [b]
+
+
+@pytest.mark.parametrize("text, why", [
+    ("", "needs text"), (" \t ", "needs text"), (None, "needs text"),
+    ("Round-number\nstop cascades", "must be one line"), ("Round-number\rstop cascades", "must be one line"),
+    ("Round-number stop cascades", "must be one line"),
+    ("x" * 201, "at most 200 characters, got 201")])
+def test_a_stop_item_is_one_line_of_at_most_200_characters(rec, text, why):
+    with pytest.raises(ValueError, match=why):
+        rec.add_stop(text)
+    assert rec.stops() == []
+    assert rec.add_stop(" " + "x" * 200 + " \n") == 1              # the limit counts the stripped text
+    assert rec.stops()[0]["text"] == "x" * 200
+
+
+def test_only_an_item_in_force_can_be_removed(rec):
+    a = rec.add_stop("Round-number stop cascades")
+    with pytest.raises(ValueError, match="there is no stop #9"):
+        rec.remove_stop(9)
+    rec.remove_stop(a)
+    first = Record(rec.state_dir)._get(stops, stops.c.id, a)["removed_at"]
+    with pytest.raises(ValueError, match=f"stop #{a} was already removed"):
+        rec.remove_stop(a)
+    assert Record(rec.state_dir)._get(stops, stops.c.id, a)["removed_at"] == first     # its time stays
+
+
+def test_an_old_record_gets_the_stops_table_and_keeps_its_ideas(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    c = sqlite3.connect(state / "record.db")
+    c.execute(OLD_IDEAS)
+    c.execute("INSERT INTO ideas (title, origin, status, created_at) VALUES ('Old', 'seed', 'open', "
+              "'2026-11-01 00:00:00')")
+    c.commit()
+    c.close()
+    rec = Record(state)
+    assert rec.idea(1)["title"] == "Old" and rec.stops() == []
+    rec.add_stop("Round-number stop cascades")
+    assert [s["text"] for s in Record(state).stops()] == ["Round-number stop cascades"]
+
+
+# -- the referee's columns (referee-and-human-stops spec): new columns on existing tables, so the column migration
+
+# The research table as record.db first had it (2026-11-01): no referee column.
+OLD_RESEARCH = """CREATE TABLE research (
+    id INTEGER NOT NULL, session_id INTEGER, at DATETIME NOT NULL, trials_used INTEGER, reply JSON, added JSON,
+    tokens_in INTEGER, tokens_out INTEGER, outcome VARCHAR(64), PRIMARY KEY (id),
+    FOREIGN KEY(session_id) REFERENCES sessions (id))"""
+
+
+def _columns(state, table) -> list[str]:
+    c = sqlite3.connect(state / "record.db")
+    try:
+        return [row[1] for row in c.execute(f"PRAGMA table_info({table})")]
+    finally:
+        c.close()
+
+
+def test_an_old_record_gets_the_referee_columns_once_and_keeps_its_rows(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    c = sqlite3.connect(state / "record.db")
+    c.execute(OLD_IDEAS)
+    c.execute(OLD_RESEARCH)
+    c.execute("INSERT INTO ideas (title, origin, status, created_at) VALUES ('Old', 'seed', 'open', "
+              "'2026-11-01 00:00:00')")
+    c.execute("INSERT INTO research (at, trials_used, reply, added, outcome) VALUES ('2026-11-01 00:00:00', 5, "
+              "'{\"stop\": [\"x\"]}', '[1]', 'ok')")
+    c.commit()
+    c.close()
+    rec = Record(state)
+    assert rec.idea(1)["title"] == "Old" and rec.idea(1)["web_reviewed"] is False
+    old = rec.last_research()
+    assert (old["reply"], old["added"], old["outcome"], old["referee"]) == ({"stop": ["x"]}, [1], "ok", None)
+    rec.update_research(old["id"], referee={"verdicts": [{"title": "Old", "decision": "accept"}]})
+    again = Record(state)                       # the migration is idempotent
+    assert _columns(state, "ideas").count("web_reviewed") == 1 and _columns(state, "research").count("referee") == 1
+    assert again.last_research()["referee"] == {"verdicts": [{"title": "Old", "decision": "accept"}]}
+    assert again.idea(1)["web_reviewed"] is False
+
+
+def test_an_idea_is_not_web_reviewed_unless_it_is_added_so(rec):
+    assert rec.add_seed([{"id": 10, "title": "S", "card": {}, "origin": "seed", "timeframe": "4h",
+                          "status": "open"}], [])
+    assert rec.idea(10)["web_reviewed"] is False
+    a, b = rec.add_ideas([{"title": "A", "card": {}, "origin": "research", "timeframe": "1h"},
+                          {"title": "B", "card": {}, "origin": "research", "timeframe": "1h", "web_reviewed": True}])
+    assert (rec.idea(a)["web_reviewed"], rec.idea(b)["web_reviewed"]) == (False, True)
+
+
+def test_a_research_row_has_no_referee_until_one_is_written(rec):
+    rid = rec.add_research(session_id=None, trials_used=5, outcome="pending")
+    assert rec.last_research()["referee"] is None
+    rec.update_research(rid, referee={"error": "model_call"})
+    assert rec.last_research()["referee"] == {"error": "model_call"}
+
+
+def test_every_rounds_referee_report_comes_back_in_round_order(rec):
+    """R-RF8: the loop reads the referee's rejections from them. A round with none written gives None."""
+    a = rec.add_research(session_id=None, trials_used=0, outcome="ok", referee={"web": True, "verdicts": []})
+    rec.add_research(session_id=None, trials_used=1, outcome="ok")
+    c = rec.add_research(session_id=None, trials_used=2, outcome="pending")
+    rec.update_research(c, referee=None)
+    rec.update_research(a, referee={"web": False, "error": "model_call"})
+    rec.add_research(session_id=None, trials_used=3, outcome="ok", referee=[1])
+    assert rec.referee_reports() == [{"web": False, "error": "model_call"}, None, None, [1]]

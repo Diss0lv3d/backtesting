@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
 
 from perp_lab.dsr import sharpe_bar
-from perp_lab.proposer import contract, prompt, settings
+from perp_lab.proposer import context, contract, prompt, settings
 from perp_lab.proposer.record import Record, ideas
 from tests.test_store import cfg  # noqa: F401  (a temp config and store)
 
@@ -254,6 +254,28 @@ def test_in_a_proposals_prompt_the_stop_list_gives_way_to_the_humans_request():
     assert HUMAN_FIRST not in prompt.stop_section(["Exit-only changes"])      # a research round's: no request
 
 
+HUMAN_STOP_HEADING = "Directions the human has ruled out:"
+
+
+def test_the_humans_stop_section_is_its_heading_and_one_line_per_item():
+    assert prompt.human_stop_section([]) == ""
+    assert prompt.human_stop_section(["Round-number stop cascades", "High-volume\nreturn  premia "]) == \
+        f"{HUMAN_STOP_HEADING}\n- Round-number stop cascades\n- High-volume return premia\n"
+    assert HUMAN_FIRST not in prompt.human_stop_section(["Round-number stop cascades"])
+
+
+HUMANS = ("The directions the human has ruled out, when listed above, are the human's: not yours to revise, and "
+          "your stop list must not restate them.")
+
+
+def test_every_research_round_is_told_the_humans_directions_are_not_its_to_revise_or_restate(cfg):
+    pc = settings.load(cfg)
+    for revising in (False, True):
+        for capped in (False, True):
+            text = prompt.research_instruction(pc, revising=revising, capped=capped)
+            assert HUMANS in " ".join(text.split()), (revising, capped)
+
+
 def test_a_stop_item_names_a_direction_never_an_open_idea(cfg):
     pc = settings.load(cfg)
     for text in (prompt.research_instruction(pc), prompt.research_instruction(pc, revising=True)):
@@ -320,3 +342,148 @@ def test_a_research_fixup_asks_for_a_corrected_note():
                                   "describes.")
     assert prompt.fixup("P", {}, ["e"]).rstrip().endswith("Return a corrected proposal: one JSON object, as the "
                                                           "reply contract describes.")
+
+
+# -- the referee (referee-and-human-stops spec, "The referee")
+def _note(*titles):
+    return contract.parse_research({"ideas": [{"title": t, "mechanism": f"{t}: who pays", "why_it_persists": "w",
+                                               "signal": "s", "trades_per_coin_per_year": 12,
+                                               "likely_failure": "f", "columns": ["close", "funding_last"],
+                                               "timeframe": "1h", "builds_on": f"{t} builds on the fades"}
+                                              for t in titles], "stop": ["x"], "summary": "SUMMARY"},
+                                   ("1h", "4h"), 3)
+
+
+def test_the_cards_under_review_are_the_notes_cards_as_written_in_order_with_builds_on():
+    n = _note("Basis squeeze", "Carry unwind")
+    text = prompt.note_cards(n)
+    assert text.startswith(prompt.CARDS_HEADING + "\n\n") and text.endswith("\n")
+    for k, idea in enumerate(n.ideas, 1):
+        written = {**asdict(idea), "columns": list(idea.columns)}
+        assert f"### Card {k}\n\n" + prompt.card_text(written) in text
+    assert text.index("### Card 1") < text.index("Basis squeeze") < text.index("### Card 2") < \
+        text.index("Carry unwind")
+    assert "Basis squeeze builds on the fades" in text and '"builds_on"' in text
+    # the cards only: never the round's summary or stop list
+    assert "SUMMARY" not in text and not DATE.search(text)
+
+
+REFEREE_CHECKS = (
+    "skeptical referee", "accept", "revise", "reject",
+    "a near-copy of a judged plugin's mechanism", "a sign flip of a closed idea",
+    "a filter added to a closed idea's entry", "a restatement of an open idea",
+    "an edge that would come from its exit rather than its entry", "the directions the human has ruled out",
+    "round-trip cost", "bar columns a plugin may read",
+    "Revise only to correct a claim, sharpen the rule, neutralise the exit or fix the timeframe",
+    "a different idea is a reject", "no numbers from the record", "one verdict per card, in the cards' order",
+    "A revised card keeps its own title or takes one no idea in the record and no other card in this report uses.",
+    "not the one under \"Your reply\"")
+
+
+def test_a_web_referee_is_told_its_checks_its_hosts_and_never_to_look_for_market_data(cfg):
+    pc = settings.load(cfg)
+    assert pc.research_referee_web
+    text = prompt.referee_instruction(pc)
+    assert text == prompt.referee_instruction(pc, web=True)
+    described = contract.describe_referee(pc.timeframes, pc.research_max_ideas)
+    assert text.endswith(described)
+    words = " ".join(text[: -len(described)].split())
+    for s in (*REFEREE_CHECKS, "use the allowed academic sources to find published evidence for or against it",
+              "the papers it cites exist and say what it claims",
+              "You may fetch only from these hosts: " + ", ".join(pc.referee_domains),
+              "Never look for prices, charts or market news",
+              "the URLs you read on those hosts that the verdict relies on", SOURCES_BEFORE, BOUNDS):
+        assert s in words, s
+    assert "no web access" not in words
+    # the lab's holdout start and the day before it, from the config: no other date
+    assert set(DATE.findall(text)) == {"2026-07-01", "2026-06-30"}
+    assert re.findall(r"\d{8,}", text) == ["199101010000", "202606302359"]
+
+
+ONE_TOOL = "In this review, unlike a proposal, you have one tool: WebFetch, limited to the hosts below."
+
+
+def test_a_web_referee_is_told_it_has_one_tool_where_the_static_context_says_none(cfg):
+    """M2: the system prompt is every call's static context, which says "You have no tools."; the referee's
+    instruction says what holds for its review, just before the hosts."""
+    pc = settings.load(cfg)
+    assert "You have no tools." in context.static_context(cfg, pc)
+    words = " ".join(prompt.referee_instruction(pc, web=True).split())
+    assert f"{ONE_TOOL} You may fetch only from these hosts: {', '.join(pc.referee_domains)};" in words
+    assert ONE_TOOL not in " ".join(prompt.referee_instruction(pc, web=False).split())
+
+
+def test_a_referee_without_the_web_is_told_its_sources_stay_empty(cfg):
+    pc = replace(settings.load(cfg), research_referee_web=False)
+    text = prompt.referee_instruction(pc)
+    assert text == prompt.referee_instruction(settings.load(cfg), web=False)
+    described = contract.describe_referee(pc.timeframes, pc.research_max_ideas)
+    assert text.endswith(described)
+    words = " ".join(text[: -len(described)].split())
+    for s in (*REFEREE_CHECKS, "You have no web access in this review, so every verdict's sources stay empty"):
+        assert s in words, s
+    assert "fetch" not in words and not any(d in text for d in pc.referee_domains)
+    assert not DATE.search(text)                          # no sources, so no date for them
+
+
+SOURCES_BEFORE = ("Cite only sources published before 2026-07-01, and disregard any published on or after that "
+                  "date.")
+# M3: the searches themselves end the day before the holdout, so a later paper doesn't come back to be read. arXiv's
+# API refuses an open range ([* TO ...]: an error entry, checked 2026-11-02), so its range starts before arXiv did.
+BOUNDS = ("Bound every search to papers from before that date: Crossref with filter=until-pub-date:2026-06-30, "
+          "Semantic Scholar with publicationDateOrYear=:2026-06-30, arXiv with submittedDate:[199101010000 TO "
+          "202606302359] joined to its search_query by AND.")
+
+
+def test_the_referees_sources_end_at_the_configured_holdout_start(cfg):
+    """R-RF7: a paper from the holdout period may discuss it; the web_reviewed mark stays the safeguard."""
+    pc = replace(settings.load(cfg), holdout_start=datetime(2026, 9, 1).date())
+    words = " ".join(prompt.referee_instruction(pc).split())
+    assert SOURCES_BEFORE.replace("2026-07-01", "2026-09-01") in words and "2026-07-01" not in words
+
+
+@pytest.mark.parametrize("start, last", [("2026-09-01", "2026-08-31"), ("2027-01-01", "2026-12-31"),
+                                         ("2028-03-01", "2028-02-29")])
+def test_the_referees_searches_end_the_day_before_the_configured_holdout_start(cfg, start, last):
+    pc = replace(settings.load(cfg), holdout_start=datetime.fromisoformat(start).date())
+    words = " ".join(prompt.referee_instruction(pc).split())
+    assert BOUNDS.replace("2026-06-30", last).replace("20260630", last.replace("-", "")) in words
+    assert set(DATE.findall(words)) == {start, last}
+
+
+def test_the_referee_instruction_follows_the_configured_hosts_and_limit(cfg):
+    pc = replace(settings.load(cfg), referee_domains=("arxiv.org", "www.nber.org"), research_max_ideas=2)
+    text = prompt.referee_instruction(pc)
+    assert "You may fetch only from these hosts: arxiv.org, www.nber.org;" in " ".join(text.split())
+    assert "ssrn" not in text and text.endswith(contract.describe_referee(pc.timeframes, 2))
+
+
+def test_a_referee_fixup_asks_for_a_corrected_report():
+    text = prompt.fixup("THE ROUND'S PROMPT", {"verdicts": 1}, ["verdicts: must be an array"], what="referee report")
+    assert text.rstrip().endswith("Return a corrected referee report: one JSON object, as the reply contract "
+                                  "describes.")
+
+
+# R-RF8: rejected cards don't come back
+REJECTED_HEADING = "Cards the referee rejected (do not propose them again):"
+
+
+def test_the_rejected_section_is_its_heading_and_one_line_per_title():
+    assert prompt.rejected_section([]) == ""
+    assert prompt.rejected_section(["Round-number stop cascade", "High-volume\nreturn  premium "]) == \
+        f"{REJECTED_HEADING}\n- Round-number stop cascade\n- High-volume return premium\n"
+
+
+REJECTED_NOTE = ("The cards listed above as rejected by the referee were reviewed and turned down: do not propose "
+                 "them again, under their titles or new ones.")
+
+
+def test_a_research_round_with_rejected_cards_is_told_not_to_propose_them_again(cfg):
+    pc = settings.load(cfg)
+    for revising in (False, True):
+        for capped in (False, True):
+            plain = prompt.research_instruction(pc, revising=revising, capped=capped)
+            told = prompt.research_instruction(pc, revising=revising, capped=capped, rejected=True)
+            assert REJECTED_NOTE in " ".join(told.split()) and REJECTED_NOTE not in " ".join(plain.split())
+            assert told.replace(prompt.REJECTED_NOTE + "\n\n", "", 1) == plain
+            assert told.endswith(contract.describe_research(pc.timeframes, pc.research_max_ideas))

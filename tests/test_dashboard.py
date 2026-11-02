@@ -1,8 +1,12 @@
 """Every dashboard page renders against a populated store without exceptions."""
 
+import html
+import re
+
 import pytest
 import streamlit as st
 import yaml
+from markdown_it import MarkdownIt
 from streamlit.testing.v1 import AppTest
 
 from perp_lab.judge import budget
@@ -154,6 +158,23 @@ def _ideas_at():
     at.run()
     at.sidebar.radio(key="page").set_value("Ideas").run()
     return at
+
+
+# AppTest gives an element's markdown source; CommonMark, which Streamlit's markdown builds on, says what it shows.
+_MD = MarkdownIt("commonmark")
+
+
+def _tokens(src: str) -> list:
+    return [t for b in _MD.parse(src) for t in [b, *(b.children or [])]]
+
+
+def _shown(src: str) -> str:
+    """The text a markdown source shows: rendered, its tags dropped."""
+    return html.unescape(re.sub(r"<[^>]+>", "", _MD.render(src))).strip()
+
+
+def _hrefs(src: str) -> list[str]:
+    return [t.attrGet("href") for t in _tokens(src) if t.type == "link_open"]
 
 
 def test_ideas_page_without_a_record_says_so_and_creates_nothing(populated):
@@ -388,7 +409,7 @@ def test_try_next_is_offered_only_for_an_idea_a_proposal_could_work_on(populated
     assert not at.exception, [e.message for e in at.exception]
     keys = {b.key for b in at.button}
     assert f"try_next_{untested}" not in keys and f"try_next_{portable}" in keys
-    assert any(c.value.startswith(f"Try next: no proposal can work on idea #{untested} (LCE untested) now")
+    assert any(_shown(c.value).startswith(f"Try next: no proposal can work on idea #{untested} (LCE untested) now")
                for c in at.caption)
 
 
@@ -407,7 +428,7 @@ def test_ideas_page_shows_research_ideas_tagged_and_the_latest_research_notes(po
     assert not at.exception, [e.message for e in at.exception]
     assert any(c.value == f"idea {i} · research · 4h · open" for c in at.caption)
     (notes,) = [e for e in at.expander if e.label == "Research notes"]
-    text = " ".join(m.value for m in notes.markdown)
+    text = " ".join(_shown(m.value) for m in notes.markdown)
     assert "ok" in text and "5 trials" in text and "UTC" in text
     assert "Funding ideas look thin." in text
     assert "fading wicks on 5m" in text and "plain momentum" in text
@@ -454,7 +475,7 @@ def test_a_round_the_running_session_has_under_way_shows_as_under_way(populated)
     assert _notes_head(_ideas_at()).endswith("· error: interrupted · at 5 trials")      # stopped: cut short
 
 
-def test_with_research_off_the_research_notes_say_no_stop_list_is_in_force(populated):
+def test_with_research_off_the_research_notes_say_the_research_stop_list_is_not_in_force(populated):
     raw = yaml.safe_load(populated.path.read_text())
     raw["proposer"]["research_every"] = 0
     populated.path.write_text(yaml.safe_dump(raw))
@@ -462,8 +483,8 @@ def test_with_research_off_the_research_notes_say_no_stop_list_is_in_force(popul
     at = _ideas_at()
     assert not at.exception, [e.message for e in at.exception]
     (notes,) = [e for e in at.expander if e.label == "Research notes"]
-    text = " ".join(m.value for m in notes.markdown)
-    assert "research is off: no stop list is in force" in text.lower()
+    text = " ".join(_shown(m.value) for m in notes.markdown)
+    assert "research is off: the research step's stop list is not in force" in text.lower()
     assert "fading wicks on 5m" not in text and "plain momentum" not in text
     assert "Funding ideas look thin." in text                  # the round's summary is still the human's to read
 
@@ -497,3 +518,282 @@ def test_research_notes_show_the_stop_list_in_force_not_a_refused_rounds(populat
     text = " ".join(m.value for m in notes.markdown)
     assert "invalid" in text and "in force line" in text and "in force" in text.lower()
     assert "refused line" not in text and "bad" not in text
+
+
+# ---------------------------------------------------------------- the referee's verdicts
+
+ARXIV = "https://arxiv.org/abs/1707.06221"
+ARXIV_2 = "https://export.arxiv.org/abs/2501.01234"
+GECKO = "https://api.coingecko.com/api/v3/coins/bitcoin"
+GECKO_SHOWN = "https[:]//api.coingecko.com/api/v3/coins/bitcoin"       # off the allowlist: shown, never linked
+
+
+def _notes(at):
+    (notes,) = [e for e in at.expander if e.label == "Research notes"]
+    return [m.value for m in notes.markdown], [c.value for c in notes.caption]
+
+
+def _refereed(r, referee, titles=("Basis squeeze", "Carry unwind", "Round-number stops"), added=None):
+    reply = {"ideas": [{"title": t, "builds_on": "b"} for t in titles], "stop": [], "summary": "s"}
+    return r.add_research(session_id=r.start_session(model="m"), trials_used=5, reply=reply,
+                          added=[] if added is None else added, tokens_in=1, tokens_out=1, outcome="ok",
+                          referee=referee)
+
+
+def test_research_notes_list_each_cards_verdict_with_its_sources_and_the_idea_it_became(populated):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    j = r.add_idea("Carry unwind, entry only", {"mechanism": "m"}, "research", "4h")
+    for k in (i, j):
+        r.set_idea(k, web_reviewed=True)
+    _refereed(r, {"web": True, "fetches": [ARXIV, GECKO, ARXIV_2], "denied": [GECKO], "verdicts": [
+        {"title": "Basis squeeze", "decision": "accept", "reason": "Consistent with the basis literature.",
+         "sources": [ARXIV]},
+        {"title": "Carry unwind", "decision": "revise", "reason": "Its edge came from the exit.", "sources": []},
+        {"title": "Round-number stops", "decision": "reject", "reason": "Published evidence finds no effect.",
+         "sources": [ARXIV_2]}]}, added=[i, j])
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    lines, captions = _notes(at)
+    shown = {_shown(x): x for x in lines}
+    assert "Referee · 3 cards: 1 accepted, 1 revised, 1 rejected · with academic web access" in shown
+    accepted = f"Basis squeeze: accepted as #{i} · Consistent with the basis literature. · sources: {ARXIV}"
+    revised = f"Carry unwind: revised into #{j} Carry unwind, entry only · Its edge came from the exit."
+    rejected = f"Round-number stops: rejected · Published evidence finds no effect. · sources: {ARXIV_2}"
+    assert {accepted, revised, rejected} <= set(shown)
+    assert (_hrefs(shown[accepted]), _hrefs(shown[revised]), _hrefs(shown[rejected])) == ([ARXIV], [], [ARXIV_2])
+    # the fetches and denials, compact: a denied host is shown as text, never linked
+    (fetched,) = [c for c in captions if c.startswith("fetches")]
+    assert _shown(fetched) == \
+        f"fetches (3): {ARXIV}, {GECKO_SHOWN}, {ARXIV_2} · denied by the CLI (1): {GECKO_SHOWN}"
+    assert _hrefs(fetched) == [ARXIV, ARXIV_2]
+    assert not any("unreadable" in c for c in captions)
+    metas = [c.value for c in at.caption]
+    assert f"idea {i} · research · 4h · open · web-reviewed" in metas
+    assert f"idea {j} · research · 4h · open · web-reviewed" in metas
+
+
+def test_research_notes_say_when_the_referee_failed_and_no_card_was_added(populated):
+    r = _record(populated)
+    _refereed(r, {"web": True, "fetches": [], "denied": [], "error": "fence: off-list fetch: api.coingecko.com"})
+    lines, _ = _notes(_ideas_at())
+    assert ("Referee failed · with academic web access: fence: off-list fetch: api.coingecko.com. "
+            "No card from this round was added.") in [_shown(x) for x in lines]
+    assert "**Ideas added**" not in lines
+
+
+def test_a_tool_less_referee_says_so_and_links_no_source_off_the_allowlist(populated):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    _refereed(r, {"web": False, "fetches": [], "denied": [], "verdicts": [
+        {"title": "Basis squeeze", "decision": "accept", "reason": "r", "sources": [GECKO, "javascript:alert(1)"]}]},
+        titles=("Basis squeeze",), added=[i])
+    at = _ideas_at()
+    lines, captions = _notes(at)
+    shown = {_shown(x): x for x in lines}
+    assert "Referee · 1 card: 1 accepted, 0 revised, 0 rejected · without web access" in shown
+    line = shown[f"Basis squeeze: accepted as #{i} · r · sources: {GECKO_SHOWN}, javascript:alert(1)"]
+    assert _hrefs(line) == []
+    assert not [c for c in captions if c.startswith("fetches")]
+    assert f"idea {i} · research · 4h · open" in [c.value for c in at.caption]      # no web, no tag
+
+
+@pytest.mark.parametrize("referee", [
+    "x", 5, [], {}, {"verdicts": "x", "fetches": "abc", "denied": 3},
+    {"web": "yes", "verdicts": [None, 7, {"decision": 3}, {"title": ["t"], "decision": "accept", "reason": None,
+                                                          "sources": "https://arxiv.org/abs/1"}]},
+    {"error": 7, "fetches": [None, 3]}, {"verdicts": [{"title": "a", "decision": "accept"}], "error": None},
+])
+def test_research_notes_survive_a_malformed_referee_value(populated, referee):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    _refereed(r, referee, added=[i])
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    lines, captions = _notes(at)
+    assert not any("unreadable" in c for c in captions)            # guarded, not caught
+    assert f"- #{i} Basis squeeze · builds on: b" in lines           # the rest of the notes is there
+
+
+def test_verdicts_that_do_not_pair_with_the_ideas_added_name_no_idea(populated):
+    r = _record(populated)
+    i = r.add_idea("Basis squeeze", {"mechanism": "m"}, "research", "4h")
+    _refereed(r, {"web": True, "fetches": [], "denied": [], "verdicts": [
+        {"title": "Basis squeeze", "decision": "accept", "reason": "r", "sources": []},
+        {"title": "Carry unwind", "decision": "accept", "reason": "q", "sources": []}]}, added=[i])
+    shown = [_shown(x) for x in _notes(_ideas_at())[0]]
+    assert "Basis squeeze: accepted · r" in shown and "Carry unwind: accepted · q" in shown
+
+
+# What a page the referee read could have put in its text, and so in anything a model wrote: an image the viewer's
+# browser would fetch, a link, HTML, bare URLs, www. hosts and an email GFM would link (Streamlit's frontend links
+# them in the text as shown, after the escapes are read: a real browser showed it), and Streamlit's LaTeX and colour
+# directives. As shown: every URL, www. host and email broken, the rest as written.
+EVIL = ("![](https://evil.example/x) [a](https://evil.example) <img src=x> https://evil.example www.evil.example "
+        "WWW.Evil.example x@evil.example mailto:y@evil.example $x$ :red[r] *b* `c`")
+EVIL_SHOWN = ("![](https[:]//evil.example/x) [a](https[:]//evil.example) <img src=x> https[:]//evil.example "
+              "www[.]evil.example WWW[.]Evil.example x[@]evil.example mailto:y[@]evil.example $x$ :red[r] *b* `c`")
+OFF_LIST = ("https://evil.example/s", "https[:]//evil.example/s")     # a source off the allowlist, and as shown
+FETCHED = ("https://evil.example/f", "https[:]//evil.example/f")      # a fetch off it, denied
+# GFM's autolink literals: a URL, a www. host, an email address (mdast-util-gfm-autolink-literal's patterns)
+_AUTOLINK = re.compile(r"https?://|www(?=\.)|[-.\w+]+@[-\w]+(?:\.[-\w]+)+", re.I)
+
+
+def _unlinked(src: str) -> str:
+    """The text a source shows outside its links and code: what GFM would scan for a link to make."""
+    out, depth = [], 0
+    for t in _tokens(src):
+        depth += {"link_open": 1, "link_close": -1}.get(t.type, 0)
+        if depth == 0 and t.type == "text":
+            out.append(t.content)
+        elif t.type in ("softbreak", "hardbreak"):
+            out.append("\n")
+    return "".join(out)
+
+
+def _no_markup(texts: list[str]) -> None:
+    """No image, HTML or link off the allowlist anywhere in these sources, and no URL, www. host or email in their
+    shown text outside a link, so no autolink can form. The code's own emphasis and code spans may be there, so the
+    shown text is what says the model's `*b*` and `c` stayed literal."""
+    marks = [t for x in texts for t in _tokens(x)]
+    assert not [t for t in marks if t.type in ("image", "html_inline", "html_block")]
+    assert {t.attrGet("href") for t in marks if t.type == "link_open"} <= {ARXIV}
+    assert not [x for x in texts if "$x$" in x or ":red[" in x]
+    assert not [x for x in texts if _AUTOLINK.search(_unlinked(x))]
+
+
+def test_model_written_text_shows_as_written_and_never_as_markup(populated):
+    r = _seeded(populated)
+    seed = r.add_idea(f"LCE {EVIL}", {}, "seed", "5m")              # no proposal can work on it: "Try next: ..."
+    i = r.add_idea(f"Basis {EVIL}", {"mechanism": EVIL}, "research", "4h")
+    r.add_proposal(idea_id=i, plugin="px_evil", timeframe="4h", kind="new", origin="proposer", state="broken",
+                   broken_reason=EVIL)
+    summary = f"{EVIL}\n# heading\n- item\n    code"
+    reply = {"ideas": [{"title": f"Basis {EVIL}", "builds_on": EVIL}], "stop": [EVIL], "summary": summary}
+    r.add_research(session_id=r.start_session(model="m"), trials_used=5, reply=reply, added=[i], tokens_in=1,
+                   tokens_out=1, outcome="ok", referee={
+                       "web": True, "fetches": [ARXIV, FETCHED[0]], "denied": [FETCHED[0]], "verdicts": [
+                           {"title": EVIL, "decision": "accept", "reason": EVIL, "sources": [ARXIV, OFF_LIST[0]]}]})
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    texts = [e.value for e in [*at.markdown, *at.caption, *at.error, *at.warning]]
+    _no_markup(texts)
+    shown = [_shown(x) for x in texts]
+    E = EVIL_SHOWN
+    for line in (f"Basis {E}", f"mechanism: {E}", f"Summary: {E}\n# heading\n- item\ncode", E,
+                 f"#{i} Basis {E} · builds on: {E}",
+                 f"{E}: accepted as #{i} · {E} · sources: {ARXIV}, {OFF_LIST[1]}",
+                 f"fetches (2): {ARXIV}, {FETCHED[1]} · denied by the CLI (1): {FETCHED[1]}"):
+        assert line in shown
+    assert any(x.startswith(f"Try next: no proposal can work on idea #{seed} (LCE {E}) now") for x in shown)
+    assert any(x.endswith(f"px_evil @ 4h · Basis {E} · {E}") for x in shown)        # the broken attempt
+    verdict = next(x for x in texts if _shown(x).startswith(f"{E}: accepted"))
+    assert _hrefs(verdict) == [ARXIV]                       # the allowlisted source is still a link, the other not
+
+
+def test_a_referee_error_shows_as_written(populated):
+    _refereed(_record(populated), {"web": True, "fetches": [], "denied": [], "error": f"invalid: {EVIL}"})
+    lines, _ = _notes(_ideas_at())
+    _no_markup(lines)
+    assert (f"Referee failed · with academic web access: invalid: {EVIL_SHOWN}. No card from this round was added."
+            in [_shown(x) for x in lines])
+
+
+def test_a_promoted_web_reviewed_ideas_review_packet_carries_the_caveat(populated):
+    from dashboard.ideas import WEB_REVIEWED_CAVEAT
+    r = _record(populated)
+    assert WEB_REVIEWED_CAVEAT not in [w.value for w in _ideas_at().warning]
+    promoted = next(i["id"] for i in r.ideas() if i["title"] == "promoted one")
+    r.set_idea(promoted, web_reviewed=True)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert WEB_REVIEWED_CAVEAT == ("A web-informed referee reviewed this card: academic papers published after the "
+                                   "model's training cutoff may discuss the holdout period, so treat its exam as "
+                                   "weaker evidence.")
+    assert [w.value for w in at.warning].count(WEB_REVIEWED_CAVEAT) == 1    # the packet's, not every card's
+    assert f"idea {promoted} · proposer · 4h · open · web-reviewed" in [c.value for c in at.caption]
+
+
+# ---------------------------------------------------------------- the human's stop list on the Ideas page
+
+def _stop_buttons(at, label):
+    return [b for b in at.button if b.label == label]
+
+
+def test_the_stop_list_adds_an_item_and_shows_it_with_the_warning(populated):
+    from perp_lab.proposer import human
+    r = _record(populated)                       # unseeded: a stop item adds no idea, so it needs no seed
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert any(e.label == "Your stop list" for e in at.expander)
+    assert human.WARNING in [w.value for w in at.warning]
+    at.text_input(key="new_stop").input("  no funding-sign flips  ")
+    _stop_buttons(at, "Add")[0].click().run()
+    assert not at.exception, [e.message for e in at.exception]
+    assert [s["text"] for s in r.stops()] == ["no funding-sign flips"]
+    assert "#1 no funding-sign flips" in [_shown(m.value) for m in at.markdown]
+    assert "Stop #1 added" in [t.value for t in at.toast]
+    assert at.text_input(key="new_stop").value == ""
+
+
+def test_the_stop_list_refuses_what_the_record_refuses_and_adds_nothing(populated):
+    r = _record(populated)
+    at = _ideas_at()
+    at.text_input(key="new_stop").input("x" * 201)
+    _stop_buttons(at, "Add")[0].click().run()
+    assert any("at most 200 characters" in c.value for c in at.caption)
+    at.text_input(key="new_stop").input("   ")
+    _stop_buttons(at, "Add")[0].click().run()
+    assert "a stop item needs text" in [c.value for c in at.caption]
+    assert r.stops() == [] and not at.exception
+
+
+def test_the_stop_list_removes_an_item_and_reports_a_stale_one(populated):
+    r = _record(populated)
+    a, b = r.add_stop("first"), r.add_stop("second")
+    at = _ideas_at()
+    assert {"#1 first", "#2 second"} <= {m.value for m in at.markdown}
+    r.remove_stop(b)                             # removed elsewhere (the CLI) while the page is open
+    _stop_buttons(at, "Remove")[1].click().run()
+    assert f"stop #{b} was already removed" in [c.value for c in at.caption]
+    _stop_buttons(at, "Remove")[0].click().run()
+    assert r.stops() == [] and "Stop #1 removed" in [t.value for t in at.toast]
+    assert not at.exception
+
+
+def test_the_humans_stop_text_shows_as_written_and_never_as_markup(populated):
+    """M4: the human wrote it, but it is text the code didn't write, maybe pasted from what their own web research
+    read: shown as written, and linking nothing, as every such string on the page."""
+    r = _record(populated)
+    r.add_stop(EVIL)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    texts = [m.value for m in at.markdown if m.value.startswith("#1 ")]
+    _no_markup(texts)
+    assert [_shown(x) for x in texts] == [f"#1 {EVIL_SHOWN}"]
+
+
+def test_the_stop_list_is_absent_without_a_record_and_creates_nothing(populated):
+    at = _ideas_at()
+    assert not any(e.label == "Your stop list" for e in at.expander)
+    assert not (populated.path.parent / "no_proposer_state").exists()
+
+
+def test_a_stop_list_that_cannot_be_read_does_not_take_the_page_down(populated, monkeypatch):
+    from perp_lab.proposer.record import Record
+    _record(populated)
+
+    def boom(self):
+        raise RuntimeError("bad row")
+    monkeypatch.setattr(Record, "stops", boom)
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    assert "Stop list unreadable" in [c.value for c in at.caption]
+    assert "#### open one" in [m.value for m in at.markdown]          # the rest of the page is there
+
+
+def test_the_stop_list_absence_is_about_the_dir_the_page_reads(populated):
+    # positive control: the dir the absence test checks is the one the page reads, since a record made there shows it
+    assert not any(e.label == "Your stop list" for e in _ideas_at().expander)
+    _record(populated)
+    assert any(e.label == "Your stop list" for e in _ideas_at().expander)

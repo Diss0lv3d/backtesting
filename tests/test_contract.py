@@ -5,11 +5,13 @@ from __future__ import annotations
 import pytest
 
 from perp_lab.proposer.contract import (
-    BLOCK_FOR_KIND, FIELD_DOCS, ContractError, IdeaCard, Ports, Proposal, Refines, ResearchIdea, ResearchNote,
-    describe, describe_research, parse, parse_card, parse_research, research_schema, schema,
+    BLOCK_FOR_KIND, FIELD_DOCS, ONE_LINE, ContractError, IdeaCard, Ports, Proposal, RefereeReport, Refines,
+    ResearchIdea, ResearchNote, Verdict, describe, describe_referee, describe_research, parse, parse_card,
+    parse_referee, parse_research, referee_schema, research_schema, schema,
 )
 
 TFS = ("15m", "1h", "4h")
+REFEREE_CLASSES = ("Verdict.", "RefereeReport.")
 CARD = {
     "title": "t", "mechanism": "m", "why_it_persists": "w", "signal": "s",
     "trades_per_coin_per_year": 12, "likely_failure": "f", "columns": ["close", "volume"],
@@ -36,7 +38,7 @@ def test_schema_and_description_come_from_the_same_fields():
     for n in names:
         assert n in text
     for key in FIELD_DOCS:
-        if not key.startswith("Research"):
+        if not key.startswith(("Research", *REFEREE_CLASSES)):
             assert FIELD_DOCS[key] in text
 
 
@@ -90,6 +92,7 @@ def test_the_schema_is_closed():
     assert "idea" not in s["required"]
     for sub in ("idea", "refines", "ports"):
         assert s["properties"][sub]["additionalProperties"] is False
+        assert s["properties"][sub]["type"] == "object"         # omitted when unused, never null
     assert s["properties"]["timeframe"]["enum"] == list(TFS)
     assert s["properties"]["kind"]["enum"] == ["new", "refinement", "port"]
     assert s["properties"]["idea"]["properties"]["columns"]["type"] == "array"
@@ -367,7 +370,205 @@ def test_the_proposal_contract_is_unchanged_by_the_research_one():
     """describe() still states only the proposal's fields: no research doc leaks into the proposal prompt."""
     text = describe(TFS)
     for key, doc in FIELD_DOCS.items():
-        if key.startswith("Research"):
+        if key.startswith(("Research", *REFEREE_CLASSES)):
             assert doc not in text, key
     assert "at most" not in text.replace(FIELD_DOCS["Proposal.hypothesis"], "").replace(
         FIELD_DOCS["Proposal.source"], "")
+
+
+# The referee's report: one verdict per research card, by the same machinery.
+
+VERDICT = {"title": "t", "decision": "accept", "reason": "a cost the move can pay at 4h", "sources": [],
+           "revised": None}
+REVISED = {**VERDICT, "decision": "revise", "reason": "the exit was the edge", "revised": {**IDEA, "timeframe": "1h"}}
+URL = "https://arxiv.org/abs/2101.00001"
+
+
+def report(*verdicts, **over):
+    out = {"verdicts": list(verdicts) if verdicts else [VERDICT], **over}
+    return {k: v for k, v in out.items() if v is not ...}
+
+
+def _walk(s):
+    if isinstance(s, dict):
+        yield s
+        for v in s.values():
+            yield from _walk(v)
+    elif isinstance(s, list):
+        for v in s:
+            yield from _walk(v)
+
+
+def test_the_referee_schema_and_description_come_from_the_same_fields():
+    text = describe_referee(TFS, MAX)
+    names = set(_names(referee_schema(TFS, MAX)))
+    assert {"verdicts", "title", "decision", "reason", "sources", "revised", "timeframe", "builds_on"} <= names
+    for n in names:
+        assert n in text
+    for key, doc in FIELD_DOCS.items():
+        if key.startswith(REFEREE_CLASSES):
+            assert doc in text, key
+    assert f"verdicts (array of objects, at most {MAX}; required)" in text
+    assert "  - decision (one of accept, revise, reject; required)" in text
+    assert "  - sources (array of strings, at most 5; required)" in text
+    assert "  - revised (object or null; required)" in text           # always present: a card, or null
+    assert "    - builds_on (string; required)" in text and "    - timeframe (one of 15m, 1h, 4h; required)" in text
+    assert "When decision is revise, revised is required; otherwise it is null." in text   # the rule code checks
+
+
+def test_the_referee_schema_has_no_combinator_anywhere():
+    """The API refuses oneOf, allOf or anyOf at an input_schema's top level (R42). `revised` is nullable by a type
+    list rather than an anyOf, so the schema holds none at any depth."""
+    s = referee_schema(TFS, MAX)
+    assert set(s) == {"type", "properties", "required", "additionalProperties"}
+    assert not any({"oneOf", "allOf", "anyOf"} & set(d) for d in _walk(s))
+
+
+def test_the_referee_schema_is_closed_and_carries_the_limits():
+    jsonschema = pytest.importorskip("jsonschema")
+    s = referee_schema(TFS, 2)
+    jsonschema.Draft202012Validator.check_schema(s)
+    assert s["additionalProperties"] is False and s["required"] == ["verdicts"]
+    verdicts = s["properties"]["verdicts"]
+    assert (verdicts["type"], verdicts["maxItems"]) == ("array", 2)
+    item = verdicts["items"]
+    assert item["additionalProperties"] is False
+    assert item["required"] == ["title", "decision", "reason", "sources", "revised"]
+    p = item["properties"]
+    assert p["decision"]["enum"] == ["accept", "revise", "reject"]
+    assert (p["reason"]["maxLength"], p["reason"]["pattern"]) == (300, ONE_LINE)
+    assert (p["sources"]["maxItems"], p["sources"]["items"]["maxLength"], p["sources"]["items"]["pattern"]) == (
+        5, 500, ONE_LINE)
+    revised = p["revised"]
+    assert revised["type"] == ["object", "null"]
+    card = research_schema(TFS, 2)["properties"]["ideas"]["items"]       # a revised card is a research card
+    assert {k: v for k, v in revised.items() if k not in ("type", "description")} == {
+        k: v for k, v in card.items() if k != "type"}
+
+
+def test_parse_referee_accepts_a_report():
+    r = parse_referee(report(VERDICT, {**REVISED, "title": "u", "sources": [URL]},
+                             {**VERDICT, "title": "v", "decision": "reject"}), TFS, MAX)
+    assert isinstance(r, RefereeReport) and all(isinstance(v, Verdict) for v in r.verdicts)
+    assert [(v.title, v.decision) for v in r.verdicts] == [("t", "accept"), ("u", "revise"), ("v", "reject")]
+    assert r.verdicts[0].revised is None and r.verdicts[0].sources == ()
+    assert isinstance(r.verdicts[1].revised, ResearchIdea) and r.verdicts[1].sources == (URL,)
+    assert (r.verdicts[1].revised.timeframe, r.verdicts[1].revised.columns) == ("1h", ("close", "volume"))
+    assert parse_referee(report(verdicts=[]), TFS, MAX).verdicts == ()     # the count is check_report's
+
+
+def test_a_null_revised_differs_from_a_missing_one():
+    """`revised: ResearchIdea | None` with no default: always present, null or a card. Proposal's blocks, which
+    default to None, stay omitted-when-unused and refuse a null (test_an_explicit_null_block_is_refused)."""
+    assert parse_referee(report({**VERDICT, "revised": None}), TFS, MAX).verdicts[0].revised is None
+    with pytest.raises(ContractError) as e:
+        parse_referee(report({k: v for k, v in VERDICT.items() if k != "revised"}), TFS, MAX)
+    assert e.value.errors == ["verdicts[0].revised: required"]
+
+
+@pytest.mark.parametrize("over,error", [
+    ({"verdicts": [VERDICT] * 4}, "verdicts: 4 items, at most 3"),
+    ({"verdicts": VERDICT}, "verdicts: must be an array of objects"),
+    ({"verdicts": ...}, "verdicts: required"),
+    ({"extra": 1}, "extra: unknown field"),
+    ({"verdicts": [{**VERDICT, "decision": "maybe"}]},
+     "verdicts[0].decision: must be one of ['accept', 'revise', 'reject'], got 'maybe'"),
+    ({"verdicts": [{**VERDICT, "reason": "x" * 301}]}, "verdicts[0].reason: 301 characters, at most 300"),
+    ({"verdicts": [VERDICT, {**VERDICT, "reason": "a\nb"}]}, "verdicts[1].reason: must be one line"),
+    ({"verdicts": [{**VERDICT, "reason": ""}]}, "verdicts[0].reason: must be a non-empty string"),
+    ({"verdicts": [{**VERDICT, "title": ""}]}, "verdicts[0].title: must be a non-empty string"),
+    ({"verdicts": [{**VERDICT, "sources": [URL] * 6}]}, "verdicts[0].sources: 6 items, at most 5"),
+    ({"verdicts": [{**VERDICT, "sources": [URL, "a\nb"]}]}, "verdicts[0].sources[1]: must be one line"),
+    ({"verdicts": [{**VERDICT, "sources": ["x" * 501]}]}, "verdicts[0].sources[0]: 501 characters, at most 500"),
+    ({"verdicts": [{**VERDICT, "sources": URL}]}, "verdicts[0].sources: must be an array of non-empty strings"),
+    ({"verdicts": [{**VERDICT, "extra": 1}]}, "verdicts[0].extra: unknown field"),
+    ({"verdicts": [{**VERDICT, "revised": "card"}]}, "verdicts[0].revised: must be an object"),
+    ({"verdicts": [{**REVISED, "revised": {**IDEA, "timeframe": "5m"}}]},
+     "verdicts[0].revised.timeframe: must be one of ['15m', '1h', '4h'], got '5m'"),
+    ({"verdicts": [{**REVISED, "revised": {**IDEA, "builds_on": "a\nb"}}]},
+     "verdicts[0].revised.builds_on: must be one line"),
+    ({"verdicts": [{**REVISED, "revised": {**IDEA, "extra": 1}}]}, "verdicts[0].revised.extra: unknown field"),
+])
+def test_parse_referee_refuses_each_limit_with_a_clear_error(over, error):
+    with pytest.raises(ContractError) as e:
+        parse_referee(report(**over), TFS, MAX)
+    assert e.value.errors == [error]
+
+
+def test_parse_referee_takes_its_most_verdicts_from_the_caller_and_refuses_a_non_object():
+    assert len(parse_referee(report(*[VERDICT] * 4), TFS, 4).verdicts) == 4
+    with pytest.raises(ContractError, match="verdicts: 2 items, at most 1"):
+        parse_referee(report(VERDICT, VERDICT), TFS, 1)
+    with pytest.raises(ContractError):
+        parse_referee([], TFS, MAX)
+
+
+def test_revised_iff_revise_is_left_to_check_report():
+    """The schema can't say "revised exactly when revise" without a combinator, so the contract lets either
+    through and research.check_report refuses it, as a fix-up."""
+    r = parse_referee(report({**VERDICT, "decision": "revise"}, {**REVISED, "decision": "accept"}), TFS, MAX)
+    assert [(v.decision, v.revised is None) for v in r.verdicts] == [("revise", True), ("accept", False)]
+
+
+# Known, accepted disagreements as for the research note: a trailing newline on a one-line field.
+REFEREE_AGREEMENT = [
+    report(),
+    report(verdicts=[]),
+    report(*[VERDICT] * 3),
+    report(*[VERDICT] * 4),
+    report(REVISED),
+    report({**VERDICT, "sources": [URL] * 5}),
+    report({**VERDICT, "sources": [URL] * 6}),
+    report({**VERDICT, "sources": ["x" * 500]}),
+    report({**VERDICT, "sources": ["x" * 501]}),
+    report({**VERDICT, "sources": ["a\nb"]}),
+    report({**VERDICT, "sources": [""]}),
+    report({**VERDICT, "sources": [1]}),
+    report({**VERDICT, "reason": "x" * 300}),
+    report({**VERDICT, "reason": "x" * 301}),
+    report({**VERDICT, "reason": "a\rb"}),
+    report({**VERDICT, "reason": ""}),
+    report({**VERDICT, "decision": "maybe"}),
+    report({**VERDICT, "decision": None}),
+    report({**VERDICT, "title": ""}),
+    report({**VERDICT, "title": 3}),
+    report({k: v for k, v in VERDICT.items() if k != "revised"}),
+    report({k: v for k, v in VERDICT.items() if k != "sources"}),
+    report({**VERDICT, "revised": "card"}),
+    report({**VERDICT, "revised": []}),
+    report({**VERDICT, "decision": "revise"}),
+    report({**REVISED, "decision": "accept"}),
+    report({**REVISED, "revised": {**IDEA, "timeframe": "5m"}}),
+    report({**REVISED, "revised": {**IDEA, "extra": 1}}),
+    report({**REVISED, "revised": {k: v for k, v in IDEA.items() if k != "builds_on"}}),
+    report({**REVISED, "revised": {**IDEA, "trades_per_coin_per_year": True}}),
+    report({**VERDICT, "extra": 1}),
+    report(verdicts=VERDICT),
+    report(verdicts=["x"]),
+    report(verdicts=...),
+    report(extra=1),
+]
+
+
+@pytest.mark.parametrize("obj", REFEREE_AGREEMENT)
+def test_parse_referee_accepts_exactly_what_the_referee_schema_accepts(obj):
+    jsonschema = pytest.importorskip("jsonschema")
+    try:
+        jsonschema.validate(obj, referee_schema(TFS, MAX))
+        by_schema = True
+    except jsonschema.ValidationError:
+        by_schema = False
+    try:
+        parse_referee(obj, TFS, MAX)
+        by_parse = True
+    except ContractError:
+        by_parse = False
+    assert by_parse == by_schema, obj
+
+
+def test_the_research_contract_is_unchanged_by_the_referee_one():
+    text = describe_research(TFS, MAX)
+    for key, doc in FIELD_DOCS.items():
+        if key.startswith(REFEREE_CLASSES):
+            assert doc not in text, key
+    assert "null" not in text and "null" not in str(research_schema(TFS, MAX))

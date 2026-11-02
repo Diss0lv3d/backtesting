@@ -1,29 +1,63 @@
 import json
 import math
+import sqlite3
 import threading
 from functools import partial
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
+from sqlalchemy.dialects import sqlite as sqlite_dialect
+from sqlalchemy.schema import CreateTable
 from typer.testing import CliRunner
 
-from perp_lab.cli import app
+from perp_lab.cli import _web_reviewed, app
 from perp_lab.judge import budget
 from perp_lab.judge.exam import ExamResult
 from perp_lab.judge.budget import WithdrawRefused
 from perp_lab.judge.diagnostics import diagnostics
 from perp_lab.judge.judge import VERDICT_KEYS, attempt_exam, exam_pending, judge, verdict_path, withdraw
+from perp_lab.proposer import context
+from perp_lab.proposer.record import Record, proposals
+from perp_lab.proposer.research import WEB_REVIEWED_CAVEAT
 from perp_lab.sandbox import client
 from perp_lab.sandbox.errors import PluginError, SandboxUnavailable
 from perp_lab.store import db
 from perp_lab.validate import walkforward as wfm
-from tests.conftest import market_config
+from tests.conftest import REPO, market_config
 from tests.judge_fixtures import NOISE, STRONG, WIDE_TEXT, StubValidate, add_plugin, plugins  # noqa: F401
+from tests.test_record import OLD_IDEAS
 from tests.test_store import cfg  # noqa: F401
 
 HOLDOUT_DAYS = pd.date_range("2026-07-01", periods=200, freq="D", tz="UTC")
+REAL_PROPOSER = REPO / "proposer"   # from the main checkout, the user's real proposer state
+
+
+def _opened(database) -> Path:
+    """The file a SQLite open names, a `file:` URI or a path."""
+    s = str(database)
+    return Path(unquote(urlsplit(s).path) if s.startswith("file:") else s).resolve()
+
+
+@pytest.fixture(autouse=True)
+def _never_the_real_proposer_record(tmp_path, monkeypatch):
+    """`lab exam` reads the proposer's record (the web-reviewed mark) at context.ROOT / proposer.state_dir, and the
+    config these tests share says `proposer`: from the main checkout, the user's real record. Here context.ROOT is
+    tmp_path, so the state is tmp_path / "proposer". A guard checks it: every SQLite open in this module is
+    recorded, and a test that opened anything under the repo's proposer/ fails."""
+    monkeypatch.setattr(context, "ROOT", tmp_path)
+    opened = []
+    for mod in (sqlite3, sqlite3.dbapi2):           # SQLAlchemy's sqlite driver is sqlite3.dbapi2
+        def spy(database, *a, _connect=mod.connect, **kw):
+            opened.append(_opened(database))
+            return _connect(database, *a, **kw)
+        monkeypatch.setattr(mod, "connect", spy)
+    yield
+    real = [p for p in opened if p == REAL_PROPOSER or REAL_PROPOSER in p.parents]
+    assert not real, f"a test opened the real proposer state: {real}"
 
 
 def stub_run(mu, n_trades=30, seed=11, fail=False):
@@ -375,6 +409,103 @@ def test_cli_exam_prints_the_review_command(cfg, plugins):
     assert r.exit_code == 0
     assert f"donchian_atr @ 4h: awaiting review: lab exam --id {jid}" in r.output
     assert budget.reads_used(cfg) == 0
+
+
+def _proposer_record(cfg, tmp_path, jid, web_reviewed, held) -> Record:
+    """The proposer's record (tmp_path / "proposer": the config's state_dir under this module's context.ROOT), where
+    the judged plugin version is an idea's proposal. Unless `held` its connections are closed, as with no session
+    running, so WAL mode leaves no -wal or -shm file: each of `lab exam`'s two ways of reading it is used."""
+    j = db.get_judgement_by_id(cfg, jid)
+    rec = Record(tmp_path / "proposer")
+    idea = rec.add_idea("Refereed", {}, "research", j["timeframe"], web_reviewed=web_reviewed)
+    rec.add_proposal(seq=1, idea_id=idea, plugin=j["strategy"], timeframe=j["timeframe"], hash=j["strategy_hash"],
+                     state="judged", judge_exit=0, verdict={"decision": "promote"})
+    if not held:
+        rec.engine.dispose()
+    assert (tmp_path / "proposer" / "record.db-wal").exists() == held
+    return rec
+
+
+@pytest.mark.parametrize("held", [False, True], ids=["closed", "held-open"])
+@pytest.mark.parametrize("web_reviewed", [True, False])
+def test_cli_exam_gives_a_web_reviewed_ideas_promotion_its_caveat(cfg, plugins, tmp_path, web_reviewed, held):
+    """M8: the promotion of a web-reviewed idea's plugin is weaker evidence, as its review packet on the page says;
+    any other promotion's line is unchanged."""
+    jid = _proposer_promotion(cfg)
+    rec = _proposer_record(cfg, tmp_path, jid, web_reviewed, held)
+    r = CliRunner().invoke(app, ["exam", "--config", str(cfg.path)])
+    rec.engine.dispose()
+    assert r.exit_code == 0, r.output
+    want = ([f"donchian_atr @ 4h: awaiting review (web-reviewed): lab exam --id {jid}", f"  {WEB_REVIEWED_CAVEAT}"]
+            if web_reviewed else [f"donchian_atr @ 4h: awaiting review: lab exam --id {jid}"])
+    assert r.output.splitlines() == want
+    assert budget.reads_used(cfg) == 0
+
+
+
+@pytest.mark.parametrize("change", [{"claude_bin": None}, {"trials_per_day": "many"}, {"timeframes": 4}],
+                         ids=["a-key-missing", "not-a-number", "not-a-list"])
+def test_cli_exam_prints_its_lines_whatever_the_proposer_block_holds(cfg, plugins, tmp_path, change):
+    """The mark is a display nicety: a proposer block settings.load can't read (here a KeyError, a ValueError and a
+    TypeError, not its own refusal) must not take `lab exam` down after it examined, before it printed."""
+    jid = _proposer_promotion(cfg)
+    raw = yaml.safe_load(Path(cfg.path).read_text())
+    raw["proposer"] = {k: v for k, v in {**raw["proposer"], **change}.items() if v is not None}
+    path = tmp_path / "lab_bad_proposer.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    r = CliRunner().invoke(app, ["exam", "--config", str(path)])
+    assert r.exit_code == 0, (r.output, r.exception)
+    assert r.output.splitlines() == [f"donchian_atr @ 4h: awaiting review: lab exam --id {jid}"]
+
+def _old_record(state: Path, j: dict) -> sqlite3.Connection:
+    """A record.db from before the web_reviewed column (and the research and stops tables), in WAL mode as the
+    record runs, whose research idea's proposal is the judged plugin version. Its connection is still open."""
+    state.mkdir()
+    c = sqlite3.connect(state / "record.db")
+    c.execute("PRAGMA journal_mode = WAL")
+    c.execute(OLD_IDEAS)
+    c.execute(str(CreateTable(proposals).compile(dialect=sqlite_dialect.dialect())))
+    c.execute("INSERT INTO ideas (title, origin, status, created_at) VALUES ('Old', 'research', 'open', "
+              "'2026-11-01 00:00:00')")
+    c.execute("INSERT INTO proposals (seq, idea_id, origin, plugin, timeframe, hash, state, created_at) VALUES "
+              "(1, 1, 'proposer', ?, ?, ?, 'judged', '2026-11-01 00:00:00')",
+              (j["strategy"], j["timeframe"], j["strategy_hash"]))
+    c.commit()
+    return c
+
+
+def _files(state: Path) -> dict:
+    """The folder's file names, and record.db's bytes and mtime."""
+    db_file = state / "record.db"
+    return {"names": sorted(p.name for p in state.iterdir()), "bytes": db_file.read_bytes(),
+            "mtime": db_file.stat().st_mtime_ns}
+
+
+@pytest.mark.parametrize("held", [False, True], ids=["closed", "held-open"])
+def test_cli_exam_only_reads_the_proposer_record(cfg, plugins, tmp_path, held):
+    """The mark's lookup only reads: a record from before the web_reviewed column has no web-reviewed idea, and
+    `lab exam` leaves it as it was (file, folder and schema), whether or not a session holds it open."""
+    jid = _proposer_promotion(cfg)
+    j = db.get_judgement_by_id(cfg, jid)
+    state = tmp_path / "proposer"                  # the config's state_dir, under this module's context.ROOT
+    c = _old_record(state, j)
+    schema = c.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+    if not held:
+        c.close()                                  # the last connection: WAL mode leaves record.db alone
+    try:
+        before = _files(state)
+        assert _web_reviewed(cfg, [j]) == set()
+        r = CliRunner().invoke(app, ["exam", "--config", str(cfg.path)])
+        assert r.exit_code == 0, r.output
+        assert r.output.splitlines() == [f"donchian_atr @ 4h: awaiting review: lab exam --id {jid}"]
+        assert _files(state) == before
+    finally:
+        c.close()
+    after = sqlite3.connect(state / "record.db")
+    try:
+        assert after.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall() == schema
+    finally:
+        after.close()
 
 
 @pytest.fixture
