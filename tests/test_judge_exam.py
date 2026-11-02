@@ -1,8 +1,10 @@
 import json
 import math
+import sqlite3
 import threading
 from functools import partial
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import numpy as np
 import pandas as pd
@@ -16,17 +18,43 @@ from perp_lab.judge.exam import ExamResult
 from perp_lab.judge.budget import WithdrawRefused
 from perp_lab.judge.diagnostics import diagnostics
 from perp_lab.judge.judge import VERDICT_KEYS, attempt_exam, exam_pending, judge, verdict_path, withdraw
+from perp_lab.proposer import context
 from perp_lab.proposer.record import Record
 from perp_lab.proposer.research import WEB_REVIEWED_CAVEAT
 from perp_lab.sandbox import client
 from perp_lab.sandbox.errors import PluginError, SandboxUnavailable
 from perp_lab.store import db
 from perp_lab.validate import walkforward as wfm
-from tests.conftest import market_config
+from tests.conftest import REPO, market_config
 from tests.judge_fixtures import NOISE, STRONG, WIDE_TEXT, StubValidate, add_plugin, plugins  # noqa: F401
 from tests.test_store import cfg  # noqa: F401
 
 HOLDOUT_DAYS = pd.date_range("2026-07-01", periods=200, freq="D", tz="UTC")
+REAL_PROPOSER = REPO / "proposer"   # from the main checkout, the user's real proposer state
+
+
+def _opened(database) -> Path:
+    """The file a SQLite open names, a `file:` URI or a path."""
+    s = str(database)
+    return Path(unquote(urlsplit(s).path) if s.startswith("file:") else s).resolve()
+
+
+@pytest.fixture(autouse=True)
+def _never_the_real_proposer_record(tmp_path, monkeypatch):
+    """`lab exam` reads the proposer's record (the web-reviewed mark) at context.ROOT / proposer.state_dir, and the
+    config these tests share says `proposer`: from the main checkout, the user's real record. Here context.ROOT is
+    tmp_path, so the state is tmp_path / "proposer". A guard checks it: every SQLite open in this module is
+    recorded, and a test that opened anything under the repo's proposer/ fails."""
+    monkeypatch.setattr(context, "ROOT", tmp_path)
+    opened = []
+    for mod in (sqlite3, sqlite3.dbapi2):           # SQLAlchemy's sqlite driver is sqlite3.dbapi2
+        def spy(database, *a, _connect=mod.connect, **kw):
+            opened.append(_opened(database))
+            return _connect(database, *a, **kw)
+        monkeypatch.setattr(mod, "connect", spy)
+    yield
+    real = [p for p in opened if p == REAL_PROPOSER or REAL_PROPOSER in p.parents]
+    assert not real, f"a test opened the real proposer state: {real}"
 
 
 def stub_run(mu, n_trades=30, seed=11, fail=False):
