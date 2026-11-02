@@ -68,6 +68,37 @@ def parkinson_vol(df: pd.DataFrame, n: int = 1) -> pd.Series:
     return np.sqrt(var.rolling(n, min_periods=n).mean().clip(lower=0))
 
 
+_HOUR_MS = 3_600_000
+_WEEK_MS = 7 * 86_400_000
+
+
+def volume_vs_same_hour(df: pd.DataFrame, weeks: int = 4, col: str = "volume") -> pd.Series:
+    """Each bar's `col` over its median at the same UTC hour of the week (weekday x hour of open_time) in the
+    `weeks` weeks before; ~1 at a normal level for that hour. Raw volume rises at session opens and on weekdays,
+    so a spike against an all-hours average partly reads the clock. Causal: only earlier weeks count, not bar t
+    nor the rest of its hour this week; on bars under an hour, every bar of that hour in those weeks counts.
+    NaN with fewer than max(2, weeks // 2) earlier values (so weeks >= 2 on bars of an hour or more), or a zero
+    median. Also for `trades`, `quote_volume` or `taker_buy_volume` via `col`."""
+    ot = df.open_time.to_numpy(dtype=np.int64)
+    x = df[col].to_numpy(dtype=float)
+    n = len(x)
+    start = (ot - ot % _HOUR_MS)[:, None] - _WEEK_MS * np.arange(1, weeks + 1)   # that hour, k weeks back
+    lo = np.searchsorted(ot, start, side="left")
+    hi = np.searchsorted(ot, start + _HOUR_MS, side="left")
+    per_hour = int((hi - lo).max(initial=1))                                 # bars in an hour: 4 on 15m bars
+    past = np.full((n, weeks, per_hour), np.nan)
+    for j in range(per_hour):
+        i = lo + j
+        past[:, :, j] = np.where(i < hi, x[np.minimum(i, n - 1)], np.nan)
+    past = past.reshape(n, weeks * per_hour)
+    past.sort(axis=1)                                                        # NaN sorts last
+    c = past.shape[1] - np.isnan(past).sum(axis=1)                          # values per row
+    mid = np.stack([np.maximum(c - 1, 0) // 2, c // 2], axis=1)              # the middle one or two of c values
+    med = np.take_along_axis(past, mid, axis=1).mean(axis=1)
+    med = np.where((c >= max(2, weeks // 2)) & (med != 0), med, np.nan)
+    return pd.Series(x / med, index=df.index)
+
+
 _DAY_MS = 86_400_000
 
 
