@@ -58,6 +58,16 @@ def donchian_prior(df: pd.DataFrame, n: int):
             df.low.rolling(n, min_periods=n).min().shift(1))
 
 
+def parkinson_vol(df: pd.DataFrame, n: int = 1) -> pd.Series:
+    """Per-bar volatility from the bar's range (Parkinson): sqrt(ln(high/low)^2 / (4 ln 2)), ~0.601 * ln(high/low),
+    a log-return sigma about 5x as efficient as close-to-close. With n > 1, the root of the mean variance over
+    the n bars up to and including t, so as a stop or target scale it uses only bars up to t. NaN where high
+    or low is not positive."""
+    ok = (df.high > 0) & (df.low > 0)
+    var = np.log(df.high.where(ok) / df.low.where(ok)) ** 2 / (4 * np.log(2.0))
+    return np.sqrt(var.rolling(n, min_periods=n).mean().clip(lower=0))
+
+
 _DAY_MS = 86_400_000
 
 
