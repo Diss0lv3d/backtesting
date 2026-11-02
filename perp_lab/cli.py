@@ -355,24 +355,41 @@ def withdraw(strategy: Optional[str] = typer.Argument(None, help="the plugin, by
     typer.echo(f"verdict: {w['verdict_path']}")
 
 
+# What the web-reviewed mark's lookup reads, and nothing else: a record from before the column has no such idea.
+WEB_REVIEWED_VERSIONS = ("SELECT p.hash, p.timeframe FROM proposals AS p JOIN ideas AS i ON p.idea_id = i.id "
+                         "WHERE i.web_reviewed")
+
+
 def _web_reviewed(cfg, judgements: list[dict]) -> set[int]:
     """The ids of the judgements whose plugin version is a proposal of a web-reviewed idea in the proposer's record
     (referee-and-human-stops spec, the web_reviewed mark): their exam is weaker evidence. None when the proposer's
-    settings don't load or it has no record: `lab exam` isn't the proposer's, so it never fails for want of one."""
+    settings don't load, it has no record, the record predates the mark, or it can't be read: `lab exam` isn't the
+    proposer's, so it never fails for want of one.
+
+    It only reads. No Record(): opening one creates and migrates tables. The record runs in WAL mode: while a
+    session or the Ideas page holds it, its -wal and -shm files exist and a read-only open reads through them;
+    without them record.db holds everything, and an immutable open reads it without creating them, which a
+    read-only open would (SQLite 3.45, checked 2026-11-02)."""
+    import sqlite3
+    from contextlib import closing
     from perp_lab.proposer import context, settings
-    from perp_lab.proposer.record import Record
     if not judgements:
         return set()
     try:
         pc = settings.load(cfg)
     except settings.StartRefused:
         return set()
-    state = context.ROOT / pc.state_dir
-    if not (state / "record.db").exists():          # never create the record
+    path = (context.ROOT / pc.state_dir / "record.db").resolve()
+    if not path.exists():
         return set()
-    rec = Record(state)
-    web = {i["id"] for i in rec.ideas() if i.get("web_reviewed")}
-    versions = {(p["hash"], p["timeframe"]) for p in rec.proposals() if p.get("idea_id") in web}
+    held = all(path.with_name(path.name + side).exists() for side in ("-wal", "-shm"))
+    try:
+        with closing(sqlite3.connect(f"{path.as_uri()}?{'mode=ro' if held else 'immutable=1'}", uri=True)) as c:
+            if "web_reviewed" not in {row[1] for row in c.execute("PRAGMA table_info(ideas)")}:
+                return set()
+            versions = set(c.execute(WEB_REVIEWED_VERSIONS))
+    except sqlite3.Error:
+        return set()
     return {j["id"] for j in judgements if (j.get("strategy_hash"), j.get("timeframe")) in versions}
 
 
