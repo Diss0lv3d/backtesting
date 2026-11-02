@@ -227,8 +227,8 @@ what the real calls showed. Where they differ from the sections above, these win
   the web instruction also gives each search API's bound, the day before `holdout_start`: Crossref
   `filter=until-pub-date:<day>`, Semantic Scholar `publicationDateOrYear=:<day>`, and arXiv
   `submittedDate:[199101010000 TO <yyyymmdd>2359]` joined to its query by AND (arXiv's API refuses an open
-  `[* TO …]` range, so the range starts before its first submission). The second date in the instruction, from the
-  same config value. If wrong: none (an instruction; a fetch by DOI or URL is not bounded, Residuals).
+  `[* TO …]` range, so the range starts before its first submission). It is the instruction's second date, from
+  the same config value. If wrong: none (an instruction; a fetch by DOI or URL is not bounded, Residuals).
 - **M2: the referee is told it has a tool.** Its system prompt, the static context, says "You have no tools."; the
   web instruction adds "In this review, unlike a proposal, you have one tool: WebFetch, limited to the hosts below."
 - **R-RF8: rejected cards don't come back.** With the referee on, every research prompt lists the titles of the
@@ -280,8 +280,7 @@ what the real calls showed. Where they differ from the sections above, these win
   `revised` as `{"type": ["object", "null"]}` (no combinator at any depth), was accepted by the API in a tool-less
   call at f935aae, and the reply parsed. The first real web call (Task 5's code, a copy of the real record, the
   first real research round's two cards) fetched only allowlisted hosts and was killed by the synthetic message
-  (R-RF6).
-  The second (at 563488c, effort high) completed: 13 fetches (Crossref, Semantic Scholar, the arXiv API, SSRN,
-  RePEc), all allowlisted, none denied; the report passed its checks; both cards were revised with
+  (R-RF6). The second (at 563488c, effort high) completed: 13 fetches (Crossref, Semantic Scholar, the arXiv API,
+  SSRN, RePEc), all allowlisted, none denied; the report passed its checks; both cards were revised with
   literature-grounded reasons and allowlisted sources; $0.62 at API prices. It fetched the October 2026 paper's
   metadata (Residuals; M3).
