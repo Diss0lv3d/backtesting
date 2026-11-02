@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from perp_lab.cli import app
@@ -15,6 +16,8 @@ from perp_lab.judge.exam import ExamResult
 from perp_lab.judge.budget import WithdrawRefused
 from perp_lab.judge.diagnostics import diagnostics
 from perp_lab.judge.judge import VERDICT_KEYS, attempt_exam, exam_pending, judge, verdict_path, withdraw
+from perp_lab.proposer.record import Record
+from perp_lab.proposer.research import WEB_REVIEWED_CAVEAT
 from perp_lab.sandbox import client
 from perp_lab.sandbox.errors import PluginError, SandboxUnavailable
 from perp_lab.store import db
@@ -374,6 +377,34 @@ def test_cli_exam_prints_the_review_command(cfg, plugins):
     r = CliRunner().invoke(app, ["exam", "--config", str(cfg.path)])
     assert r.exit_code == 0
     assert f"donchian_atr @ 4h: awaiting review: lab exam --id {jid}" in r.output
+    assert budget.reads_used(cfg) == 0
+
+
+def _with_proposer_record(cfg, tmp_path, jid, web_reviewed):
+    """The config with its proposer record in tmp_path, where the judged plugin version is an idea's proposal."""
+    raw = yaml.safe_load(Path(cfg.path).read_text())
+    raw["proposer"] = {**raw["proposer"], "state_dir": str(tmp_path / "proposer")}
+    path = tmp_path / "lab_with_record.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    j = db.get_judgement_by_id(cfg, jid)
+    rec = Record(tmp_path / "proposer")
+    idea = rec.add_idea("Refereed", {}, "research", j["timeframe"], web_reviewed=web_reviewed)
+    rec.add_proposal(seq=1, idea_id=idea, plugin=j["strategy"], timeframe=j["timeframe"], hash=j["strategy_hash"],
+                     state="judged", judge_exit=0, verdict={"decision": "promote"})
+    return path
+
+
+@pytest.mark.parametrize("web_reviewed", [True, False])
+def test_cli_exam_gives_a_web_reviewed_ideas_promotion_its_caveat(cfg, plugins, tmp_path, web_reviewed):
+    """M8: the promotion of a web-reviewed idea's plugin is weaker evidence, as its review packet on the page says;
+    any other promotion's line is unchanged."""
+    jid = _proposer_promotion(cfg)
+    path = _with_proposer_record(cfg, tmp_path, jid, web_reviewed)
+    r = CliRunner().invoke(app, ["exam", "--config", str(path)])
+    assert r.exit_code == 0, r.output
+    want = ([f"donchian_atr @ 4h: awaiting review (web-reviewed): lab exam --id {jid}", f"  {WEB_REVIEWED_CAVEAT}"]
+            if web_reviewed else [f"donchian_atr @ 4h: awaiting review: lab exam --id {jid}"])
+    assert r.output.splitlines() == want
     assert budget.reads_used(cfg) == 0
 
 

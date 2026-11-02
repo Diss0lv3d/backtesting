@@ -27,6 +27,7 @@ import streamlit as st
 from perp_lab import dsr
 from perp_lab.proposer import context, contract, human, model, piles, settings
 from perp_lab.proposer.record import EXCLUDABLE, Record
+from perp_lab.proposer.research import WEB_REVIEWED_CAVEAT
 from perp_lab.store import db
 
 _TITLES = {"passed": "Passed", "promoted": "Promoted", "close call": "Close call",
@@ -34,8 +35,6 @@ _TITLES = {"passed": "Passed", "promoted": "Promoted", "close call": "Close call
 # The digest's own line shape (digest.pause): top level, so a model-written summary indented under a research line
 # can't match.
 _PAUSE = re.compile(r"^- \d\d:\d\d · paused: .*; until (\d{4}-\d\d-\d\d \d\d:\d\d) UTC\s*$")
-WEB_REVIEWED_CAVEAT = ("A web-informed referee reviewed this card: academic papers published after the model's "
-                       "training cutoff may discuss the holdout period, so treat its exam as weaker evidence.")
 _DECIDED = {"accept": "accepted", "revise": "revised", "reject": "rejected"}
 # Every ASCII punctuation character. CommonMark lets each be backslash-escaped and shows it as itself, so text
 # escaped so reads as written: no link, image, HTML, emphasis, code, heading, list or table, and none of Streamlit's

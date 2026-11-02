@@ -20,6 +20,11 @@ from perp_lab.proposer import human, model
 from perp_lab.proposer.contract import RefereeReport, ResearchIdea, ResearchNote
 from perp_lab.proposer.record import Record
 
+# An idea's web_reviewed mark, for the human about to spend a holdout read on it: the Ideas page's review packet and
+# `lab exam`'s awaiting-review line say it in these words.
+WEB_REVIEWED_CAVEAT = ("A web-informed referee reviewed this card: academic papers published after the model's "
+                       "training cutoff may discuss the holdout period, so treat its exam as weaker evidence.")
+
 
 def entry(idea: ResearchIdea) -> dict:
     """The idea as a human card entry: the card's fields and its timeframe. builds_on is for the human, no card

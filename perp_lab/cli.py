@@ -355,22 +355,49 @@ def withdraw(strategy: Optional[str] = typer.Argument(None, help="the plugin, by
     typer.echo(f"verdict: {w['verdict_path']}")
 
 
+def _web_reviewed(cfg, judgements: list[dict]) -> set[int]:
+    """The ids of the judgements whose plugin version is a proposal of a web-reviewed idea in the proposer's record
+    (referee-and-human-stops spec, the web_reviewed mark): their exam is weaker evidence. None when the proposer's
+    settings don't load or it has no record: `lab exam` isn't the proposer's, so it never fails for want of one."""
+    from perp_lab.proposer import context, settings
+    from perp_lab.proposer.record import Record
+    if not judgements:
+        return set()
+    try:
+        pc = settings.load(cfg)
+    except settings.StartRefused:
+        return set()
+    state = context.ROOT / pc.state_dir
+    if not (state / "record.db").exists():          # never create the record
+        return set()
+    rec = Record(state)
+    web = {i["id"] for i in rec.ideas() if i.get("web_reviewed")}
+    versions = {(p["hash"], p["timeframe"]) for p in rec.proposals() if p.get("idea_id") in web}
+    return {j["id"] for j in judgements if (j.get("strategy_hash"), j.get("timeframe")) in versions}
+
+
 @app.command()
 def exam(judgement: Optional[int] = typer.Option(None, "--id", help="examine this one judgement, whoever judged it"),
          config: Optional[str] = CfgOpt):
     """Attempt the holdout exam for every pending promotion (budget rules apply), except a proposer's:
     those wait for `lab exam --id N`. The only command that runs exams; the proposer never runs it."""
     from perp_lab.judge.judge import JudgeRefused, exam_pending
+    from perp_lab.proposer.research import WEB_REVIEWED_CAVEAT
+    cfg = load_config(config)
     try:
-        done = exam_pending(load_config(config), only_id=judgement)
+        done = exam_pending(cfg, only_id=judgement)
     except JudgeRefused as e:
         typer.secho(f"refused: {e}", fg="red")
         raise typer.Exit(2)
     if not done:
         typer.echo("no pending exams")
+    web = _web_reviewed(cfg, [j for j in done if j.get("awaiting_review")])
     for j in done:
         if j.get("awaiting_review"):
-            typer.echo(f"{j['strategy']} @ {j['timeframe']}: awaiting review: lab exam --id {j['id']}")
+            mark = " (web-reviewed)" if j["id"] in web else ""
+            typer.echo(f"{j['strategy']} @ {j['timeframe']}: awaiting review{mark}: lab exam --id {j['id']}")
+            if mark:
+                typer.echo(f"  {WEB_REVIEWED_CAVEAT}")
             continue
         if j.get("in_progress"):
             typer.echo(f"{j['strategy']} @ {j['timeframe']}: in progress elsewhere (another `lab exam` is running)")
@@ -434,7 +461,8 @@ def ideas(config: Optional[str] = CfgOpt):
         mine = by_idea.get(i["id"], [])
         judged = [p for p in mine if p.get("judge_exit") is not None]
         best = piles.best_pile([piles.pile(p.get("verdict")) for p in judged if p.get("duplicate_of") is None])
-        tag = " (research)" if i["origin"] == "research" else ""
+        tag = ((" (research)" if i["origin"] == "research" else "")
+               + (" (web-reviewed)" if i.get("web_reviewed") else ""))     # as the Ideas page's tag
         groups[piles.idea_group(i, mine)].append(
             f"#{i['id']} {i['title']}{tag} \u2014 {i['timeframe']}, {i['status']}, {best or 'none'}, "
             f"judged {len(judged)}")

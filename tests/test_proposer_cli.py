@@ -108,6 +108,20 @@ def test_ideas_marks_research_ideas_after_the_title(tmp_path, monkeypatch):
     assert "#2 from the model \u2014 1h, open, none, judged 0" in r.output
 
 
+def test_ideas_marks_web_reviewed_ideas_after_the_title(tmp_path, monkeypatch):
+    """M8: an idea a web-informed referee reviewed, or a port of one, says so, as the Ideas page's tag does."""
+    monkeypatch.chdir(context.ROOT)
+    rec = Record(tmp_path / "proposer")
+    a = rec.add_idea("refereed", {}, "research", "4h", web_reviewed=True)
+    rec.add_idea("its port", {}, "proposer", "1h", port_of=a, web_reviewed=True)
+    rec.add_idea("unreviewed", {}, "research", "4h")
+    r = runner.invoke(app, ["ideas", "--config", _config(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "#1 refereed (research) (web-reviewed) \u2014 4h, open, none, judged 0" in r.output
+    assert "#2 its port (web-reviewed) \u2014 1h, open, none, judged 0" in r.output
+    assert "#3 unreviewed (research) \u2014 4h, open, none, judged 0" in r.output
+
+
 def test_ideas_on_a_missing_record(tmp_path, monkeypatch):
     monkeypatch.chdir(context.ROOT)
     r = runner.invoke(app, ["ideas", "--config", _config(tmp_path)])
