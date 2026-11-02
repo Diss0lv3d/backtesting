@@ -186,13 +186,16 @@ pays, and why it persists.
 Reply with one JSON object, as the reply contract describes, and nothing else."""
 
 NEXT_UP = "The human asks that this round's proposal work on idea #{id}."
+NEXT_UP_RESEARCH = "The research step asks that this round's proposal work on idea #{id}."
 
 
 def instruction(next_up: dict | None = None) -> str:
-    """The round's instruction. The idea the human flagged (record.next_up), while it is open, adds one fixed
-    sentence with its id: never the flag's time, and never words of the human's. It asks; the rules don't change."""
+    """The round's instruction. The flagged idea (record.next_up), while it is open, adds one fixed sentence with
+    its id, naming who asked (next_by: research, or the human, whose flag may predate the column): never the
+    flag's time, and never words of the human's or the research step's. It asks; the rules don't change."""
     if next_up is not None and next_up.get("status") == "open":
-        return INSTRUCTION + "\n\n" + NEXT_UP.format(id=int(next_up["id"]))
+        text = NEXT_UP_RESEARCH if next_up.get("next_by") == "research" else NEXT_UP
+        return INSTRUCTION + "\n\n" + text.format(id=int(next_up["id"]))
     return INSTRUCTION
 
 

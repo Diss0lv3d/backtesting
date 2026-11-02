@@ -61,10 +61,10 @@ def port(idea_id, tf="4h", source=SRC_4H):
 BAD = {"kind": "new", "timeframe": "1h"}          # no hypothesis, source or idea
 
 
-def note(*titles, tf="1h", stop=("Exit-only changes",), summary="What the record taught."):
+def note(*titles, tf="1h", stop=("Exit-only changes",), summary="What the record taught.", next_up=None):
     """A research round's reply, with a card per title."""
     return {"ideas": [{**card(t), "timeframe": tf, "builds_on": "BUILDS-ON"} for t in titles], "stop": list(stop),
-            "summary": summary}
+            "summary": summary, "next_up": next_up}
 
 
 def v(title, decision="accept", reason="It holds.", sources=(), revised=None):
@@ -1612,7 +1612,7 @@ def test_a_capped_rounds_cards_are_set_aside_unchecked_and_its_stop_list_kept(la
     """R-RL5: cards a capped round returns anyway are ignored, not refused: a bad one costs no fix-up."""
     capped(lab)
     bad = {"ideas": [{"title": "Half a card"}, {**card("Placeholder"), "timeframe": "1h", "builds_on": "b"}],
-           "stop": ["Stop A"], "summary": "S"}
+           "stop": ["Stop A"], "summary": "S", "next_up": None}
     lab.fake.notes = [bad]
     assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
     assert order(lab) == "PRP"                           # one research call: no fix-up
@@ -1621,6 +1621,133 @@ def test_a_capped_rounds_cards_are_set_aside_unchecked_and_its_stop_list_kept(la
     assert "- Stop A" in proposal_calls(lab)[1].user
     assert "research: 2 ideas not added (cap); stop list 1 item" in digest(lab)
     assert [i["title"] for i in lab.rec.ideas() if i["title"] == "Half a card"] == []
+
+
+# -- a round's next_up: the research step asks for an idea to be tried next
+def test_a_rounds_next_up_flags_its_idea_and_the_next_proposal_is_asked_for_it(lab):
+    pid = idea(lab, "Placeholder")["id"]
+    lab.fake.notes = [note(next_up=pid)]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert order(lab) == "PRP"
+    flagged = lab.rec.next_up()
+    assert (flagged["id"], flagged["next_by"]) == (pid, "research")       # the fake's proposals were new ideas
+    first, second = proposal_calls(lab)
+    asks = f"The research step asks that this round's proposal work on idea #{pid}."
+    assert asks not in first.user and second.user.endswith(asks + "\n")
+    (row,) = rounds(lab)
+    assert row["outcome"] == "ok" and row["reply"]["next_up"] == pid
+    assert "research: +0 ideas; stop list 1 item; next up #1" in digest(lab)
+
+
+def test_a_proposal_on_the_flagged_idea_answers_the_research_steps_request(lab):
+    pid = idea(lab, "Placeholder")["id"]
+    lab.fake.notes = [note(next_up=pid)]
+    lab.fake.replies = [new("Idea 1"), {"kind": "refinement", "timeframe": "4h", "hypothesis": "h", "source": SRC_4H,
+                                        "refines": {"idea_id": pid, "change": "the card, built as written"}}]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert proposal_calls(lab)[1].user.endswith(f"The research step asks that this round's proposal work on idea "
+                                                f"#{pid}.\n")
+    assert order(lab) == "PRP" and lab.rec.next_up() is None          # its verdict answered the request
+    assert props(lab)[1]["idea_id"] == pid
+
+
+def test_a_null_next_up_leaves_the_flag_alone(lab):
+    pid = idea(lab, "Placeholder")["id"]
+    lab.rec.flag_next(pid, by="research")              # an earlier round's request, not yet answered
+    lab.fake.notes = [note(next_up=None)]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert (lab.rec.next_up()["id"], lab.rec.next_up()["next_by"]) == (pid, "research")
+    assert "research: +0 ideas; stop list 1 item\n" in digest(lab)
+
+
+def test_the_humans_standing_request_keeps_the_research_steps_from_being_set(lab):
+    pid = idea(lab, "Placeholder")["id"]
+    other = lab.rec.add_idea("Other", card("Other"), "human", "4h")
+    lab.rec.flag_next(pid)                              # the human's
+    lab.fake.notes = [note(next_up=other)]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert (lab.rec.next_up()["id"], lab.rec.next_up()["next_by"]) == (pid, "human")
+    assert proposal_calls(lab)[1].user.endswith(f"The human asks that this round's proposal work on idea #{pid}.\n")
+    assert (f"research: +0 ideas; stop list 1 item; next up #{other} not set: the human's request for idea "
+            f"#{pid} stands") in digest(lab)
+
+
+@pytest.mark.parametrize("target,why", [
+    (99, "idea #99 was not in the record the round read"),
+    (-1, "there is no idea #-1"),
+    ("Closed", "idea #{id} is excluded; only an open idea can be tried next"),
+])
+def test_a_next_up_no_proposal_can_work_on_is_not_set_and_costs_the_round_nothing(lab, target, why):
+    tid = target
+    if isinstance(target, str):                         # closed for good: settling never reopens it
+        tid = lab.rec.add_idea(target, card(target), "seed", "4h")
+        lab.rec.exclude_idea(tid, "ruled out")
+    lab.fake.notes = [note("Basis squeeze", next_up=tid)]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert order(lab) == "PRP"                          # no fix-up: the request is the round's least part
+    assert lab.rec.next_up() is None
+    (row,) = rounds(lab)
+    assert row["outcome"] == "ok" and len(row["added"]) == 1      # its card and stop list stand
+    assert f"next up #{tid} not set: {why.format(id=tid)}" in digest(lab)
+
+
+def test_a_capped_round_still_flags_its_next_up(lab):
+    capped(lab)
+    untried = idea(lab, "Untried 0")["id"]
+    lab.fake.notes = [note(next_up=untried)]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert rounds(lab)[0]["outcome"] == "capped"
+    assert (lab.rec.next_up()["id"], lab.rec.next_up()["next_by"]) == (untried, "research")
+    assert "research: 0 ideas not added (cap); stop list 1 item; next up #" in digest(lab)
+
+
+def test_a_next_up_past_any_id_is_no_idea_and_costs_the_round_nothing(lab):
+    huge = 2 ** 64                                      # an integer to the contract, past SQLite's
+    lab.fake.notes = [note(next_up=huge)]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert rounds(lab)[0]["outcome"] == "ok" and lab.rec.next_up() is None
+    assert f"next up #{huge} not set: idea #{huge} was not in the record the round read" in digest(lab)
+
+
+def test_a_round_cannot_ask_for_its_own_new_card(lab):
+    # the first proposal's new idea takes the next id, and the round's one card the one after: the model can guess it
+    own = max(i["id"] for i in lab.rec.ideas()) + 2
+    lab.fake.notes = [note("Basis squeeze", next_up=own)]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    (row,) = rounds(lab)
+    assert (row["outcome"], row["added"]) == ("ok", [own]) and lab.rec.next_up() is None
+    assert f"next up #{own} not set: idea #{own} was not in the record the round read" in digest(lab)
+
+
+def test_a_human_request_no_proposal_can_answer_does_not_block_the_rounds(lab):
+    pid = idea(lab, "Placeholder")["id"]
+    stale = lab.rec.add_idea("LCE untested", card("LCE untested"), "seed", "5m")    # no proposal can work on it
+
+    def flag_during_research(fake):
+        if researching(fake.calls[-1]):
+            lab.rec.flag_next(stale)                    # the record's own check: open is enough
+    lab.fake.on_call = flag_during_research
+    lab.fake.notes = [note(next_up=pid)]
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert (lab.rec.next_up()["id"], lab.rec.next_up()["next_by"]) == (pid, "research")
+
+
+def test_with_the_referee_the_flag_is_set_whatever_it_decided(lab):
+    pid = idea(lab, "Placeholder")["id"]
+    lab.fake.notes = [note("Basis squeeze", next_up=pid)]
+    lab.fake.reports = [report(v("Basis squeeze", "reject", "No support."))]
+    assert run(lab, refereed(lab, research_every=1), trials=2) == "trials"
+    assert order(lab) == "PRVP" and research_ideas(lab) == []
+    assert (lab.rec.next_up()["id"], lab.rec.next_up()["next_by"]) == (pid, "research")
+    assert "1 card: 0 accepted, 0 revised, 1 rejected; next up #1" in digest(lab)
+
+
+def test_a_round_refused_after_its_fixups_sets_no_flag(lab):
+    pid = idea(lab, "Placeholder")["id"]
+    lab.fake.notes = [{"ideas": [], "stop": [], "next_up": pid}] * (lab.pc.fixups_per_proposal + 1)   # no summary
+    assert run(lab, replace(lab.pc, research_every=1), trials=2) == "trials"
+    assert rounds(lab)[0]["outcome"] == "invalid" and lab.rec.next_up() is None
+    assert "next up" not in digest(lab)
 
 
 def test_a_refused_note_goes_back_as_a_fixup(lab):

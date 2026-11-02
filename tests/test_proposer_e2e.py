@@ -168,7 +168,7 @@ REJECTED_IDEA = {**card("Round-number stop cascade", ["high", "low", "close"]), 
                  "builds_on": "the closed breakout ideas"}
 STOP = ["Channel breakouts at any lookback", "A filter added to a closed idea's entry"]
 RESEARCH = {"ideas": [RESEARCH_IDEA, REJECTED_IDEA], "stop": STOP,
-            "summary": "Breakouts are done; a forced-flow rebound is not."}
+            "summary": "Breakouts are done; a forced-flow rebound is not.", "next_up": None}
 ARXIV = "https://arxiv.org/abs/1707.06221"
 REPORT = {"verdicts": [
     {"title": "Liquidation-cascade rebound", "decision": "accept", "reason": "Forced flow, not the exit, pays.",

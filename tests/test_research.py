@@ -18,11 +18,11 @@ CARD = {"title": "Basis squeeze", "mechanism": "m", "why_it_persists": "w", "sig
 
 def idea(**over) -> ResearchIdea:
     return parse_research({"ideas": [{**CARD, "timeframe": "1h", "builds_on": "b", **over}], "stop": [],
-                           "summary": "s"}, ("5m", *PC.timeframes), 1).ideas[0]
+                           "summary": "s", "next_up": None}, ("5m", *PC.timeframes), 1).ideas[0]
 
 
 def note(*ideas: ResearchIdea) -> ResearchNote:
-    return ResearchNote(ideas=ideas, stop=("x",), summary="s")
+    return ResearchNote(ideas=ideas, stop=("x",), summary="s", next_up=None)
 
 
 @pytest.fixture

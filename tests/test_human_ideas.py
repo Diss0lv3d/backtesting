@@ -123,6 +123,9 @@ def test_try_next_needs_an_idea_some_proposal_could_work_on(rec):
     assert rec.next_up()["id"] == lce
     with pytest.raises(ValueError, match="there is no idea #99"):
         human.flag_next(rec, PC, 99)
+    for huge in (2 ** 63, 2 ** 64, -(2 ** 63) - 1):   # past SQLite's integers: no idea, never an OverflowError
+        with pytest.raises(ValueError, match=f"there is no idea #{huge}"):
+            human.flag_next(rec, PC, huge)
     dead = rec.add_idea("Dead", {}, "seed", "1h", status="dead")
     with pytest.raises(ValueError, match=f"idea #{dead} is dead; only an open idea"):
         human.flag_next(rec, PC, dead)

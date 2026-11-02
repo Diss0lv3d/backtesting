@@ -87,11 +87,13 @@ class Digest:
                     f"{_one_line(idea_title)} · {_one_line(outcome)}")
 
     def research(self, added_ids: list[int], stop_count: int, outcome: str, summary: str | None,
-                 detail: str | None = None, held: int = 0, referee: dict | None = None) -> None:
+                 detail: str | None = None, held: int = 0, referee: dict | None = None,
+                 next_up: str | None = None) -> None:
         """One line per research round, and the note's summary indented under it (research-round spec). `detail`,
         the CLI's error text for a failed call or a refused note's first error, goes on the line; `held`, the ideas
         a capped round held back. `referee`, when a referee reviewed the round's cards (referee-and-human-stops
-        spec): its verdicts, counted on the line with each rejection's reason under it, or its error."""
+        spec): its verdicts, counted on the line with each rejection's reason under it, or its error. `next_up`,
+        what came of the note's request for an idea to be tried next (flagged, or why not), ends the line."""
         rejected = []
         if outcome in ("ok", "capped"):
             if outcome == "capped":
@@ -111,6 +113,8 @@ class Digest:
                          f"{n['revise']} revised, {n['reject']} rejected")
                 rejected = [f"  rejected: {_one_line(v.get('title'))}: {_one_line(v.get('reason'))}"
                             for v in verdicts if v.get("decision") == "reject"]
+            if next_up:
+                what += f"; {next_up}"
         elif outcome == "invalid":
             what = "invalid after fix-ups"
         else:

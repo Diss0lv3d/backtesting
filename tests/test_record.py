@@ -259,6 +259,70 @@ def test_one_idea_is_next_up_at_a_time_and_only_an_open_one(rec):
     assert rec.next_up() is None
 
 
+def test_the_flag_says_who_set_it(rec):
+    a, b = rec.add_idea("A", {}, "seed", "1h"), rec.add_idea("B", {}, "seed", "1h")
+    rec.flag_next(b, by="research")
+    assert rec.next_up()["id"] == b and rec.next_up()["next_by"] == "research"
+    rec.flag_next(a)
+    assert rec.next_up()["id"] == a and rec.next_up()["next_by"] == "human"     # the human's by default
+    assert rec.idea(b)["next_by"] is None          # cleared with the flag it went with
+    with pytest.raises(ValueError, match="human, research"):
+        rec.flag_next(a, by="model")
+
+
+def test_the_research_step_never_replaces_the_humans_flag(rec):
+    a, b = rec.add_idea("A", {}, "seed", "1h"), rec.add_idea("B", {}, "seed", "1h")
+    rec.flag_next(a)
+    with pytest.raises(ValueError, match="the human's request for idea #1 stands"):
+        rec.flag_next(b, by="research")
+    assert rec.next_up()["id"] == a and rec.next_up()["next_by"] == "human"
+    with pytest.raises(ValueError, match="the human's request for idea #1 stands"):
+        rec.flag_next(a, by="research")            # nor takes it over: the request stays the human's
+    assert rec.next_up()["next_by"] == "human"
+
+
+def test_the_research_step_replaces_its_own_flag_and_the_human_replaces_it(rec):
+    a, b, c = (rec.add_idea(t, {}, "seed", "1h") for t in "ABC")
+    rec.flag_next(a, by="research")
+    rec.flag_next(b, by="research")
+    assert rec.next_up()["id"] == b and rec.idea(a)["next_up"] is None
+    rec.flag_next(c)                               # the human's request always goes in
+    assert rec.next_up()["id"] == c and rec.next_up()["next_by"] == "human"
+    rec.clear_all_next()
+    rec.flag_next(a, by="research")
+    rec.clear_next(a)
+    assert rec.next_up() is None and rec.idea(a)["next_by"] is None
+
+
+def test_a_flag_set_before_next_by_existed_is_the_humans(rec):
+    a, b = rec.add_idea("A", {}, "seed", "1h"), rec.add_idea("B", {}, "seed", "1h")
+    rec.flag_next(a)
+    with rec.engine.begin() as c:                  # as a record made before the column holds its flag
+        c.exec_driver_sql("UPDATE ideas SET next_by = NULL")
+    with pytest.raises(ValueError, match="the human's request for idea #1 stands"):
+        rec.flag_next(b, by="research")
+    assert rec.next_up()["next_by"] is None and rec.next_up()["id"] == a
+
+
+def test_an_old_record_gets_the_next_by_column_and_its_flag_stays_the_humans(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    c = sqlite3.connect(state / "record.db")
+    c.execute(OLD_IDEAS)
+    c.execute("ALTER TABLE ideas ADD COLUMN next_up DATETIME")    # as record.db was before this change
+    c.execute("INSERT INTO ideas (title, origin, status, created_at, next_up) VALUES ('Old', 'seed', 'open', "
+              "'2026-11-01 00:00:00', '2026-11-02 00:00:00')")
+    c.execute("INSERT INTO ideas (title, origin, status, created_at) VALUES ('New', 'seed', 'open', "
+              "'2026-11-01 00:00:00')")
+    c.commit()
+    c.close()
+    rec = Record(state)
+    assert _idea_columns(state).count("next_by") == 1
+    assert rec.next_up()["id"] == 1 and rec.next_up()["next_by"] is None
+    with pytest.raises(ValueError, match="the human's request for idea #1 stands"):
+        rec.flag_next(2, by="research")
+
+
 def test_the_flag_goes_when_its_idea_leaves_open(rec):
     a = rec.add_idea("A", {}, "seed", "1h")
     rec.flag_next(a)

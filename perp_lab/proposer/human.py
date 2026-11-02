@@ -117,12 +117,15 @@ def why_not_next(record: Record, pc, idea: dict) -> str | None:
     return answerable(idea, record, pc)
 
 
-def flag_next(record: Record, pc, id: int) -> None:
-    """Flag the idea to be tried next, or raise ValueError with the reason it can't be."""
+def flag_next(record: Record, pc, id: int, by: str = "human") -> None:
+    """Flag the idea to be tried next, or raise ValueError with the reason it can't be. `by`: who asks, the human
+    or a research round (whose request never replaces the human's: Record.flag_next)."""
+    if not -(2 ** 63) <= id < 2 ** 63:          # past SQLite's integers: no idea has it (and SQLite would overflow)
+        raise ValueError(f"there is no idea #{id}")
     try:
         idea = record.idea(id)
     except KeyError:
         raise ValueError(f"there is no idea #{id}") from None
     if why := why_not_next(record, pc, idea):
         raise ValueError(why)
-    record.flag_next(id)                        # checks the status again, in its own write
+    record.flag_next(id, by=by)                 # checks the status again, in its own write

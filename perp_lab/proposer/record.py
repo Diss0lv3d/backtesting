@@ -17,6 +17,8 @@ import sqlalchemy as sa
 md = sa.MetaData()
 BUSY_TIMEOUT_MS = 30_000
 EXCLUDABLE = ("open", "exhausted", "dead")    # never passed or failed: an exam's outcome stays on the record
+NEXT_BY = ("human", "research")               # who asked for an idea to be tried next
+_UNFLAGGED = {"next_up": None, "next_by": None}
 
 
 def _pragmas(dbapi_conn, _record) -> None:
@@ -76,8 +78,10 @@ ideas = sa.Table(
     sa.Column("root_plugin", sa.String(128)),
     sa.Column("excluded_reason", sa.Text),
     sa.Column("created_at", UTCDateTime, nullable=False),
-    # When the human asked for the idea to be tried next; one idea at most. A time, so never in a prompt.
+    # When the idea was asked to be tried next; one idea at most. A time, so never in a prompt.
     sa.Column("next_up", UTCDateTime),
+    # Who asked: human or research (a research round's note). Null on a flag set before this column: the human's.
+    sa.Column("next_by", sa.String(16)),
     # Reviewed by a referee that could read academic papers, some maybe after the cutoff: weaker exam evidence.
     sa.Column("web_reviewed", sa.Boolean, nullable=False, default=False, server_default=sa.text("0")),
     sa.Index("ux_ideas_title_nocase", sa.func.lower(sa.column("title")), unique=True),
@@ -167,6 +171,7 @@ stops = sa.Table(
 # record.db predates these.
 _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("ideas", "next_up", "DATETIME"),
+    ("ideas", "next_by", "VARCHAR(16)"),
     ("ideas", "web_reviewed", "BOOLEAN NOT NULL DEFAULT 0"),
     ("research", "referee", "JSON"),
 ]
@@ -294,7 +299,7 @@ class Record:
         if "title" in f:
             raise ValueError("an idea's title is fixed")
         if f.get("status", "open") != "open":
-            f["next_up"] = None             # only an open idea can be tried next
+            f["next_up"] = f["next_by"] = None      # only an open idea can be tried next
         self._update(ideas, ideas.c.id, id, f)
 
     def exclude_idea(self, id: int, reason: str) -> None:
@@ -306,21 +311,39 @@ class Record:
             raise ValueError("an exclusion reason must be one line")
         with self.engine.begin() as c:              # the write first, as in flag_next
             if c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.status.in_(EXCLUDABLE))
-                         .values(status="excluded", excluded_reason=reason, next_up=None)).rowcount:
+                         .values(status="excluded", excluded_reason=reason, **_UNFLAGGED)).rowcount:
                 return
         raise ValueError(self._why_not(id, "only an open, exhausted or dead idea can be excluded"))
 
-    # -- the human's "try next"
-    def flag_next(self, id: int) -> None:
-        """Ask for an open idea to be tried next, in place of any other: one idea is flagged at a time."""
-        # The write first, conditional on the status: a session may write the record meanwhile, and SQLite opens
-        # no transaction on a read, so a status read first could be stale by the write.
+    # -- "try next": the human's request, or a research round's
+    def flag_next(self, id: int, by: str = "human") -> None:
+        """Ask for an open idea to be tried next, in place of any other: one idea is flagged at a time. `by` is who
+        asks. The human's request always goes in; a research round's never replaces or takes over the human's
+        (a flag with no next_by, set before the column, is the human's): the human steers, research suggests."""
+        if by not in NEXT_BY:
+            raise ValueError(f"next_by must be one of {', '.join(NEXT_BY)}, not {by!r}")
+        # The write first, conditional on the status (and, for research, on no human flag): a session may write
+        # the record meanwhile, and SQLite opens no transaction on a read, so a read first could be stale by the
+        # write.
+        cond = [ideas.c.id == id, ideas.c.status == "open"]
+        if by == "research":
+            other = ideas.alias("other")
+            cond.append(~sa.exists().where(other.c.next_up.is_not(None),
+                                           sa.func.coalesce(other.c.next_by, "human") == "human"))
         with self.engine.begin() as c:
-            if c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.status == "open")
-                         .values(next_up=_now())).rowcount:
-                c.execute(sa.update(ideas).where(ideas.c.id != id, ideas.c.next_up.is_not(None)).values(next_up=None))
+            if c.execute(sa.update(ideas).where(*cond).values(next_up=_now(), next_by=by)).rowcount:
+                c.execute(sa.update(ideas).where(ideas.c.id != id, ideas.c.next_up.is_not(None))
+                          .values(**_UNFLAGGED))
                 return
-        raise ValueError(self._why_not(id, "only an open idea can be tried next"))
+            # Nothing written. Why, read in the same transaction: the UPDATE took the write lock even matching no
+            # row, so a write by the human meanwhile can't make the reason contradict the refusal.
+            held = (c.execute(sa.select(ideas.c.id, ideas.c.next_by).where(ideas.c.next_up.is_not(None))).first()
+                    if by == "research" else None)
+            status = c.execute(sa.select(ideas.c.status).where(ideas.c.id == id)).scalar()
+        if held is not None and (held.next_by or "human") == "human":
+            raise ValueError(f"the human's request for idea #{held.id} stands")
+        raise ValueError(f"there is no idea #{id}" if status is None
+                         else f"idea #{id} is {status}; only an open idea can be tried next")
 
     def _why_not(self, id: int, rule: str) -> str:
         try:
@@ -332,12 +355,12 @@ class Record:
     def clear_next(self, id: int) -> None:
         """Clear the flag from this idea, if it holds it; never from another."""
         with self.engine.begin() as c:
-            c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.next_up.is_not(None)).values(next_up=None))
+            c.execute(sa.update(ideas).where(ideas.c.id == id, ideas.c.next_up.is_not(None)).values(**_UNFLAGGED))
 
     def clear_all_next(self) -> None:
         """Clear the flag, whichever idea holds it: the human's own "clear"."""
         with self.engine.begin() as c:
-            c.execute(sa.update(ideas).where(ideas.c.next_up.is_not(None)).values(next_up=None))
+            c.execute(sa.update(ideas).where(ideas.c.next_up.is_not(None)).values(**_UNFLAGGED))
 
     def next_up(self) -> dict | None:
         """The flagged idea, whatever its status now."""
