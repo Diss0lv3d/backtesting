@@ -7,15 +7,17 @@ numbered in order and nothing is dated. A verdict whose diagnostics come from a 
 only the old judgement's decision, so the model never sees two different OOS Sharpes for one plugin.
 
 A research round (research-round spec) gets the same record with a fixed instruction of its own. Of what it
-returns, only the stop list ever reaches a later prompt (stop_section): never its time, summary or ideas' reasons.
-The human's own stop list (human_stop_section) goes before it in every proposal and research prompt: the items'
-text only, never when they were added.
+returns, its stop list reaches later prompts (stop_section) and the cards that enter the record reach them as the
+record's ideas, never its time or summary. The human's own stop list (human_stop_section) goes before the research
+step's in every proposal and research prompt: the items' text only, never when they were added.
 
-A round's cards then go to a referee call (referee-and-human-stops spec, "The referee") before any enters the
-record: the same record and stop sections, the cards as the research step wrote them (note_cards) and a fixed
-instruction of its own (referee_instruction), from the config alone. Of its review, only the titles of the cards it
-rejected reach a later research prompt (rejected_section, R-RF8): the research step's own words, never the
-referee's reasons or sources, which are web-informed.
+With research_referee, a round's cards first go to a referee call (referee-and-human-stops spec, "The referee"):
+the same record and stop sections, every field of the cards as the research step wrote them, builds_on included
+(note_cards), and a fixed instruction of its own (referee_instruction), from the config alone. With the web, that
+instruction holds the only dates this module puts in a prompt: the lab's holdout start, before which the referee's
+sources must be published, and the day before it, where its searches end (R-RF7, M3). Of the round's cards, the
+titles of those the referee rejected also reach every later research prompt (rejected_section, R-RF8): the
+research step's own words, never the referee's reasons or sources, which are web-informed.
 """
 
 from __future__ import annotations
