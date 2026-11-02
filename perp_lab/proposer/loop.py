@@ -45,8 +45,8 @@ from typing import Callable
 
 from perp_lab.config import DEFAULT_CONFIG
 from perp_lab.plugins import blob_hash
-from perp_lab.proposer import (assemble, context, contract, model, piles, pin, proc, prompt, research, seed,
-                               settings)
+from perp_lab.proposer import (assemble, context, contract, human, model, piles, pin, proc, prompt, research,
+                               seed, settings)
 from perp_lab.proposer.digest import Digest
 from perp_lab.proposer.record import Record
 from perp_lab.proposer.settings import StartRefused
@@ -201,6 +201,7 @@ class _Research:
     tokens: list[int] = field(default_factory=lambda: [0, 0])
     referee: dict | None = None           # its verdicts, fetches and denials, or its error; None: no referee ran
     referee_why: str | None = None        # a failed referee call's CLI text: for the digest only (R35)
+    next_up: str | None = None            # what came of the note's next_up, for the digest; None: it was null
 
 
 # -- the record, settled from the verdicts
@@ -903,7 +904,22 @@ class _Session:
         except _Abort:
             self._research_end(r, "error: signal")
             raise
+        if r.note is not None and outcome in ("ok", "capped"):
+            r.next_up = self._research_next_up(r.note.next_up)
         self._research_end(r, outcome, detail)
+
+    def _research_next_up(self, id: int | None) -> str | None:
+        """A valid note's next_up, flagged as the research step's request (research-round spec, Amended: try next),
+        or why it wasn't: the idea must be open and answerable, as the human's must, and the human's own request,
+        while it stands, comes first. Whatever came of it the round stands (its cards, stop list and summary): an
+        unusable request is the least of a note, so it costs no fix-up. For the digest; None when it was null."""
+        if id is None:
+            return None
+        try:
+            human.flag_next(self.record, self.pc, id, by="research")
+        except ValueError as e:
+            return f"next up #{id} not set: {e}"
+        return f"next up #{id}"
 
     def _research_note(self, r: _Research) -> tuple[str, str | None]:
         """(the outcome, a detail for the digest): calls and checks until a note is valid and written (ok, or
@@ -1039,7 +1055,7 @@ class _Session:
             self.referees.append(referee)
         if r.referee_why:
             referee = {**referee, "error": f"{referee['error']}: {r.referee_why}"}
-        self.digest.research(r.added, stop, outcome, summary, detail, r.held, referee=referee)
+        self.digest.research(r.added, stop, outcome, summary, detail, r.held, referee=referee, next_up=r.next_up)
 
     # -- crash recovery
     def _recover(self) -> None:

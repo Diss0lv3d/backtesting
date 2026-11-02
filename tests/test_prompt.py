@@ -218,6 +218,14 @@ def test_a_flagged_open_idea_adds_exactly_the_fixed_sentence_and_no_time(rec):
         assert planted not in whole, planted
 
 
+def test_a_research_flag_says_the_research_step_asks(rec):
+    rec.clear_all_next()
+    rec.flag_next(1, by="research")
+    text = prompt.instruction(rec.next_up())
+    assert text == prompt.INSTRUCTION + "\n\nThe research step asks that this round's proposal work on idea #1."
+    assert "human" not in text.split("\n\n")[-1]
+
+
 def test_no_flag_and_a_flagged_idea_no_longer_open_add_nothing(rec):
     assert prompt.instruction() == prompt.instruction(None) == prompt.INSTRUCTION
     with rec.engine.begin() as c:            # closed by a write that left its flag (set_idea would clear it)
@@ -350,7 +358,8 @@ def _note(*titles):
                                                "signal": "s", "trades_per_coin_per_year": 12,
                                                "likely_failure": "f", "columns": ["close", "funding_last"],
                                                "timeframe": "1h", "builds_on": f"{t} builds on the fades"}
-                                              for t in titles], "stop": ["x"], "summary": "SUMMARY"},
+                                              for t in titles], "stop": ["x"], "summary": "SUMMARY",
+                                              "next_up": None},
                                    ("1h", "4h"), 3)
 
 

@@ -78,6 +78,11 @@ FIELD_DOCS: dict[str, str] = {
     "characters. May be empty.",
     "ResearchNote.summary": f"For the human: what the record has taught and why these ideas. At most "
     f"{SUMMARY_MAX_CHARS} characters.",
+    "ResearchNote.next_up": "The id of one open idea already in the record that the builder's next proposal "
+    "should work on: the test the record needs most, such as an untested idea before more refinements of one "
+    "already judged. The builder is asked to work on it until a proposal on it is judged. Null when no idea "
+    "should come first. It can't name a card in this reply, and a try-next request from the human, while it "
+    "stands, comes first.",
     "RefereeReport.verdicts": "One verdict per card, in the cards' order.",
     "Verdict.title": "The title of the card this verdict is on, as the card has it.",
     "Verdict.decision": "accept (the card is added as written), revise (the corrected card in revised is added "
@@ -136,6 +141,7 @@ class ResearchNote:
     ideas: tuple[ResearchIdea, ...]
     stop: tuple[str, ...]
     summary: str
+    next_up: int | None                 # no default: present, an idea's id or null
 
 
 @dataclass(frozen=True)

@@ -211,7 +211,8 @@ IDEA = {**CARD, "timeframe": "4h", "builds_on": "the funding fades all closed"}
 
 
 def note(**over):
-    out = {"ideas": [IDEA], "stop": ["sign flips of closed ideas"], "summary": "what the record taught\nand why"}
+    out = {"ideas": [IDEA], "stop": ["sign flips of closed ideas"], "summary": "what the record taught\nand why",
+           "next_up": None}
     out = {**out, **over}
     return {k: v for k, v in out.items() if v is not ...}
 
@@ -219,7 +220,7 @@ def note(**over):
 def test_the_research_schema_and_description_come_from_the_same_fields():
     text = describe_research(TFS, MAX)
     names = set(_names(research_schema(TFS, MAX)))
-    assert {"ideas", "stop", "summary", "title", "columns", "timeframe", "builds_on"} <= names
+    assert {"ideas", "stop", "summary", "next_up", "title", "columns", "timeframe", "builds_on"} <= names
     for n in names:
         assert n in text
     for key, doc in FIELD_DOCS.items():
@@ -228,6 +229,7 @@ def test_the_research_schema_and_description_come_from_the_same_fields():
     assert FIELD_DOCS["IdeaCard.title"] not in text              # a research idea's title says more
     assert f"ideas (array of objects, at most {MAX}; required)" in text
     assert "stop (array of strings, at most 5; required)" in text
+    assert "- next_up (integer or null; required)" in text
     assert "  - builds_on (string; required)" in text and "  - timeframe (one of 15m, 1h, 4h; required)" in text
 
 
@@ -242,7 +244,8 @@ def test_the_research_schema_is_closed_and_carries_the_limits():
     jsonschema = pytest.importorskip("jsonschema")
     s = research_schema(TFS, 2)
     jsonschema.Draft202012Validator.check_schema(s)
-    assert s["additionalProperties"] is False and s["required"] == ["ideas", "stop", "summary"]
+    assert s["additionalProperties"] is False and s["required"] == ["ideas", "stop", "summary", "next_up"]
+    assert s["properties"]["next_up"]["type"] == ["integer", "null"]     # present, an idea's id or null
     ideas, stop, summary = (s["properties"][k] for k in ("ideas", "stop", "summary"))
     assert (ideas["type"], ideas["maxItems"]) == ("array", 2)
     item = ideas["items"]
@@ -263,6 +266,11 @@ def test_parse_research_accepts_a_note():
     assert n.ideas[0].columns == ("close", "volume") and n.ideas[0].trades_per_coin_per_year == 12.0
     assert n.ideas[0].builds_on == "the funding fades all closed"
     assert n.stop == ("sign flips of closed ideas",) and n.summary == "what the record taught\nand why"
+    assert n.next_up is None
+
+
+def test_a_note_may_name_an_idea_to_try_next():
+    assert parse_research(note(next_up=12), TFS, MAX).next_up == 12
 
 
 def test_a_note_may_hold_no_idea_and_no_stop():
@@ -287,6 +295,10 @@ def test_a_note_may_hold_no_idea_and_no_stop():
     ({"ideas": ["card"]}, "ideas[0]: must be an object"),
     ({"ideas": IDEA}, "ideas: must be an array of objects"),
     ({"stop": ...}, "stop: required"),
+    ({"next_up": ...}, "next_up: required"),
+    ({"next_up": "12"}, "next_up: must be an integer"),
+    ({"next_up": True}, "next_up: must be an integer"),
+    ({"next_up": 1.5}, "next_up: must be an integer"),
     ({"extra": 1}, "extra: unknown field"),
 ])
 def test_parse_research_refuses_each_limit_with_a_clear_error(over, error):
@@ -307,7 +319,7 @@ def test_parse_research_lists_every_problem_and_refuses_a_non_object():
                        TFS, MAX)
     assert e.value.errors == ["ideas[0].timeframe: must be one of ['15m', '1h', '4h'], got '5m'",
                               "ideas[1].signal: must be a non-empty string", "stop[0]: must be one line",
-                              "summary: required"]
+                              "summary: required", "next_up: required"]
     with pytest.raises(ContractError):
         parse_research([], TFS, MAX)
 
@@ -571,4 +583,8 @@ def test_the_research_contract_is_unchanged_by_the_referee_one():
     for key, doc in FIELD_DOCS.items():
         if key.startswith(REFEREE_CLASSES):
             assert doc not in text, key
-    assert "null" not in text and "null" not in str(research_schema(TFS, MAX))
+    # the referee's nullable card stays out of it: the research note's one nullable field is its own next_up
+    assert text.count("or null") == 1 and "- next_up (integer or null; required)" in text
+    props = research_schema(TFS, MAX)["properties"]
+    assert [k for k, v in props.items() if "null" in str(v)] == ["next_up"]
+    assert "null" not in str(props["ideas"])

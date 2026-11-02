@@ -211,3 +211,29 @@ Where they differ from the sections above, these win.
 - **Why a round failed.** A note refused after its fix-ups puts its last attempt's first error on its digest line,
   as a dropped proposal does; a failed call puts the CLI's error text there.
 - **What each idea builds on** (`builds_on`) shows beside the idea in the Ideas page's research notes.
+
+## Amended: the research step asks for an idea to be tried next (2026-11-02)
+
+The user's ask, after session 3 (2026-11-02): a round's summary recommended testing the untried open ideas before
+more refinements of one already judged, and the builder refined it twice more. The summary is for the human only
+(What it writes), so the builder never saw the advice. A round now gives it through the human's own channel, the
+"try next" flag (proposer spec, "Try next").
+
+- **The field.** `ResearchNote.next_up` (integer or null, required): the id of one open idea already in the record
+  that the next proposal should work on, or null. It can't name a card of the same reply: those have no id yet. It
+  comes from the contract like every other field, so the schema and the description can't drift.
+- **Who asked.** `ideas.next_by` (`human` or `research`, a column added by the migration) says who set the flag;
+  a flag with none, set before the column, is the human's. The proposal's instruction ends with "The research step
+  asks that this round's proposal work on idea #<id>." for a research flag, and the human's sentence for the
+  human's. It is a request, as the human's is, and the idea rules don't change. It clears as the human's does: when
+  a proposal that refines or ports the idea gets a verdict or the judge's refusal, or the idea leaves open.
+- **The human comes first.** A research round's flag never replaces or takes over the human's standing request
+  (the condition is in the write itself, so a request the human makes meanwhile can't be lost); the human's always
+  replaces a research flag, and the page's "Clear" and `lab idea next --clear` clear either. A later round's
+  request replaces an earlier round's. A round whose next_up is null leaves the flag as it is.
+- **An unusable request costs nothing.** The idea must pass the human's checks (`human.why_not_next`: open, and
+  some proposal could work on it now). One that doesn't, or that a standing human request blocks, is not set; the
+  round stands (its cards, stop list and summary, no fix-up) and the digest says why. It is set in `ok` and
+  `capped` rounds, after the referee; an `invalid` or failed round sets nothing.
+- **Where the human sees it.** The digest's research line ends `next up #<id>`, or `next up #<id> not set:
+  <why>`; the Ideas page marks the idea "**next up**, asked by the research step", with the same Clear button.

@@ -397,6 +397,19 @@ def test_try_next_flags_one_open_idea_and_clear_unflags_it(populated):
     assert r.next_up() is None
 
 
+def test_a_research_steps_request_says_so_and_the_human_can_clear_it(populated):
+    r = _seeded(populated)
+    a = _id(r, "open one")
+    r.flag_next(a, by="research")
+    at = _ideas_at()
+    shown = [m.value for m in at.markdown if "next up" in m.value]
+    assert shown == ["**next up**, asked by the research step: the builder's next round is asked to work on this "
+                     "idea"]
+    at.button(key=f"clear_next_{a}").click().run()
+    assert not at.exception, [e.message for e in at.exception]
+    assert r.next_up() is None
+
+
 def test_try_next_is_offered_only_for_an_idea_a_proposal_could_work_on(populated):
     r = _seeded(populated)
     untested = r.add_idea("LCE untested", {}, "seed", "5m")          # ports only, and no pile a port needs

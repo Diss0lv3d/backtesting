@@ -4,7 +4,7 @@ Reads record.db, the session digest and lock, and lab.db. It writes only record.
 card of their own, an exclusion, the "try next" flag, or a stop item added or removed, each checked in code in
 human.py and Record, as `lab idea` and `lab stop` do), and once more on its first load of a record older than the
 tables and columns added since, when opening the record adds them (Record: a missing table such as stops, and the
-column migration's next_up and web_reviewed on ideas and referee on research). It never creates the state dir.
+column migration's next_up, next_by and web_reviewed on ideas and referee on research). It never creates the state dir.
 The grouping is `piles.idea_group`, the rule `lab ideas` prints by.
 
 A research round's referee could read academic papers, some maybe published after the model's training cutoff
@@ -287,7 +287,8 @@ def _controls(record: Record, pc, idea: dict) -> None:
     i, status = idea["id"], idea["status"]
     if idea.get("next_up") is not None:
         c = st.columns([5, 1])
-        c[0].markdown("**next up**: the builder's next round is asked to work on this idea")
+        by = ", asked by the research step" if idea.get("next_by") == "research" else ""
+        c[0].markdown(f"**next up**{by}: the builder's next round is asked to work on this idea")
         c[1].button("Clear", key=f"clear_next_{i}", on_click=_act, args=(i, "Next up cleared", record.clear_next, i))
     elif status == "open":
         if why := human.why_not_next(record, pc, idea):
