@@ -335,10 +335,15 @@ class Record:
                 c.execute(sa.update(ideas).where(ideas.c.id != id, ideas.c.next_up.is_not(None))
                           .values(**_UNFLAGGED))
                 return
-        held = self.next_up() if by == "research" else None
-        if held is not None and (held["next_by"] or "human") == "human":
-            raise ValueError(f"the human's request for idea #{held['id']} stands")
-        raise ValueError(self._why_not(id, "only an open idea can be tried next"))
+            # Nothing written. Why, read in the same transaction: the UPDATE took the write lock even matching no
+            # row, so a write by the human meanwhile can't make the reason contradict the refusal.
+            held = (c.execute(sa.select(ideas.c.id, ideas.c.next_by).where(ideas.c.next_up.is_not(None))).first()
+                    if by == "research" else None)
+            status = c.execute(sa.select(ideas.c.status).where(ideas.c.id == id)).scalar()
+        if held is not None and (held.next_by or "human") == "human":
+            raise ValueError(f"the human's request for idea #{held.id} stands")
+        raise ValueError(f"there is no idea #{id}" if status is None
+                         else f"idea #{id} is {status}; only an open idea can be tried next")
 
     def _why_not(self, id: int, rule: str) -> str:
         try:

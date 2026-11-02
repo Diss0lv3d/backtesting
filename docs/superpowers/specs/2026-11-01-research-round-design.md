@@ -220,8 +220,10 @@ more refinements of one already judged, and the builder refined it twice more. T
 "try next" flag (proposer spec, "Try next").
 
 - **The field.** `ResearchNote.next_up` (integer or null, required): the id of one open idea already in the record
-  that the next proposal should work on, or null. It can't name a card of the same reply: those have no id yet. It
-  comes from the contract like every other field, so the schema and the description can't drift.
+  that the next proposal should work on, or null. It can't name a card of the same reply: an id above the highest
+  in the record the round's prompt was built from is refused (the model could guess its own card's id, and the
+  referee may drop that card). It comes from the contract like every other field, so the schema and the
+  description can't drift.
 - **Who asked.** `ideas.next_by` (`human` or `research`, a column added by the migration) says who set the flag;
   a flag with none, set before the column, is the human's. The proposal's instruction ends with "The research step
   asks that this round's proposal work on idea #<id>." for a research flag, and the human's sentence for the
@@ -232,8 +234,12 @@ more refinements of one already judged, and the builder refined it twice more. T
   replaces a research flag, and the page's "Clear" and `lab idea next --clear` clear either. A later round's
   request replaces an earlier round's. A round whose next_up is null leaves the flag as it is.
 - **An unusable request costs nothing.** The idea must pass the human's checks (`human.why_not_next`: open, and
-  some proposal could work on it now). One that doesn't, or that a standing human request blocks, is not set; the
-  round stands (its cards, stop list and summary, no fix-up) and the digest says why. It is set in `ok` and
-  `capped` rounds, after the referee; an `invalid` or failed round sets nothing.
+  some proposal could work on it now; an id past SQLite's integers is no idea, never an overflow). One that
+  doesn't, or that a standing human request blocks, is not set; the round stands (its cards, stop list and summary,
+  no fix-up) and the digest says why. A request (of anyone's) that no proposal could answer any more is cleared
+  first, as a proposal's prompt would clear it, so it can't block the round's. It is set in `ok` and `capped`
+  rounds, after the referee and after the round's row is written (a session that dies between the two leaves a
+  round with no request, never a request from a round that looks interrupted); an `invalid` or failed round sets
+  nothing.
 - **Where the human sees it.** The digest's research line ends `next up #<id>`, or `next up #<id> not set:
   <why>`; the Ideas page marks the idea "**next up**, asked by the research step", with the same Clear button.
