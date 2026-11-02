@@ -131,6 +131,20 @@ def test_it_reads_the_column_named_by_col():
         assert got.equals(volume_vs_same_hour(b.assign(volume=b[c])))
 
 
+
+@pytest.mark.parametrize("weeks", [4.0, np.int64(4), np.float64(4.0)], ids=["float", "np.int64", "np.float64"])
+def test_a_whole_number_of_weeks_from_a_grid_is_taken_as_an_int(weeks):
+    b = make_bars(seed=3)
+    assert volume_vs_same_hour(b, weeks).equals(volume_vs_same_hour(b, 4))
+
+
+@pytest.mark.parametrize("weeks", [4.5, 0, 0.0, -1, float("nan"), float("inf"), "4", None, True],
+                         ids=["4.5", "0", "0.0", "-1", "nan", "inf", "str", "None", "bool"])
+def test_any_other_weeks_is_a_clear_error(weeks):
+    with pytest.raises(ValueError, match=r"^weeks must be a whole number of at least 1, got "):
+        volume_vs_same_hour(make_bars(n=50), weeks)
+
+
 # ------------------------------------------------------------------ causality on random bars
 
 CUTS = (1, 337, 1100, 2001, 2999)

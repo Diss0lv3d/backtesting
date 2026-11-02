@@ -72,6 +72,14 @@ _HOUR_MS = 3_600_000
 _WEEK_MS = 7 * 86_400_000
 
 
+def _whole_weeks(weeks) -> int:
+    """`weeks` as an int: a whole number of at least 1, so 4.0 from a param grid is 4; else a ValueError."""
+    if (isinstance(weeks, (int, float, np.integer, np.floating)) and not isinstance(weeks, bool)
+            and np.isfinite(weeks) and float(weeks).is_integer() and weeks >= 1):
+        return int(weeks)
+    raise ValueError(f"weeks must be a whole number of at least 1, got {weeks!r}")
+
+
 def volume_vs_same_hour(df: pd.DataFrame, weeks: int = 4, col: str = "volume") -> pd.Series:
     """Each bar's `col` over its median at the same UTC hour of the week (weekday x hour of open_time) in the
     `weeks` weeks before; ~1 at a normal level for that hour. Raw volume rises at session opens and on weekdays,
@@ -79,6 +87,7 @@ def volume_vs_same_hour(df: pd.DataFrame, weeks: int = 4, col: str = "volume") -
     nor the rest of its hour this week; on bars under an hour, every bar of that hour in those weeks counts.
     NaN with fewer than max(2, weeks // 2) earlier values (so weeks >= 2 on bars of an hour or more), or a zero
     median. Also for `trades`, `quote_volume` or `taker_buy_volume` via `col`."""
+    weeks = _whole_weeks(weeks)
     ot = df.open_time.to_numpy(dtype=np.int64)
     x = df[col].to_numpy(dtype=float)
     n = len(x)
