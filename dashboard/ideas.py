@@ -4,8 +4,8 @@ Reads record.db, the session digest and lock, and lab.db. It writes only record.
 card of their own, an exclusion, the "try next" flag, or a stop item added or removed, each checked in code in
 human.py and Record, as `lab idea` and `lab stop` do), and once more on its first load of a record older than the
 tables and columns added since, when opening the record adds them (Record: a missing table such as stops, and the
-column migration's next_up and web_reviewed on ideas and referee on research). It never creates the state dir. The grouping is `piles.idea_group`, the rule `lab ideas`
-prints by.
+column migration's next_up and web_reviewed on ideas and referee on research). It never creates the state dir.
+The grouping is `piles.idea_group`, the rule `lab ideas` prints by.
 
 A research round's referee could read academic papers, some maybe published after the model's training cutoff
 (referee-and-human-stops spec, "Anti-goals"): an idea it reviewed carries a "web-reviewed" tag, and a promoted one's
