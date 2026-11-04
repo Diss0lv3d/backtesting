@@ -1038,6 +1038,34 @@ proposer from the Ideas page and from `lab idea`, with structured cards and butt
   `strategies/`, so a running session's harness pin holds. The session reads the record each
   round, so a new idea, an exclusion or a flag reaches the model at its next round.
 
+## Amended: an exhausted idea can be tried next, as a port (2026-11-04)
+
+With `proposals_per_idea` at 2, a close call is exhausted after one refinement, and the human may still want it
+tested at another timeframe. The port rules already allow a port of an exhausted idea whose best pile is signal
+before costs or close call; only "Try next" refused it. So:
+
+- **Which ideas.** An open or an exhausted idea can be tried next (`record.PINNABLE`), still only when some
+  proposal could work on it now (`assemble.answerable`): for an exhausted idea, a port under the port rules. The
+  condition is in the record's write, as before.
+- **The flag keeps through exhausted.** Settling an idea exhausted (its last judged plugin, or a lowered cap at the
+  next session's start) keeps its flag; any other status (dead, passed, failed, duplicate, excluded) clears it. A
+  flag no proposal can answer any more is cleared by the loop at its round, as before. So a request made while an
+  idea was open, still standing when the idea settles exhausted (its plugin broke, or a lowered cap), becomes a
+  request for its port. The record's write checks only the status: a request for an idea a session settled
+  exhausted and unportable between the check and the write goes in, and the loop clears it at its round.
+- **The sentence.** For an exhausted idea the instruction ends "The human asks that this round's proposal port idea
+  #<id> to another timeframe." (the research step's: "The research step asks that ..."); an open idea's sentence
+  is unchanged. It is a request; the idea rules don't change. A judged port answers it, as before (the port's
+  verdict clears the flag on the idea it ports).
+- **The research step** uses the same check (`human.why_not_next`), so its `next_up` may name an exhausted idea a
+  port can work on; the human's standing request still comes first.
+- **The page.** "Try next" shows on an exhausted idea a port can work on, with no caption on one it can't (the usual
+  end of an idea, not a refusal); its "next up" line says the round is asked to port it.
+- **What the model sees.** A closed idea is one line, with no card or source to port from, so an exhausted idea
+  asked for next is shown as an open one is (card, plugins, verdicts, its best plugin's source, labelled the root of
+  a port, with no PARENT), in its own section, "Asked for next (exhausted: a port only)", between the open and the
+  closed ideas. Unflagged, it stays one closed line.
+
 ## Research rounds (2026-11-01)
 
 The unattended session gains an occasional research round: one extra tool-less call that adds idea cards (origin

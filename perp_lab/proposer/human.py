@@ -18,7 +18,7 @@ from dataclasses import asdict
 from perp_lab.proposer.assemble import answerable
 from perp_lab.proposer.context import PLUGIN_COLUMNS
 from perp_lab.proposer.contract import ContractError, parse_card
-from perp_lab.proposer.record import Record
+from perp_lab.proposer.record import PINNABLE, Record
 
 WARNING = ("The builder reads this text. Describe the mechanism and the rule only, with no results from real data "
            "(Sharpe ratios, returns, backtest figures, dates of runs): the model must not see real-data statistics "
@@ -111,9 +111,10 @@ def add_all(record: Record, pc, entries: list) -> list[int]:
 
 
 def why_not_next(record: Record, pc, idea: dict) -> str | None:
-    """Why the idea can't be tried next, or None: it must be open, and some proposal must be able to work on it."""
-    if idea["status"] != "open":
-        return f"idea #{idea['id']} is {idea['status']}; only an open idea can be tried next"
+    """Why the idea can't be tried next, or None: it must be open or exhausted, and some proposal must be able to
+    work on it now (an exhausted idea takes no refinement, so a port)."""
+    if idea["status"] not in PINNABLE:
+        return f"idea #{idea['id']} is {idea['status']}; only an open or exhausted idea can be tried next"
     return answerable(idea, record, pc)
 
 

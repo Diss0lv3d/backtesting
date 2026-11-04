@@ -228,7 +228,7 @@ def test_idea_next_flags_one_open_idea_and_clear_unflags_it(tmp_path):
     assert r.exit_code == 0 and "idea #1 is next up" in r.output and rec.next_up()["id"] == 1
     assert _idea_cmd(tmp_path, "next", str(other)).exit_code == 0 and rec.next_up()["id"] == other
     r = _idea_cmd(tmp_path, "next", str(dead))
-    assert r.exit_code == 2 and "only an open idea" in r.output and rec.next_up()["id"] == other
+    assert r.exit_code == 2 and "only an open or exhausted idea" in r.output and rec.next_up()["id"] == other
     for args in ([], ["1", "--clear"]):                               # an id or --clear, not both or neither
         assert _idea_cmd(tmp_path, "next", *args).exit_code == 2
     r = _idea_cmd(tmp_path, "next", "--clear")

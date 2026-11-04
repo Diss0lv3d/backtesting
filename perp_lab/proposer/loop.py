@@ -910,7 +910,8 @@ class _Session:
     def _research_next_up(self, r: _Research) -> str | None:
         """A valid note's next_up, flagged as the research step's request (research-round spec, Amended: try next),
         or why it wasn't: the idea must be one the round read (never a card of its own reply, whose id the model can
-        guess, and which the referee may have dropped), open and answerable, as the human's must be, and the human's
+        guess, and which the referee may have dropped), open or exhausted and answerable, as the human's must be,
+        and the human's
         own request, while it stands, comes first; a request of anyone's that no proposal could answer any more is
         cleared first (_next_up), so it can't block the round's. Whatever came of it the round stands (its cards,
         stop list and summary): an unusable request is the least of a note, so it costs no fix-up. For the digest;

@@ -323,13 +323,30 @@ def test_an_old_record_gets_the_next_by_column_and_its_flag_stays_the_humans(tmp
         rec.flag_next(2, by="research")
 
 
-def test_the_flag_goes_when_its_idea_leaves_open(rec):
+@pytest.mark.parametrize("status", ["dead", "passed", "failed", "duplicate"])
+def test_the_flag_stays_while_its_idea_is_exhausted_and_goes_when_it_closes(rec, status):
+    """An exhausted idea takes no refinement, but a port may still work on it: settling it exhausted, as a lowered
+    proposals_per_idea does, keeps the request (the loop clears, at its round, a flag no proposal can answer)."""
     a = rec.add_idea("A", {}, "seed", "1h")
     rec.flag_next(a)
     rec.set_idea(a, family="family:a")
     assert rec.next_up()["id"] == a
     rec.set_idea(a, status="exhausted")
-    assert rec.next_up() is None and rec.idea(a)["next_up"] is None
+    assert rec.next_up()["id"] == a
+    rec.set_idea(a, status=status)
+    assert rec.next_up() is None and rec.idea(a)["next_up"] is None and rec.idea(a)["next_by"] is None
+
+
+@pytest.mark.parametrize("by", ["human", "research"])
+def test_an_exhausted_idea_can_be_flagged_and_a_closed_one_cannot(rec, by):
+    a = rec.add_idea("A", {}, "seed", "1h", status="exhausted")
+    rec.flag_next(a, by=by)
+    assert (rec.next_up()["id"], rec.next_up()["next_by"]) == (a, by)
+    for status in ("dead", "passed", "failed", "excluded", "duplicate"):
+        i = rec.add_idea(status, {}, "seed", "1h", status=status)
+        with pytest.raises(ValueError, match=f"idea #{i} is {status}; only an open or exhausted idea can be tried"):
+            rec.flag_next(i, by=by)
+    assert rec.next_up()["id"] == a
 
 
 @pytest.mark.parametrize("status", ["open", "exhausted", "dead"])

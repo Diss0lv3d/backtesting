@@ -243,3 +243,9 @@ more refinements of one already judged, and the builder refined it twice more. T
   nothing.
 - **Where the human sees it.** The digest's research line ends `next up #<id>`, or `next up #<id> not set:
   <why>`; the Ideas page marks the idea "**next up**, asked by the research step", with the same Clear button.
+
+## Amended: next_up may name an exhausted idea to port (2026-11-04)
+
+`ResearchNote.next_up` may also name an exhausted idea a port can still work on: the check is the human's
+(`human.why_not_next`), which now takes an open or exhausted idea. The proposal's sentence then asks for a port. See
+the proposer spec's "Amended: an exhausted idea can be tried next, as a port (2026-11-04)".

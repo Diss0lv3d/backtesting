@@ -229,9 +229,42 @@ def test_a_research_flag_says_the_research_step_asks(rec):
 def test_no_flag_and_a_flagged_idea_no_longer_open_add_nothing(rec):
     assert prompt.instruction() == prompt.instruction(None) == prompt.INSTRUCTION
     with rec.engine.begin() as c:            # closed by a write that left its flag (set_idea would clear it)
-        c.execute(ideas.update().where(ideas.c.id == 1).values(status="exhausted"))
+        c.execute(ideas.update().where(ideas.c.id == 1).values(status="dead"))
     flagged = rec.next_up()
-    assert flagged["status"] == "exhausted" and prompt.instruction(flagged) == prompt.INSTRUCTION
+    assert flagged["status"] == "dead" and prompt.instruction(flagged) == prompt.INSTRUCTION
+
+
+@pytest.mark.parametrize("by,who", [("human", "The human"), ("research", "The research step")])
+def test_a_flagged_exhausted_idea_asks_for_a_port(rec, by, who):
+    """It takes no refinement: a port is the only proposal that can work on it."""
+    rec.clear_all_next()
+    rec.flag_next(1, by=by)
+    rec.set_idea(1, status="exhausted")
+    text = prompt.instruction(rec.next_up())
+    assert text == prompt.INSTRUCTION + f"\n\n{who} asks that this round's proposal port idea #1 to another timeframe."
+
+
+def test_a_flagged_exhausted_idea_is_shown_in_full_for_its_port(tmp_path):
+    """Asked for a port, the builder needs what an open idea shows (its card, plugins, verdicts and best plugin's
+    source); an exhausted idea is otherwise one closed line, and stays one unflagged."""
+    r = Record(tmp_path / "state")
+    close = verdict(net=0.5, p95=-0.2, gross=0.9, gross_p95=0.1)
+    a, b = r.add_idea("Flow fade", CARD_A, "proposer", "4h"), r.add_idea("Donchian", CARD_B, "proposer", "4h")
+    for i, name in ((a, "px0001_flow_fade"), (b, "px0002_donchian")):
+        r.add_proposal(idea_id=i, plugin=name, timeframe="4h", kind="new", state="judged", judge_exit=0,
+                       verdict=close, pile="close call", source=f"# the source of {name}\n")
+        r.set_idea(i, status="exhausted")
+    r.flag_next(a)
+    text = prompt.render_record(r, 9, TFS)
+    shown = text.split("## Asked for next (exhausted: a port only)\n\n")[1].split("## Closed ideas")[0]
+    assert shown.startswith(f"### #{a} Flow fade\ntimeframe 4h; status exhausted, ports only: it has used its "
+                            "judged plugins; best pile close call; judged plugins 1\n")
+    assert prompt.card_text(CARD_A) in shown and "# the source of px0001_flow_fade" in shown
+    assert "Its best plugin (a port of this idea is a root, with no PARENT): px0001_flow_fade@4h" in shown
+    closed = text.split("## Closed ideas")[1]
+    assert f"#{a} Flow fade" not in closed and f"#{b} Donchian: exhausted, close call" in closed
+    r.clear_all_next()
+    assert "## Asked for next" not in prompt.render_record(r, 9, TFS)
 
 
 def test_a_fixup_holds_the_prompt_the_rejected_reply_and_the_errors():

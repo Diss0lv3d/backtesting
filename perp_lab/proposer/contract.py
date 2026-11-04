@@ -78,9 +78,10 @@ FIELD_DOCS: dict[str, str] = {
     "characters. May be empty.",
     "ResearchNote.summary": f"For the human: what the record has taught and why these ideas. At most "
     f"{SUMMARY_MAX_CHARS} characters.",
-    "ResearchNote.next_up": "The id of one open idea already in the record that the builder's next proposal "
-    "should work on: the test the record needs most, such as an untested idea before more refinements of one "
-    "already judged. The builder is asked to work on it until a proposal on it is judged. Null when no idea "
+    "ResearchNote.next_up": "The id of one open idea already in the record, or of an exhausted one a port can "
+    "still work on, that the builder's next proposal should work on: the test the record needs most, such as an "
+    "untested idea before more refinements of one already judged. The builder is asked to work on it (an exhausted "
+    "one, to port it) until a proposal on it is judged. Null when no idea "
     "should come first. It can't name a card in this reply, and a try-next request from the human, while it "
     "stands, comes first.",
     "RefereeReport.verdicts": "One verdict per card, in the cards' order.",

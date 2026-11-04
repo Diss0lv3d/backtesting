@@ -1229,6 +1229,38 @@ def test_a_refused_or_broken_refinement_uses_one_of_its_ideas_judged_plugins(lab
     assert lab.pc.proposals_per_idea == 2 and idea(lab, "Fade")["status"] == "exhausted"
 
 
+PORT_ASK = "The human asks that this round's proposal port idea #{} to another timeframe."
+
+
+def test_a_flagged_idea_settled_exhausted_is_asked_for_as_a_port_and_its_judged_port_answers(lab):
+    """A lowered proposals_per_idea settles a close call exhausted at the session's start: the human's request
+    stands, the round asks for a port (the only proposal that can work on it), and the port's verdict answers it."""
+    i = lab.rec.add_idea("Drift", card("Drift"), "proposer", "1h")
+    lab.rec.add_proposal(idea_id=i, plugin="drift_v1", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("close call"), "lineage_id": "family:drift_v1"})
+    lab.rec.flag_next(i)
+    lab.fake.replies = [port(i), new("Next")]
+    lab.fake.verdict = verdict("signal before costs")
+    assert run(lab, replace(lab.pc, proposals_per_idea=1), trials=2) == "trials"
+    assert idea(lab, "Drift")["status"] == "exhausted"
+    assert lab.fake.calls[0].user.endswith(PORT_ASK.format(i) + "\n")
+    assert f"## Asked for next (exhausted: a port only)\n\n### #{i} Drift\n" in lab.fake.calls[0].user
+    assert all(PORT_ASK.format(i) not in c.user for c in lab.fake.calls[1:])
+    assert (props(lab)[-2]["kind"], props(lab)[-2]["state"]) == ("port", "judged")
+    assert lab.rec.next_up() is None
+
+
+def test_a_rounds_next_up_may_ask_for_an_exhausted_idea_to_be_ported(lab):
+    i = lab.rec.add_idea("Drift", card("Drift"), "proposer", "1h", status="exhausted")
+    lab.rec.add_proposal(idea_id=i, plugin="drift_v1", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("close call"), "lineage_id": "family:drift_v1"})
+    lab.fake.notes = [note(next_up=i)]
+    assert run(lab, replace(lab.pc, research_every=1, proposals_per_idea=1), trials=2) == "trials"
+    assert (lab.rec.next_up()["id"], lab.rec.next_up()["next_by"]) == (i, "research")
+    assert proposal_calls(lab)[1].user.endswith(
+        f"The research step asks that this round's proposal port idea #{i} to another timeframe.\n")
+
+
 def test_the_loop_never_clears_another_ideas_flag(lab):
     flagged = lab.rec.add_idea("Flagged", card("Flagged"), "human", "1h")
     other = lab.rec.add_idea("Other", card("Other"), "human", "1h")
@@ -1690,7 +1722,7 @@ def test_the_humans_standing_request_keeps_the_research_steps_from_being_set(lab
 @pytest.mark.parametrize("target,why", [
     (99, "idea #99 was not in the record the round read"),
     (-1, "there is no idea #-1"),
-    ("Closed", "idea #{id} is excluded; only an open idea can be tried next"),
+    ("Closed", "idea #{id} is excluded; only an open or exhausted idea can be tried next"),
 ])
 def test_a_next_up_no_proposal_can_work_on_is_not_set_and_costs_the_round_nothing(lab, target, why):
     tid = target
