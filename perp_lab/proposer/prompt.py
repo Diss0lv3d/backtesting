@@ -128,10 +128,14 @@ def _proposal(p: dict) -> list[str]:
 def _open_idea(idea: dict, props: list[dict], timeframes) -> str:
     best, tf = _best(props), idea.get("timeframe")
     # A refinement keeps its idea's timeframe, so an idea at one no plugin may trade (a human trial at 5m) takes
-    # ports only, and no refinement gets its champion as PARENT (M-1).
-    ports_only = tf not in timeframes
+    # ports only, and no refinement gets its champion as PARENT (M-1). So does an exhausted idea, shown here only
+    # when it is asked for next (render_record).
+    exhausted = idea["status"] == "exhausted"
+    ports_only = exhausted or tf not in timeframes
     status = f"status {idea['status']}"
-    if ports_only:
+    if exhausted:
+        status += ", ports only: it has used its judged plugins"
+    elif ports_only:
         status += f", ports only: its timeframe {tf} is not one a plugin may trade"
     facts = [f"timeframe {tf}", status, f"best pile {best or 'none yet'}", f"judged plugins {len(_judged(props))}"]
     if idea.get("port_of") is not None:
@@ -150,12 +154,16 @@ def _open_idea(idea: dict, props: list[dict], timeframes) -> str:
 
 
 def render_record(record: Record, current_n: int, timeframes) -> str:
-    """The record for the prompt; `timeframes` is proposer.timeframes, the ones a plugin may trade."""
-    opened, closed = [], []
+    """The record for the prompt; `timeframes` is proposer.timeframes, the ones a plugin may trade. An exhausted
+    idea asked for next (a port only) is shown as an open one is, in its own section: a port needs its card, plugins
+    and best plugin's source, which a closed idea's one line doesn't carry. The flag's time is never shown."""
+    opened, asked, closed = [], [], []
     for idea in record.ideas():
         props = [p for p in record.proposals(idea["id"]) if p.get("state") in SHOWN_STATES]
         if idea["status"] == "open":
             opened.append(_open_idea(idea, props, tuple(timeframes)))
+        elif idea["status"] == "exhausted" and idea.get("next_up") is not None:
+            asked.append(_open_idea(idea, props, tuple(timeframes)))
         else:
             best = _best(props)
             label = best or ("untested" if not _judged(props) else "unknown")
@@ -168,6 +176,7 @@ def render_record(record: Record, current_n: int, timeframes) -> str:
         "from a re-run on today's data and only the old judgement's decision.",
         "## Open ideas",
         "\n\n".join(opened) or "None.",
+        *(["## Asked for next (exhausted: a port only)", "\n\n".join(asked)] if asked else []),
         "## Closed ideas",
         "\n".join(closed) or "None.",
         f"N is now {current_n}; the bar is {sharpe_bar(current_n):.2f}",
@@ -187,14 +196,22 @@ Reply with one JSON object, as the reply contract describes, and nothing else.""
 
 NEXT_UP = "The human asks that this round's proposal work on idea #{id}."
 NEXT_UP_RESEARCH = "The research step asks that this round's proposal work on idea #{id}."
+NEXT_UP_PORT = "The human asks that this round's proposal port idea #{id} to another timeframe."
+NEXT_UP_PORT_RESEARCH = "The research step asks that this round's proposal port idea #{id} to another timeframe."
 
 
 def instruction(next_up: dict | None = None) -> str:
-    """The round's instruction. The flagged idea (record.next_up), while it is open, adds one fixed sentence with
-    its id, naming who asked (next_by: research, or the human, whose flag may predate the column): never the
-    flag's time, and never words of the human's or the research step's. It asks; the rules don't change."""
-    if next_up is not None and next_up.get("status") == "open":
-        text = NEXT_UP_RESEARCH if next_up.get("next_by") == "research" else NEXT_UP
+    """The round's instruction. The flagged idea (record.next_up), while it is open or exhausted, adds one fixed
+    sentence with its id, naming who asked (next_by: research, or the human, whose flag may predate the column):
+    never the flag's time, and never words of the human's or the research step's. An exhausted idea takes no
+    refinement, so its sentence asks for a port. It asks; the rules don't change."""
+    status = next_up.get("status") if next_up is not None else None
+    if status in ("open", "exhausted"):
+        research = next_up.get("next_by") == "research"
+        if status == "open":
+            text = NEXT_UP_RESEARCH if research else NEXT_UP
+        else:
+            text = NEXT_UP_PORT_RESEARCH if research else NEXT_UP_PORT
         return INSTRUCTION + "\n\n" + text.format(id=int(next_up["id"]))
     return INSTRUCTION
 

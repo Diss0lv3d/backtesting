@@ -127,9 +127,27 @@ def test_try_next_needs_an_idea_some_proposal_could_work_on(rec):
         with pytest.raises(ValueError, match=f"there is no idea #{huge}"):
             human.flag_next(rec, PC, huge)
     dead = rec.add_idea("Dead", {}, "seed", "1h", status="dead")
-    with pytest.raises(ValueError, match=f"idea #{dead} is dead; only an open idea"):
+    with pytest.raises(ValueError, match=f"idea #{dead} is dead; only an open or exhausted idea"):
         human.flag_next(rec, PC, dead)
     assert rec.next_up()["id"] == lce
+
+
+def test_try_next_takes_an_exhausted_idea_while_a_port_can_work_on_it(rec):
+    """An exhausted idea takes no refinement; a port can work on it from a progress pile, to a timeframe it has no
+    port at yet. A lowered cap leaves a close call exhausted, and the human may still ask for its port."""
+    i = rec.add_idea("Drift", {}, "proposer", "4h", status="exhausted")
+    with pytest.raises(ValueError, match=f"no proposal can work on idea #{i} \\(Drift\\) now"):
+        human.flag_next(rec, PC, i)                     # nothing judged: no pile a port needs
+    rec.add_proposal(idea_id=i, plugin="px0001_drift", timeframe="4h", kind="new", state="judged", judge_exit=0,
+                     verdict=SIGNAL)
+    human.flag_next(rec, PC, i)
+    assert (rec.next_up()["id"], rec.next_up()["next_by"]) == (i, "human")
+    rec.clear_all_next()
+    for tf in ("15m", "1h"):                            # a port at every other timeframe: none is left
+        rec.add_idea(f"Drift, {tf}", {}, "proposer", tf, port_of=i)
+    with pytest.raises(ValueError, match="already has a port at 1h"):
+        human.flag_next(rec, PC, i)
+    assert rec.next_up() is None
 
 
 @pytest.mark.parametrize("title", ["Basis\nsqueeze", "Basis\r\nsqueeze", "Basis squeeze"])

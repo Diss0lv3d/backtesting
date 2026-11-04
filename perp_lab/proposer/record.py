@@ -19,6 +19,9 @@ BUSY_TIMEOUT_MS = 30_000
 EXCLUDABLE = ("open", "exhausted", "dead")    # never passed or failed: an exam's outcome stays on the record
 NEXT_BY = ("human", "research")               # who asked for an idea to be tried next
 _UNFLAGGED = {"next_up": None, "next_by": None}
+# The statuses an idea can be tried next in: an open idea takes refinements and ports, an exhausted one a port still
+# (assemble.answerable says whether one can work on it now). Any other status ends a request.
+PINNABLE = ("open", "exhausted")
 
 
 def _pragmas(dbapi_conn, _record) -> None:
@@ -298,8 +301,8 @@ class Record:
     def set_idea(self, id: int, **f) -> None:
         if "title" in f:
             raise ValueError("an idea's title is fixed")
-        if f.get("status", "open") != "open":
-            f["next_up"] = f["next_by"] = None      # only an open idea can be tried next
+        if f.get("status", "open") not in PINNABLE:
+            f["next_up"] = f["next_by"] = None      # only an open or exhausted idea can be tried next
         self._update(ideas, ideas.c.id, id, f)
 
     def exclude_idea(self, id: int, reason: str) -> None:
@@ -317,7 +320,8 @@ class Record:
 
     # -- "try next": the human's request, or a research round's
     def flag_next(self, id: int, by: str = "human") -> None:
-        """Ask for an open idea to be tried next, in place of any other: one idea is flagged at a time. `by` is who
+        """Ask for an open or exhausted idea to be tried next, in place of any other: one idea is flagged at a time
+        (an exhausted one can only be ported: human.why_not_next checks a proposal can work on it). `by` is who
         asks. The human's request always goes in; a research round's never replaces or takes over the human's
         (a flag with no next_by, set before the column, is the human's): the human steers, research suggests."""
         if by not in NEXT_BY:
@@ -325,7 +329,7 @@ class Record:
         # The write first, conditional on the status (and, for research, on no human flag): a session may write
         # the record meanwhile, and SQLite opens no transaction on a read, so a read first could be stale by the
         # write.
-        cond = [ideas.c.id == id, ideas.c.status == "open"]
+        cond = [ideas.c.id == id, ideas.c.status.in_(PINNABLE)]
         if by == "research":
             other = ideas.alias("other")
             cond.append(~sa.exists().where(other.c.next_up.is_not(None),
@@ -343,7 +347,7 @@ class Record:
         if held is not None and (held.next_by or "human") == "human":
             raise ValueError(f"the human's request for idea #{held.id} stands")
         raise ValueError(f"there is no idea #{id}" if status is None
-                         else f"idea #{id} is {status}; only an open idea can be tried next")
+                         else f"idea #{id} is {status}; only an open or exhausted idea can be tried next")
 
     def _why_not(self, id: int, rule: str) -> str:
         try:

@@ -288,11 +288,13 @@ def _controls(record: Record, pc, idea: dict) -> None:
     if idea.get("next_up") is not None:
         c = st.columns([5, 1])
         by = ", asked by the research step" if idea.get("next_by") == "research" else ""
-        c[0].markdown(f"**next up**{by}: the builder's next round is asked to work on this idea")
+        what = "port this idea to another timeframe" if status == "exhausted" else "work on this idea"
+        c[0].markdown(f"**next up**{by}: the builder's next round is asked to {what}")
         c[1].button("Clear", key=f"clear_next_{i}", on_click=_act, args=(i, "Next up cleared", record.clear_next, i))
-    elif status == "open":
+    elif status in ("open", "exhausted"):
         if why := human.why_not_next(record, pc, idea):
-            st.caption(f"Try next: {_text(why)}")          # it names the idea by its title
+            if status == "open":                            # an exhausted idea with no port left: its usual end
+                st.caption(f"Try next: {_text(why)}")       # it names the idea by its title
         else:
             st.button("Try next", key=f"try_next_{i}", on_click=_act,
                       args=(i, f"Idea #{i} is next up", human.flag_next, record, pc, i))

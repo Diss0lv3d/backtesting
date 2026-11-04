@@ -426,6 +426,27 @@ def test_try_next_is_offered_only_for_an_idea_a_proposal_could_work_on(populated
                for c in at.caption)
 
 
+def test_try_next_is_offered_for_an_exhausted_idea_only_while_a_port_can_work_on_it(populated):
+    """No caption for an exhausted idea a port can't work on: it is the usual end of an idea, not a refusal."""
+    r = _seeded(populated)
+    spent = r.add_idea("spent, untested", {}, "proposer", "4h", status="exhausted")
+    portable = r.add_idea("spent, close", {}, "proposer", "4h", status="exhausted")
+    r.add_proposal(idea_id=portable, plugin="px0001_spent_close", timeframe="4h", kind="new", state="judged",
+                   judge_exit=0, verdict={"decision": "kill", "reasons": [], "holdout_status": "n/a", "diagnostics": {
+                       "gates": {"net_sharpe": -1, "random_p95": 0, "oos_trades": 100, "min_oos_trades": 64},
+                       "before_costs": {"sharpe": 0.5, "random_p95": 0.1}}})
+    at = _ideas_at()
+    assert not at.exception, [e.message for e in at.exception]
+    keys = {b.key for b in at.button}
+    assert f"try_next_{portable}" in keys and f"try_next_{spent}" not in keys
+    assert not any(f"#{spent} " in _shown(c.value) for c in at.caption)
+    at.button(key=f"try_next_{portable}").click().run()
+    assert not at.exception, [e.message for e in at.exception]
+    assert r.next_up()["id"] == portable
+    assert [m.value for m in at.markdown if "next up" in m.value] == [
+        "**next up**: the builder's next round is asked to port this idea to another timeframe"]
+
+
 def _research_row(r, ids, **over):
     sid = r.start_session(model="m")
     reply = {"ideas": [], "stop": ["fading wicks on 5m", "plain momentum"], "summary": "Funding ideas look thin."}
