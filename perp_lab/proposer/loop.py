@@ -545,9 +545,12 @@ class _Session:
     def _propose(self, t: _Prop) -> bool:
         """Calls and checks until the proposal passes preflight (True), or it is dropped (False)."""
         # The record, the human's stop list, the research step's (none before a valid round) and the instruction.
+        # The flag first: _next_up clears one no proposal can answer, which the record would otherwise still show
+        # (a flagged exhausted idea is rendered in full).
+        ask = prompt.instruction(self._next_up())
         parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
                  prompt.human_stop_section(self._human_stops()),
-                 prompt.stop_section(self._stop_list(), human_first=True), prompt.instruction(self._next_up()))
+                 prompt.stop_section(self._stop_list(), human_first=True), ask)
         base = "\n".join(x for x in parts if x) + "\n"
         user = base
         for attempt in range(self.pc.fixups_per_proposal + 1):
@@ -911,11 +914,10 @@ class _Session:
         """A valid note's next_up, flagged as the research step's request (research-round spec, Amended: try next),
         or why it wasn't: the idea must be one the round read (never a card of its own reply, whose id the model can
         guess, and which the referee may have dropped), open or exhausted and answerable, as the human's must be,
-        and the human's
-        own request, while it stands, comes first; a request of anyone's that no proposal could answer any more is
-        cleared first (_next_up), so it can't block the round's. Whatever came of it the round stands (its cards,
-        stop list and summary): an unusable request is the least of a note, so it costs no fix-up. For the digest;
-        None when it was null."""
+        and the human's own request, while it stands, comes first; a request of anyone's that no proposal could
+        answer any more is cleared first (_next_up), so it can't block the round's. Whatever came of it the round
+        stands (its cards, stop list and summary): an unusable request is the least of a note, so it costs no
+        fix-up. For the digest; None when it was null."""
         id = r.note.next_up
         if id is None:
             return None
@@ -974,7 +976,9 @@ class _Session:
 
     def _research_prompt(self, stop: list[str], *rest: str) -> str:
         """A research round's prompt, and its referee's: the record, the human's stop list and the research step's
-        list in force, then `rest`, what the call is for; empty parts are skipped."""
+        list in force, then `rest`, what the call is for; empty parts are skipped. A flag no proposal can answer
+        any more is cleared first, as a proposal's prompt clears it: the record shows a flagged exhausted idea."""
+        self._next_up()
         parts = (prompt.render_record(self.record, current_n(self.record), self.pc.timeframes),
                  prompt.human_stop_section(self._human_stops()), prompt.stop_section(stop), *rest)
         return "\n".join(x for x in parts if x) + "\n"

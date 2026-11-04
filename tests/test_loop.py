@@ -1250,6 +1250,23 @@ def test_a_flagged_idea_settled_exhausted_is_asked_for_as_a_port_and_its_judged_
     assert lab.rec.next_up() is None
 
 
+@pytest.mark.parametrize("research", [False, True])
+def test_a_flag_no_port_can_answer_any_more_is_cleared_before_a_prompt_shows_its_idea(lab, research):
+    """A flagged exhausted idea is shown in full, as the port's root: not once every other timeframe has its port.
+    The stale flag is cleared before the record is rendered, in a proposal's prompt and a research round's."""
+    i = lab.rec.add_idea("Drift", card("Drift"), "proposer", "1h", status="exhausted")
+    lab.rec.add_proposal(idea_id=i, plugin="drift_v1", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("close call"), "lineage_id": "family:drift_v1"})    # a trial
+    lab.rec.flag_next(i)                                # a port could answer it then
+    for tf in ("15m", "4h"):
+        lab.rec.add_idea(f"Drift, {tf}", card(f"Drift, {tf}"), "proposer", tf, port_of=i)
+    pc = replace(lab.pc, research_every=1 if research else 5, proposals_per_idea=1)    # settled exhausted
+    assert run(lab, pc, trials=1) == "trials"
+    assert idea(lab, "Drift")["status"] == "exhausted" and order(lab) == ("RP" if research else "P")
+    assert all("## Asked for next" not in c.user for c in lab.fake.calls)
+    assert lab.rec.next_up() is None
+
+
 def test_a_rounds_next_up_may_ask_for_an_exhausted_idea_to_be_ported(lab):
     i = lab.rec.add_idea("Drift", card("Drift"), "proposer", "1h", status="exhausted")
     lab.rec.add_proposal(idea_id=i, plugin="drift_v1", timeframe="1h", kind="new", state="judged", judge_exit=0,
