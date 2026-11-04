@@ -59,7 +59,10 @@ LCE = {"lce_pct": dict(gross=-4.43, gross_p95=-5.68), "lce_atr": dict(gross=0.67
 
 @pytest.fixture
 def lab(tmp_path, cfg):  # noqa: F811
-    """Stand-in plugin files (the seed only hashes and keeps them), the temp config's verdicts dir, a record."""
+    """Stand-in plugin files (the seed only hashes and keeps them), the temp config's verdicts dir, a record.
+    proposals_per_idea 4, the cap these statuses were written for: the seed's two-plugin ideas stay open under it
+    (the live cap, 2 since 2026-11-04, is test_preflight's to check, and the end-to-end test's)."""
+    cfg.raw["proposer"] = {**cfg.raw["proposer"], "proposals_per_idea": 4}
     sdir = tmp_path / "strategies"
     sdir.mkdir()
     for plugin in FAMILY:

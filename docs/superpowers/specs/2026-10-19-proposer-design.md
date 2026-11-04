@@ -110,7 +110,7 @@ From the 3a spec ("Requirements carried into the Phase 3b proposer spec") and th
 | Ideas and timeframes ★ | An idea has one timeframe. A refinement's `PARENT` is the idea's champion. The same idea on another timeframe is a *port*: a new idea and a new family, allowed only from an idea whose best pile is signal before costs or close call. |
 | Near-copies ★ | Measured by the harness, never declared by the model, on positions held over time rather than exact entry bars. Before any trial, positions on synthetic bars are compared with every earlier plugin's. After the trial, the verdict reports position overlap and daily-return correlation with earlier OOS runs, and the record acts on both. A mirror (the same positions, opposite side) of any judged plugin is refused. |
 | Preflight | `lab preflight FILE --tf TF`: metadata checks, the lookahead check and the overlap check, all on synthetic bars. No real data, nothing recorded, no trial. Its full report may go to the model. |
-| Pace ★ | 12 trials a day, 100 trials in total for the proposer, 4 judged plugins per idea, one judge at a time. |
+| Pace ★ | 12 trials a day, 100 trials in total for the proposer, 2 judged plugins per idea (4 until 2026-11-04), one judge at a time. |
 | Exams ★ | A judge and an exam never run at once: a harness lock, in both directions, that can't starve exams. A proposer promotion is examined only when a human names it, `lab exam --id N`; a bare `lab exam`, for example from a scheduled job, skips it. Exam outcomes reach the model only as status and code, only at session start. |
 | Harness pin ★ | A session runs on one harness version. It refuses to start while `perp_lab/` or `config/` has uncommitted changes, records the commit, and stops if either changes during the session. |
 | Where the user reads it | A new dashboard page, Ideas, plus a markdown digest per session. |
@@ -167,7 +167,7 @@ Rejected:
 4. **Idea rules**, in code:
    - A new idea needs a complete card and a title not already in the record.
    - A refinement names an existing idea that is open (see The record) and has judged plugins left
-     (`proposals_per_idea`, 4). It keeps the idea's timeframe.
+     (`proposals_per_idea`, 2; 4 until 2026-11-04). It keeps the idea's timeframe.
    - A port names an idea that is open or exhausted, whose best pile is signal before costs or
      close call, and a timeframe that idea has no port on yet. At most one port per idea and
      timeframe. A promoted idea gets no port: its family is headed for an exam, and a port would
@@ -361,11 +361,11 @@ whose parent can't be run):
 - otherwise the best by pile, then by net OOS Sharpe.
 
 **An idea's status.** Open ideas take proposals; every other status is closed for good.
-- `open`: a new idea; one with only broken attempts (it gets at most 4 judged plugins like any
+- `open`: a new idea; one with only broken attempts (it gets at most 2 judged plugins like any
   other); or one whose best pile is signal before costs, close call or promoted, with plugins left.
 - `dead`: its best pile is `no signal`. One faithful test that showed no signal before costs ends
   an idea, as agreed.
-- `exhausted`: it used its 4 judged plugins. It keeps its best pile in the record and gets no more
+- `exhausted`: it used its 2 judged plugins. It keeps its best pile in the record and gets no more
   trials.
 - `passed` or `failed`: its family's holdout read was spent on an exam with that outcome. After
   that, any promotion in the family is blocked as `family_examined`, so another trial could never
@@ -543,7 +543,7 @@ Caps (config):
   decision. The orchestrator can't read the `trials` table, so it counts conservatively: every
   judge call except a refusal (exit 2) and a lookahead kill. That is never less than the
   proposer's share of N.
-- **`proposals_per_idea`: 4** judged plugins.
+- **`proposals_per_idea`: 2** judged plugins (4 until 2026-11-04: see "Amended: two judged plugins per idea").
 - **`fixups_per_proposal`: 3.**
 - **Token caps per day**, input and output, from the CLI's reported `usage`. They keep the loop
   from eating the user's whole Claude Code allowance.
@@ -739,7 +739,7 @@ proposer:
   timeframes: [15m, 1h, 4h]
   trials_per_day: 12
   trials_total: 100
-  proposals_per_idea: 4
+  proposals_per_idea: 2
   fixups_per_proposal: 3
   max_grid_combos: 16
   overlap_max: 0.5                   # position overlap (Jaccard of symbol, hour, side)
@@ -1043,3 +1043,16 @@ proposer from the Ideas page and from `lab idea`, with structured cards and butt
 The unattended session gains an occasional research round: one extra tool-less call that adds idea cards (origin
 `research`), keeps a stop list the proposal prompt shows, and writes a summary for the human. It changes nothing
 else here; its design, limits and config are in `docs/superpowers/specs/2026-11-01-research-round-design.md`.
+
+## Amended: two judged plugins per idea (2026-11-04)
+
+The human lowered `proposals_per_idea` from 4 to 2. After the builder's first 20 trials, 7 were refinements of
+close calls, and only 2 of those raised the idea's result. Every trial raises the Deflated Sharpe bar for every
+plugin judged after it, so a refinement that teaches nothing costs every later idea. Two judged plugins leave one
+refinement per idea: enough to fix a flaw the first verdict shows, not enough to tune toward the out-of-sample years.
+
+It is a pace cap, like `trials_per_day`, not a judging rule: no gate, threshold, verdict or count of N changes.
+What counts toward it is unchanged: every plugin of the idea that reached the judge, a refusal (exit 2, no trial)
+and an error (exit 1) included. At 2, one of those after the first plugin spends the idea's refinement.
+An idea with two or more judged plugins becomes exhausted when the next session settles the record. A port of an
+exhausted idea whose best pile is signal before costs or close call is still allowed (Idea rules), with its own two.

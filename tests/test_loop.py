@@ -967,13 +967,14 @@ def test_a_refinement_of_a_port_is_exempt_after_the_trial_from_its_port_group_on
     """R46, after the trial: a refinement of a port that correlates with the port's (closed) source keeps its pile;
     one that correlates with an unrelated closed idea is still a duplicate of it."""
     x, other, p = _port_group(lab)
+    pc = replace(lab.pc, proposals_per_idea=4)          # two refinements after the port's own plugin
     lab.fake.verdict = lambda name: verdict("no signal", overlap={"correlation": [
         {"strategy": "brk" if len(lab.fake.judges) == 1 else "oth", "timeframe": "1h", "value": 0.9}]})
     refinement = {"kind": "refinement", "timeframe": "4h", "hypothesis": "h", "source": SRC_4H,
                   "refines": {"idea_id": p, "change": "c"}}
     if path == "round":
         lab.fake.replies = [refinement, refinement]
-        assert run(lab, trials=2) == "trials"
+        assert run(lab, pc, trials=2) == "trials"
     else:
         for seq, name in ((5, "px0005_breakout_4h"), (6, "px0006_breakout_4h")):
             text = SRC_4H.replace('"""', f'"""{seq} ', 1).encode()
@@ -981,7 +982,7 @@ def test_a_refinement_of_a_port_is_exempt_after_the_trial_from_its_port_group_on
             lab.rec.add_proposal(seq=seq, idea_id=p, kind="refinement", plugin=name, timeframe="4h",
                                  hash=blob_hash(text), source=text.decode(), state="copied")
         lab.fake.replies = []
-        assert run(lab) == "model_call"                  # recovery judged both; then no reply
+        assert run(lab, pc) == "model_call"              # recovery judged both; then no reply
     mine = [q for q in props(lab) if q["idea_id"] == p and q["kind"] == "refinement"]
     assert [(q["pile"], q["duplicate_of"]) for q in mine] == [("no signal", None), ("no signal", other)]
 
@@ -1105,13 +1106,14 @@ def test_an_exam_in_an_ideas_second_family_closes_the_idea(lab):
                          state="judged", judge_exit=0, verdict=broken, pile="broken")
     lab.rec.add_proposal(idea_id=i, plugin="two_v2", timeframe="1h", kind="refinement", hash=blob_hash(data),
                          source=SRC, state="judged", judge_exit=0, verdict=pending, pile="promoted")
-    loop.settle(lab.rec, lab.pc)
+    pc = replace(lab.pc, proposals_per_idea=4)          # open after two judged plugins, to be examined
+    loop.settle(lab.rec, pc)
     assert (lab.rec.idea(i)["family"], lab.rec.idea(i)["status"]) == ("family:two_v1", "open")
     vdir = Path(lab.cfg["judge"]["verdicts_dir"])
     vdir.mkdir(parents=True)
     passed = {**pending, "holdout_status": "passed"}
     (vdir / f"two_v2@1h@{blob_hash(data)[:10]}.json").write_text(json.dumps(passed))
-    assert run(lab, trials=0) == "trials"
+    assert run(lab, pc, trials=0) == "trials"
     mine = lab.rec.idea(i)
     assert (mine["family"], mine["status"]) == ("family:two_v1", "passed")
     assert piles.idea_group(mine, lab.rec.proposals(i)) == "passed"
@@ -1208,10 +1210,23 @@ def test_a_judged_port_or_a_refused_refinement_answers_the_flag_too(lab, how):
     lab.fake.replies = [port(i) if how == "port" else refine(i)]
     lab.fake.judge_exits = [2] if how == "refused" else []
     lab.fake.verdict = verdict("signal before costs")
-    run(lab, trials=1)                  # a refusal is no trial: the next round finds no reply
+    run(lab, replace(lab.pc, proposals_per_idea=4), trials=1)   # a refusal is no trial: no reply after it
     assert ASK.format(i) in lab.fake.calls[0].user
     assert all(ASK.format(i) not in c.user for c in lab.fake.calls[1:])
     assert lab.rec.next_up() is None and idea(lab, "Fade")["status"] == "open"
+
+
+@pytest.mark.parametrize("judge_exit", [1, 2])
+def test_a_refused_or_broken_refinement_uses_one_of_its_ideas_judged_plugins(lab, judge_exit):
+    """proposals_per_idea counts the idea's plugins that reached the judge (piles._judged), a refusal (exit 2, no
+    trial) and an error (exit 1) included, as it did at 4: at 2, one of either after the first plugin spends it."""
+    i = lab.rec.add_idea("Fade", card("Fade"), "human", "1h")
+    lab.rec.add_proposal(idea_id=i, plugin="fade_v1", timeframe="1h", kind="new", state="judged", judge_exit=0,
+                         verdict={**verdict("close call"), "lineage_id": "family:fade_v1"})
+    lab.fake.replies = [refine(i)]
+    lab.fake.judge_exits = [judge_exit] * 3             # an error is retried; each attempt fails the same way
+    run(lab, trials=1)
+    assert lab.pc.proposals_per_idea == 2 and idea(lab, "Fade")["status"] == "exhausted"
 
 
 def test_the_loop_never_clears_another_ideas_flag(lab):
