@@ -192,6 +192,16 @@ call piles are welcome: change what their diagnostics point at, and cite them. S
 timeframe where its diagnostics say the effect should keep and cost less. A new idea needs a mechanism: who \
 pays, and why it persists.
 
+Judge a design by its payoff, not its win rate. What pays is the win rate times the average winner against the \
+loss rate times the average loser, after costs: a design that wins a quarter of its trades with winners four times \
+its losers (1:4) is past break-even (20%) before costs, and one that wins most trades with small winners and \
+large losers can still lose. Where the mechanism says moves run, exits that let winners run (a target several R \
+away, a trailing or time exit) against a tight stop are welcome. Two things bind: a tighter stop means a larger \
+position for the same 1 R (until the notional cap binds), so fees and slippage take a larger share of each R; and \
+the random-entry benchmark trades the plugin's own exits, so the payoff must come with an entry that beats \
+random. A new verdict's oos_metrics show win_rate, avg_win_r, avg_loss_r and payoff_ratio (avg_win_r over the \
+size of avg_loss_r); an older verdict may have none.
+
 Reply with one JSON object, as the reply contract describes, and nothing else."""
 
 NEXT_UP = "The human asks that this round's proposal work on idea #{id}."
@@ -272,7 +282,10 @@ filter added to a closed idea's entry; an idea whose edge would come from its ex
 restatement of an open idea in the record.
 
 A stop with no target earns on trends whatever the entry, so an exit alone can make an entry look like an edge. \
-Say in each card how its exits stay neutral, so that its result measures its entry.
+Say in each card how its result stays a measure of its entry: neutral exits, or, where its mechanism says moves \
+run, exits that let winners run against a tight stop for a payoff of several R to one. The random-entry \
+benchmark trades the same exits, so either way the entry must beat random. Judge a design by its payoff, not its \
+win rate.
 
 A card must not cite numbers from the record: mechanism, literature and rule only.
 
@@ -360,10 +373,11 @@ trade count?
 Check it against the data: its signal must be computable from the columns it lists, and those must be bar columns \
 a plugin may read.
 
-Revise only to correct a claim, sharpen the rule, neutralise the exit or fix the timeframe, keeping the idea: a \
-different idea is a reject. A revised card keeps its own title or takes one no idea in the record and no other \
-card in this report uses. A card, revised or not, cites no numbers from the record: mechanism, literature and rule \
-only.
+Revise only to correct a claim, sharpen the rule, neutralise an exit its mechanism doesn't support or fix the \
+timeframe, keeping the idea: a different idea is a reject. Exits that let winners run for a payoff of several R \
+to one are not an exit edge when the mechanism says moves run: the random-entry benchmark trades the same exits. \
+A revised card keeps its own title or takes one no idea in the record and no other card in this report uses. A \
+card, revised or not, cites no numbers from the record: mechanism, literature and rule only.
 
 Return one verdict per card, in the cards' order, each with its reason. This round's reply contract is the one \
 below, not the one under "Your reply":"""

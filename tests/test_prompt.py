@@ -91,7 +91,8 @@ DIAGNOSTICS_BLOCKS = {
 DIAGNOSTICS_KEYS = {"data", "regimes", "selection", *DIAGNOSTICS_BLOCKS}
 EXIT_REASONS = {"stop", "target", "signal", "liq", "eow"}          # the engine's close_pos reasons
 OOS_METRICS_KEYS = {"sharpe", "sortino", "max_dd", "total_return", "cagr", "days", "exposure", "trades", "win_rate",
-                    "profit_factor", "avg_r", "avg_bars_held", "liquidations", "fees", "funding"}
+                    "profit_factor", "avg_r", "avg_win_r", "avg_loss_r", "payoff_ratio", "avg_bars_held",
+                    "liquidations", "fees", "funding"}
 
 
 def test_the_blocks_passed_through_whole_have_exactly_the_keys_the_judge_writes(cfg):
@@ -206,6 +207,24 @@ def test_it_ends_with_n_and_the_bar(rec):
 def test_the_instruction_asks_for_one_proposal():
     text = prompt.instruction()
     assert "one proposal" in text and "signal before costs" in text and "close call" in text
+
+
+def test_the_instruction_asks_for_payoff_not_win_rate():
+    """The human's steer (2026-11-04): a low win rate pays when the winners are several times the losers, and
+    the verdict's oos_metrics show both sides; costs per R and the random-entry benchmark still bind."""
+    text = prompt.instruction()
+    for words in ("payoff, not its win rate", "1:4", "20%", "avg_win_r", "avg_loss_r", "payoff_ratio",
+                  "a tighter stop", "until the notional cap binds", "random-entry benchmark",
+                  "A new verdict's oos_metrics"):
+        assert words in text, words
+
+
+def test_a_research_card_may_let_winners_run_where_its_mechanism_says_moves_run():
+    """The research step still keeps a card's result a measure of its entry, but no longer only by neutral exits:
+    a payoff of several R to one is allowed where the mechanism says moves run (the human's steer, 2026-11-04)."""
+    text = prompt.RESEARCH_INSTRUCTION
+    assert "a measure of its entry" in text and "several R to one" in text and "same exits" in text
+    assert "exits stay neutral" not in text
 
 
 def test_a_flagged_open_idea_adds_exactly_the_fixed_sentence_and_no_time(rec):
@@ -334,7 +353,7 @@ def test_the_research_instruction_says_what_the_round_is_for_and_ends_with_its_c
               "closed each idea", "build on", "near-copy of any judged plugin's mechanism", "sign flip of a closed "
               "idea", "filter added to a closed idea's entry", "from its exit rather than its entry",
               "a restatement of an open idea in the record",
-              "A stop with no target earns on trends whatever the entry", "exits stay neutral",
+              "A stop with no target earns on trends whatever the entry", "a measure of its entry",
               "must not cite numbers from the record", "mechanism, literature and rule only",
               f"at most {pc.research_max_ideas} idea cards", f"at most {contract.STOP_MAX_ITEMS}", "summary",
               "not the one under \"Your reply\""):
@@ -416,7 +435,8 @@ REFEREE_CHECKS = (
     "a filter added to a closed idea's entry", "a restatement of an open idea",
     "an edge that would come from its exit rather than its entry", "the directions the human has ruled out",
     "round-trip cost", "bar columns a plugin may read",
-    "Revise only to correct a claim, sharpen the rule, neutralise the exit or fix the timeframe",
+    "Revise only to correct a claim, sharpen the rule, neutralise an exit its mechanism doesn't support or fix the "
+    "timeframe",
     "a different idea is a reject", "no numbers from the record", "one verdict per card, in the cards' order",
     "A revised card keeps its own title or takes one no idea in the record and no other card in this report uses.",
     "not the one under \"Your reply\"")
