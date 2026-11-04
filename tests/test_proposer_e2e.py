@@ -66,7 +66,8 @@ SEEDED = {("donchian_atr", "4h"): "no signal", ("donchian_atr_wide", "4h"): "no 
           ("lce_atr", "5m"): "signal before costs"}
 STATUSES = {"Donchian breakout": "dead", "Donchian breakout, 1h": "dead", "BB–VWAP reversion": "dead",
             "BB–VWAP reversion, 1h": "dead", "Funding fade": "open", "Flow-shock fade": "dead",
-            "LCE: EMA cloud at volume-profile levels": "open", "Volatility-compression breakout": "open",
+            "LCE: EMA cloud at volume-profile levels": "exhausted",       # two judged plugins: the cap, 2
+            "Volatility-compression breakout": "open",
             "Weekend-move reversal": "open", "Time-series momentum with a funding filter": "open",
             "Taker-flow persistence": "excluded",
             "Volume-burst continuation": "dead", "Candle-body reversal": "dead",

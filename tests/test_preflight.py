@@ -515,6 +515,6 @@ def test_the_proposer_config_is_the_specs():
     assert (p["model"], str(p["model_training_cutoff"]), p["claude_bin"], p["effort"], p["state_dir"]) == (
         "claude-opus-5-5", "2026-06-30", "claude", "high", "proposer")
     assert (p["timeframes"], p["trials_per_day"], p["trials_total"], p["proposals_per_idea"],
-            p["fixups_per_proposal"], p["max_grid_combos"]) == (["15m", "1h", "4h"], 12, 100, 4, 3, 16)
+            p["fixups_per_proposal"], p["max_grid_combos"]) == (["15m", "1h", "4h"], 12, 100, 2, 3, 16)
     assert (p["overlap_max"], p["corr_max"], p["max_input_tokens_per_day"], p["max_output_tokens_per_day"],
             p["call_timeout_s"]) == (0.5, 0.8, 4_000_000, 500_000, 1800)
