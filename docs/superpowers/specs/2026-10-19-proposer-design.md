@@ -1084,3 +1084,23 @@ What counts toward it is unchanged: every plugin of the idea that reached the ju
 and an error (exit 1) included. At 2, one of those after the first plugin spends the idea's refinement.
 An idea with two or more judged plugins becomes exhausted when the next session settles the record. A port of an
 exhausted idea whose best pile is signal before costs or close call is still allowed (Idea rules), with its own two.
+
+## Amended: payoff, not win rate (2026-11-04)
+
+The human asked that strategies aim at their reward-to-risk as well as their win rate: a design that wins a
+quarter of its trades with winners four times its losers pays. Steering and reporting only; no gate, threshold or
+verdict rule changes.
+
+- **What the builder reads.** The round's instruction gains a paragraph: judge a design by its payoff (win rate ×
+  average winner against loss rate × average loser, after costs); exits that let winners run against a tight stop
+  are welcome where the mechanism says moves run; a tighter stop means a larger position per 1 R (until the
+  notional cap binds), so costs take more of each R; the random-entry benchmark trades the same exits, so the entry must still beat random.
+- **The research step.** A card no longer must keep its exits neutral: it says how its result stays a measure of
+  its entry, by neutral exits or, where its mechanism says moves run, by exits that let winners run for a payoff of
+  several R to one. The referee may neutralise only an exit the card's mechanism doesn't support (its prompt and
+  the `Verdict.revised` description say so): such exits are not an exit edge, since the random-entry benchmark
+  trades the same exits.
+- **The numbers.** `engine.metrics.trade_stats` adds `avg_win_r` and `avg_loss_r` (the mean R of winners and of
+  losers, split by net pnl as `win_rate` is) and `payoff_ratio` (`avg_win_r` over the size of `avg_loss_r`; inf
+  with no losers, as `profit_factor`). They reach every walk-forward's OOS metrics, so every new verdict's
+  `oos_metrics`, which the model reads. Verdicts judged before this have none.

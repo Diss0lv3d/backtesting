@@ -93,7 +93,8 @@ FIELD_DOCS: dict[str, str] = {
     "Verdict.sources": f"The URLs fetched in this review that the verdict relies on, at most {SOURCES_MAX_ITEMS}, "
     "each on an allowed academic host. Empty when none was fetched.",
     "Verdict.revised": "When decision is revise, the corrected card: the same idea with a claim corrected, the rule "
-    "sharpened, the exit neutralised or the timeframe fixed, under the card's title or a new one. Otherwise null.",
+    "sharpened, an exit its mechanism doesn't support neutralised or the timeframe fixed, under the card's title "
+    "or a new one. Otherwise null.",
 }
 
 

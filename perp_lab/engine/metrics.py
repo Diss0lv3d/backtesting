@@ -51,16 +51,26 @@ def max_drawdown(equity: np.ndarray) -> float:
 
 
 def trade_stats(trades: pd.DataFrame) -> dict:
+    """Per-trade statistics. Winners and losers are split by net pnl, as the win rate counts them (a flat trade is
+    neither): avg_win_r and avg_loss_r are their mean R multiples, and payoff_ratio is the average winner over the
+    size of the average loser, the realised reward-to-risk (inf with no losers, as profit_factor)."""
     if trades is None or len(trades) == 0:
-        return {"trades": 0, "win_rate": 0.0, "profit_factor": 0.0, "avg_r": 0.0,
-                "avg_bars_held": 0.0, "liquidations": 0, "fees": 0.0, "funding": 0.0}
-    w = trades.pnl[trades.pnl > 0].sum()
-    l = -trades.pnl[trades.pnl < 0].sum()
+        return {"trades": 0, "win_rate": 0.0, "profit_factor": 0.0, "avg_r": 0.0, "avg_win_r": 0.0,
+                "avg_loss_r": 0.0, "payoff_ratio": 0.0, "avg_bars_held": 0.0, "liquidations": 0, "fees": 0.0,
+                "funding": 0.0}
+    win, loss = trades.pnl > 0, trades.pnl < 0
+    w = trades.pnl[win].sum()
+    l = -trades.pnl[loss].sum()
+    aw = float(trades.r_multiple[win].mean()) if win.any() else 0.0
+    al = float(trades.r_multiple[loss].mean()) if loss.any() else 0.0
     return {
         "trades": int(len(trades)),
-        "win_rate": float((trades.pnl > 0).mean()),
+        "win_rate": float(win.mean()),
         "profit_factor": float(w / l) if l > 0 else float("inf") if w > 0 else 0.0,
         "avg_r": float(trades.r_multiple.mean()),
+        "avg_win_r": aw,
+        "avg_loss_r": al,
+        "payoff_ratio": aw / -al if al < 0 else float("inf") if aw > 0 else 0.0,
         "avg_bars_held": float(trades.bars_held.mean()),
         "liquidations": int((trades.exit_reason == "liq").sum()),
         "fees": float(trades.fees.sum()),
