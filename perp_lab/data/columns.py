@@ -31,12 +31,13 @@ class ColumnGroup:
     paper_ready: bool
     load_source: Callable | None        # (cfg, tf, start, end, holdout) -> source shared by every coin
     attach: Callable                    # (bars, symbol, tf, source) -> DataFrame
-    synthetic: Callable                 # (bars, seed) -> DataFrame
+    synthetic: Callable                 # (bars, seed) -> {column: float64 array}; rng (seed, synthetic_id)
     sources: Callable                   # (cfg, symbols, tf) -> [(symbol, dataset directory name)]
 
 
 GROUPS: tuple[ColumnGroup, ...] = (
-    ColumnGroup(name="reference", columns=reference.COLUMNS, prefix=reference.PREFIX, rule=1, synthetic_id=1,
+    ColumnGroup(name="reference", columns=reference.COLUMNS, prefix=reference.PREFIX, rule=1,
+                synthetic_id=reference.SYNTHETIC_ID,
                 exam_required="always", helpers=("reference_frame",), paper_ready=False,
                 load_source=reference.load_source, attach=reference.attach, synthetic=reference.synthetic,
                 sources=reference.sources),

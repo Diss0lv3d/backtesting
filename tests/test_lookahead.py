@@ -88,4 +88,5 @@ CHEATER = PluginSource.from_text("cheater", CHEATER_TEXT)
 
 def test_lookahead_check_catches_a_cheater(cfg):
     fails = causality_failures(cfg, CHEATER, make_bars(seed=4))
-    assert len(fails) == 1 and fails[0].startswith("defaults: AssertionError")
+    assert len(fails) == 2 and fails[0].startswith("defaults: AssertionError")
+    assert fails[1].startswith("defaults as BTC: AssertionError")

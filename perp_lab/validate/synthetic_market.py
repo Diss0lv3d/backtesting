@@ -15,6 +15,7 @@ from functools import lru_cache
 import pandas as pd
 
 from perp_lab.config import TF_MS
+from perp_lab.data import reference
 from perp_lab.validate.causality import synthetic_bars, with_moving_columns
 
 MARKET_VERSION = 2
@@ -34,7 +35,7 @@ class NoMarket(ValueError):
 def _path(i: int) -> pd.DataFrame:
     bars = synthetic_bars(n=DAYS * 86_400_000 // BASE_MS, seed=100 + i, start="2023-01-01", funding_every=96,
                           tf_ms=BASE_MS, vol_scale=VOL_SCALE)          # funding every 8 hours
-    return with_moving_columns(bars, seed=200 + i)
+    return with_moving_columns(bars, seed=200 + i).drop(columns=list(reference.COLUMNS))   # version 2 has no btc_
 
 
 def _resample(bars: pd.DataFrame, ms: int) -> pd.DataFrame:

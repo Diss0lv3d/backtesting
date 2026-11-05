@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from perp_lab.config import TF_MS
+from perp_lab.data import reference
 from perp_lab.validate.causality import synthetic_bars, with_moving_columns
 from perp_lab.validate.synthetic_market import DAYS, MARKET_VERSION, SYMBOLS, VOL_SCALE, market
 
@@ -31,6 +32,7 @@ def test_the_market_is_fixed():
     assert tuple(m) == SYMBOLS and market("5m") is m                 # built once per timeframe
     base = with_moving_columns(synthetic_bars(n=DAYS * 288, seed=102, start="2023-01-01", funding_every=96,
                                               tf_ms=300_000, vol_scale=VOL_SCALE), seed=202)
+    base = base.drop(columns=list(reference.COLUMNS))
     pd.testing.assert_frame_equal(m["SYN3"], base)
     assert m["SYN1"].index[0] == pd.Timestamp("2023-01-01", tz="UTC")
     assert not m["SYN1"].close.equals(m["SYN2"].close)                # one path per symbol

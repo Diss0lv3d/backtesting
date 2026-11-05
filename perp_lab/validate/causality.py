@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
+from perp_lab.data import columns, reference
 from perp_lab.engine.backtest import EngineParams
 from perp_lab.plugins import PluginSource
 from perp_lab.sandbox import client
@@ -67,9 +68,15 @@ EXTRAS_SEED = 7
 NO_SIGNALS = "defaults: no signals on synthetic data; causality cannot be verified"
 
 
+def _dead(bars: pd.DataFrame, c: str) -> bool:
+    return c not in bars or bars[c].nunique() <= 1
+
+
 def with_moving_columns(bars: pd.DataFrame, seed: int = EXTRAS_SEED) -> pd.DataFrame:
     """A copy of bars in which each exchange column that is missing, all-NaN or constant gets
-    seeded, non-constant values. Each value at row t depends only on rows <= t."""
+    seeded, non-constant values. So does each column group (`columns.GROUPS`) with any such column:
+    the whole group, through `group.synthetic` and its own generator, so its OHLC stay consistent
+    and the exchange columns' draws are untouched. Each value at row t depends only on rows <= t."""
     out = bars.copy()
     n = len(out)
     rng = np.random.default_rng(seed)
@@ -85,39 +92,67 @@ def with_moving_columns(bars: pd.DataFrame, seed: int = EXTRAS_SEED) -> pd.DataF
         "funding_interval_h": np.where((np.arange(n) // 500) % 2 == 0, 8.0, 4.0),
     }
     for c, v in fills.items():
-        if c not in out or out[c].nunique() <= 1:
+        if _dead(out, c):
             out[c] = v
+    for g in columns.GROUPS:
+        if any(_dead(out, c) for c in g.columns):
+            values = g.synthetic(out, seed)
+            for c in g.columns:
+                out[c] = values[c]
     return out
+
+
+def as_reference_coin(bars: pd.DataFrame) -> pd.DataFrame:
+    """A copy of bars as the reference coin's own: each `btc_` column equals the bar's own column
+    (btc_close = close, btc_oi_value = oi_value, and so on)."""
+    out = bars.copy()
+    for c in reference.BAR_COLUMNS + reference.ASOF_COLUMNS:
+        out[reference.PREFIX + c] = out[c].to_numpy(dtype="float64")
+    return out
+
+
+def _label(kw: dict) -> str:
+    return ", ".join(f"{k}={v}" for k, v in kw.items()) or "defaults"
 
 
 def causality_failures(cfg, src: PluginSource, bars: pd.DataFrame | None = None, *,
                        cuts: list[int] | None = None, require_signals: bool = True,
                        params: dict | None = None) -> list[str]:
-    """The cut-vs-full comparison on the default params and every grid corner; one line per failing variant.
+    """The cut-vs-full comparison on the default params and every grid corner, and "as BTC" on the
+    default params (and `params`, when given); one line per failing variant.
 
     Every compared run happens in its own fresh sandbox worker that is sent only its own bars, so a
     plugin cannot carry what it saw in a longer run into a shorter one. Runs go in waves of
     increasing length (each cut, then the full series): no longer run starts before every shorter
     one has finished. The comparison is done here, in the parent.
 
-    Runs on a copy of the bars in which every column moves. A crash on synthetic data
-    disqualifies a plugin as surely as a peek at the future, and so does never signalling
-    with its default params: then nothing about its causality is verified. Callers checking
-    extra date ranges pass require_signals=False: a plugin may honestly be quiet there."""
+    Runs on a copy of the bars in which every column moves. The "as BTC" variants run as the
+    reference coin, `reference.SYMBOL`, on bars whose `btc_` columns are its own, so a branch
+    taken only on BTC is checked too. A crash on synthetic data disqualifies a plugin as surely
+    as a peek at the future, and so does never signalling with its default params: then nothing
+    about its causality is verified. Callers checking extra date ranges pass
+    require_signals=False: a plugin may honestly be quiet there. A plugin may rightly skip BTC, so
+    the rule never applies as BTC."""
     bars = with_moving_columns(synthetic_bars(seed=1) if bars is None else bars)
-    variants = [{}] + [{k: v} for k, vals in src.meta.grid.items() for v in (vals[0], vals[-1])]
-    if params and params not in variants:   # e.g. the walk-forward's frozen exam params
-        variants.append(dict(params))
-    labels = [", ".join(f"{k}={v}" for k, v in kw.items()) or "defaults" for kw in variants]
+    plain = [{}] + [{k: v} for k, vals in src.meta.grid.items() for v in (vals[0], vals[-1])]
+    if params and params not in plain:      # e.g. the walk-forward's frozen exam params
+        plain.append(dict(params))
+    as_btc, btc_bars = [{}] + ([dict(params)] if params else []), as_reference_coin(bars)
+    # (params, symbol, bars, label) per variant, the plain defaults first
+    variants = ([(kw, "X", bars, _label(kw)) for kw in plain]
+                + [(kw, reference.SYMBOL, btc_bars, f"{_label(kw)} as BTC") for kw in as_btc])
+    labels = [label for *_, label in variants]
     n = len(bars)
     lengths = sorted({k for k in (CUTS if cuts is None else cuts) if k < n}) + [n]
     runs: dict[tuple[int, int], RunOutput] = {}     # (variant, length) -> run
     failed: dict[int, str] = {}
     with ThreadPoolExecutor(client.max_workers(cfg)) as pool:
         for length in lengths:
-            alive = [v for v in range(len(variants)) if v not in failed]
-            futures = {v: pool.submit(client.fresh_run, cfg, src, "X", "1h", bars.iloc[:length],
-                                      variants[v], EngineParams(), features=True) for v in alive}
+            futures = {}
+            for v, (kw, symbol, vbars, _) in enumerate(variants):
+                if v not in failed:
+                    futures[v] = pool.submit(client.fresh_run, cfg, src, symbol, "1h", vbars.iloc[:length], kw,
+                                             EngineParams(), features=True)
             for v, fut in futures.items():      # every run of this wave has finished before the next
                 try:                            # wave starts: result() waits for each in turn
                     runs[v, length] = fut.result()
@@ -125,7 +160,7 @@ def causality_failures(cfg, src: PluginSource, bars: pd.DataFrame | None = None,
                     failed[v] = (f"{labels[v]}: {e.type}: {e.message}" if e.kind == "exception"
                                  else f"{labels[v]}: plugin_error: {e.kind}")
     out = []
-    for v, kw in enumerate(variants):
+    for v in range(len(variants)):
         if v in failed:
             out.append(failed[v])
             continue
@@ -137,6 +172,6 @@ def causality_failures(cfg, src: PluginSource, bars: pd.DataFrame | None = None,
             msg = str(e).splitlines()[0] if str(e) else ""
             out.append(f"{labels[v]}: {type(e).__name__}: {msg}" if msg else f"{labels[v]}: {type(e).__name__}")
             continue
-        if require_signals and not kw and full.decisions.n_actions() == 0:
+        if require_signals and v == 0 and full.decisions.n_actions() == 0:
             out.append(NO_SIGNALS)
     return out

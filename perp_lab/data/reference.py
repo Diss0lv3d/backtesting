@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from perp_lab.data import store
@@ -24,10 +25,20 @@ BAR_COLUMNS = ("open", "high", "low", "close", "quote_volume", "taker_buy_quote_
 ASOF_COLUMNS = ("funding_last", "oi_value")
 COLUMNS = tuple(PREFIX + c for c in BAR_COLUMNS + ASOF_COLUMNS)
 
+SYNTHETIC_ID = 1                       # the group's generator stream (X5): default_rng((seed, SYNTHETIC_ID))
+
 _CANDLES = ("open_time", "trades", *BAR_COLUMNS)
 _FUNDING = ("funding_time", "funding_rate", "interval_hours")
 _METRICS = ("create_time", "oi", "oi_value")
 _missing_warned: set[str] = set()      # timeframes warned about: one warning per process each
+
+# the synthetic reference (spec "The lookahead check and the synthetic bars")
+_BASE_PRICE = 20_000.0
+_SIGMA_BARS = 100                       # the coin's trailing volatility window
+_SIGMA_FLOOR = 1e-4
+_DRIFT_BARS = 300                       # BTC's own drift is held this long
+_OI_FROM_ROW = 300                      # synthetic OI is NaN before this row; the first cut (400) is past it
+_FUNDING_MS = 8 * 3_600_000
 
 
 @dataclass(frozen=True)
@@ -87,9 +98,45 @@ def attach(bars: pd.DataFrame, symbol: str, tf: str, source: ReferenceSource) ->
     return out
 
 
-def synthetic(bars: pd.DataFrame, seed: int):
-    """The synthetic reference for the lookahead check (X5)."""
-    raise NotImplementedError("the synthetic reference is not built yet")
+def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
+    """The synthetic reference for the lookahead check (X5): {column: float64 array} for COLUMNS on
+    bars' rows, drawn from `default_rng((seed, SYNTHETIC_ID))`. Row t uses bars' rows up to t only.
+
+    BTC's log-return is r_b = 0.7·r_x + 0.71·σ·z + d: r_x the coin's, σ its trailing 100-bar standard
+    deviation (floored), z standard normal and d a drift of ±0.3·σ held for 300-bar blocks, so BTC trends
+    apart from the coin and trend filters switch. Quote volume is heavier on big moves, funding changes
+    every 8 hours of bar time with the odd spike, and OI is NaN on the first 300 rows, as real BTC OI
+    is before 2020-09-01."""
+    rng = np.random.default_rng((seed, SYNTHETIC_ID))
+    n = len(bars)
+    log_close = np.log(bars["close"].to_numpy(dtype="float64"))
+    r_x = np.diff(log_close, prepend=log_close[:1])
+    sigma = pd.Series(r_x).rolling(_SIGMA_BARS, min_periods=2).std().to_numpy()
+    sigma = np.maximum(np.nan_to_num(sigma), _SIGMA_FLOOR)
+    drift = np.repeat(rng.choice([-0.3, 0.3], n // _DRIFT_BARS + 1), _DRIFT_BARS)[:n] * sigma
+    r_b = 0.7 * r_x + 0.71 * sigma * rng.standard_normal(n) + drift
+    close = _BASE_PRICE * np.exp(np.cumsum(r_b))
+    open_ = np.r_[_BASE_PRICE, close][:n]
+    wick = np.abs(rng.normal(0.0, 0.4 * sigma, (2, n)))
+    noise = rng.normal(0.0, 0.1, n)
+    ar = np.empty(n)
+    level = 0.0
+    for i in range(n):                        # AR(1), so busy and quiet stretches last
+        level = 0.95 * level + noise[i]
+        ar[i] = level
+    quote = 1e9 * np.exp(ar) * (1 + 30 * np.abs(r_b))
+    buy_share = np.clip(0.5 + 0.15 * np.tanh(r_b / sigma) + rng.normal(0.0, 0.03, n), 0.05, 0.95)
+    oi_value = 1e5 * np.exp(np.cumsum(rng.normal(0.0, 0.01, n))) * close
+    oi_value[:_OI_FROM_ROW] = np.nan
+    # last, so only the funding values depend on the bars' times: one per 8-hour period from the first bar's
+    period = bars["open_time"].to_numpy(dtype="int64") // _FUNDING_MS
+    period = period - period[0] if n else period
+    m = int(period[-1]) + 1 if n else 0
+    rate = np.where(rng.random(m) < 1 / 15, rng.choice([-0.001, 0.001], m), 0.0001 + rng.normal(0.0, 0.0001, m))
+    out = {"open": open_, "high": np.maximum(open_, close) * (1 + wick[0]),
+           "low": np.minimum(open_, close) * (1 - wick[1]), "close": close, "quote_volume": quote,
+           "taker_buy_quote_volume": quote * buy_share, "funding_last": rate[period], "oi_value": oi_value}
+    return {PREFIX + c: out[c].astype("float64") for c in BAR_COLUMNS + ASOF_COLUMNS}
 
 
 def sources(cfg, symbols: list[str], tf: str) -> list[tuple[str, str]]:
