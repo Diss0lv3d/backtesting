@@ -92,13 +92,18 @@ def test_slippage_is_an_engine_cost_and_no_column_a_plugin_may_read(cfg):
     assert "slippage" not in with_moving_columns(synthetic_bars(n=50, seed=1)).columns
 
 
-def test_open_interest_is_nan_on_every_real_bar(cfg):
-    """Fixed text (Ruling R23): the proposer may not read data/, and no open-interest history is stored."""
+def test_open_interest_names_when_it_starts(cfg):
+    """Fixed text (Ruling R23: the proposer may not read data/). Binance's metrics archive, backfilled
+    2026-11-04, starts 2021-12-01 for every coin but BTC, which starts 2020-09-01."""
     text = context.static_context(cfg, load(cfg))
     for column in ("oi", "oi_value"):
-        assert "NaN on every real bar" in _row(text, column), column
-    assert "a plugin must not depend on them" in text
-    assert "open-interest snapshot" not in text          # it never becomes known later
+        row = _row(text, column)
+        assert "NaN on every real bar" not in row, column
+        assert "2021-12-01" in row and "BTC" in row and "2020-09-01" in row, column
+    assert "a plugin must not depend on them" not in text
+    assert "5-minute" in text                             # what a value is, and when it is known
+    assert "flat days" in text                            # a plugin idle before the start is diluted
+    assert "must handle NaN" in text
 
 
 def test_over_the_cap_is_refused(cfg, monkeypatch):

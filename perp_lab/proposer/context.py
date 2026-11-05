@@ -91,17 +91,20 @@ BAR_COLUMNS = """\
 | funding_charge | funding rate settled inside this bar, 0 if none | fraction of notional |
 | funding_last | the last funding rate settled by the bar's close | fraction of notional per settlement |
 | funding_interval_h | hours between settlements for funding_last | hours |
-| oi | open interest; NaN on every real bar today (see below) | coins |
-| oi_value | open interest; NaN on every real bar today (see below) | USDT |
+| oi | open interest at the bar's close (below); NaN before 2021-12-01, or 2020-09-01 for BTC | coins |
+| oi_value | open interest at the bar's close (below); NaN before 2021-12-01, or 2020-09-01 for BTC | USDT |
 | slippage | not available to plugins: real bars carry it, but the checks' synthetic bars don't, so a plugin that reads it fails the lookahead check | none |
 | regime | the coin's 4h regime label (below) | text |
 | regime_adx | the 4h ADX behind the label | ADX points |
 
 `regime` is trending, ranging, high_vol, transition, or unknown during warm-up, from the coin's 4h bars; a 4h
 label is known only once its 4h bar closes. A value is NaN where nothing is known yet (before a coin's first
-funding settlement, or during an indicator's warm-up). `oi` and `oi_value` are NaN on every real bar today: the
-lab stores no open-interest history, so a plugin must not depend on them. The checks' synthetic bars fill them,
-so a plugin that needs them passes preflight and then trades nothing on real bars."""
+funding settlement, or during an indicator's warm-up). `oi` and `oi_value` come from Binance's 5-minute
+open-interest snapshots: a bar carries the last snapshot published by its close, a snapshot counting as published 5
+minutes after its stamp. They start on 2021-12-01 for every coin but BTC, which starts on 2020-09-01, so they are
+NaN on every earlier bar. A plugin that needs them trades nothing before then, and those flat days still count in
+its OOS record, diluting its Sharpe. A plugin that reads them must handle NaN. Their level differs by coin and
+grows over the years, so read them as a change or a ratio rather than a level."""
 
 
 def _plugin_columns(table: str) -> tuple[str, ...]:

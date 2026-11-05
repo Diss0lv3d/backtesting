@@ -1104,3 +1104,21 @@ verdict rule changes.
   losers, split by net pnl as `win_rate` is) and `payoff_ratio` (`avg_win_r` over the size of `avg_loss_r`; inf
   with no losers, as `profit_factor`). They reach every walk-forward's OOS metrics, so every new verdict's
   `oos_metrics`, which the model reads. Verdicts judged before this have none.
+
+## Amended: open interest is stored (2026-11-04)
+
+The human asked for the open-interest backfill. `lab backfill --datasets metrics` downloaded Binance's daily
+`metrics` archive (5-minute snapshots) for the 17 coins: it starts 2021-12-01 for every coin but BTC, which starts
+2020-09-01, as the wider-data spec found. `store.align_metrics` already attached `oi` and `oi_value` to every bar
+(the last snapshot published by the bar's close, a snapshot counting as published 5 minutes after its stamp), so no
+loader change was needed: on research bars both are now known from those dates, with no gap after them. This
+amends the non-goal "new data such as open interest": the columns were always in the bar table, and now they
+carry data.
+
+- **What the builder reads.** The bar table and the paragraph under it (`context.BAR_COLUMNS`) no longer say the
+  columns are NaN on every real bar and that a plugin must not depend on them. They say what a value is, when it
+  starts (fixed text, Ruling R23: the proposer may not read data/), that a plugin needing them trades nothing
+  before then while those flat days still count in its OOS record, that a plugin must handle NaN, and to read them
+  as a change or a ratio rather than a level.
+- **Unchanged.** No past verdict read either column: no judged plugin references them. The long/short-ratio fields
+  in the same archive are still not attached to bars.
