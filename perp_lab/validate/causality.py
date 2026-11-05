@@ -102,6 +102,12 @@ def with_moving_columns(bars: pd.DataFrame, seed: int = EXTRAS_SEED) -> pd.DataF
     return out
 
 
+def check_bars() -> pd.DataFrame:
+    """The check's own bars when none are given: `synthetic_bars(seed=1)` with every column moving, each
+    group's stream drawn with EXTRAS_SEED. `plugins.reads_columns` runs on them too."""
+    return with_moving_columns(synthetic_bars(seed=1))
+
+
 def as_reference_coin(bars: pd.DataFrame) -> pd.DataFrame:
     """A copy of bars as the reference coin's own: each `btc_` column equals the bar's own column
     (btc_close = close, btc_oi_value = oi_value, and so on)."""
@@ -133,7 +139,7 @@ def causality_failures(cfg, src: PluginSource, bars: pd.DataFrame | None = None,
     about its causality is verified. Callers checking extra date ranges pass
     require_signals=False: a plugin may honestly be quiet there. A plugin may rightly skip BTC, so
     the rule never applies as BTC."""
-    bars = with_moving_columns(synthetic_bars(seed=1) if bars is None else bars)
+    bars = check_bars() if bars is None else with_moving_columns(bars)
     plain = [{}] + [{k: v} for k, vals in src.meta.grid.items() for v in (vals[0], vals[-1])]
     if params and params not in plain:      # e.g. the walk-forward's frozen exam params
         plain.append(dict(params))
