@@ -3,13 +3,15 @@ X4; Testing 11): `plugins.names_group`, the static scan, and `plugins.reads_colu
 
 import dataclasses
 
+import numpy as np
 import pytest
 
 from perp_lab.data import columns
 from perp_lab.engine.backtest import EngineParams
 from perp_lab.plugins import PluginSource, names_group, reads_columns
 from perp_lab.sandbox import client
-from perp_lab.validate.causality import causality_failures, check_bars
+from perp_lab.sandbox.errors import PluginError, ProtocolError
+from perp_lab.validate.causality import causality_failures, check_bars, synthetic_bars, with_moving_columns
 from tests.test_store import cfg  # noqa: F401
 
 REF = next(g for g in columns.GROUPS if g.name == "reference")
@@ -159,6 +161,48 @@ def test_given_params_are_run_as_well_as_the_defaults(cfg):
     assert reads_columns(cfg, src, REF, params={"k": 2}) is True
 
 
+def test_a_read_for_the_target_level_alone_counts(cfg):
+    # the target is 50% or 60% away, by BTC's last bar, and never hit: entries and exits fall on the same
+    # bars either way, and only the target levels differ
+    far = (f'        far = 0.5 + 0.1 * (ctx[{BUILT_NAME}] > ctx.prev({BUILT_NAME}))\n'
+           '        return ctx["close"] - side * 2 * ctx["atr"], ctx["close"] * (1 + side * far)\n')
+    src = plugin(bracket=far)
+    assert names_group(src, REF) == []
+    checked = check_bars()
+    a, b = (client.fresh_run(cfg, src, "X", "1h", bars, {}, EngineParams()).decisions
+            for bars in (checked, checked.assign(**REF.synthetic(checked, 1))))
+    assert a.n_actions() > 0
+    assert np.array_equal(a.i, b.i) and np.array_equal(a.action, b.action)
+    assert not np.array_equal(a.target, b.target, equal_nan=True)
+    assert reads_columns(cfg, src, REF) is True
+
+
+def test_a_plugin_that_never_acts_counts_as_reading(cfg):
+    # no decision on either side, so the runs cannot tell: fail closed
+    src = plugin(sig="        sig = 0 * ref\n")
+    assert names_group(src, REF) == [] and actions(cfg, src, check_bars()) == 0
+    assert reads_columns(cfg, src, REF) is True
+
+
+def test_a_plugin_that_crashes_counts_as_reading(cfg):
+    src = plugin('        raise ValueError("no")\n')
+    assert names_group(src, REF) == []
+    assert reads_columns(cfg, src, REF) is True
+
+
+@pytest.mark.parametrize("error", [PluginError("died", "", "worker exited"), PluginError("timeout"),
+                                   ProtocolError("frame outside a request"), RuntimeError("host trouble")],
+                         ids=["lost_twice_died", "lost_twice_timeout", "protocol", "infrastructure"])
+def test_the_machines_failures_are_raised_not_counted(cfg, monkeypatch, error):
+    def fails(*a, **kw):
+        raise error
+
+    monkeypatch.setattr(client, "fresh_run", fails)
+    with pytest.raises(type(error)) as caught:
+        reads_columns(cfg, plugin(), REF)
+    assert caught.value is error
+
+
 # The reviewer's two probes, which read BTC under an alias and were missed: a filter that drops the coin's
 # own momentum on a 4-sigma BTC shock, and a follower of such shocks. The check's bars hold one such shock
 # (bar 2192); seed 1's and seed 2's streams hold none.
@@ -178,3 +222,50 @@ def test_the_reviewers_aliased_btc_shock_probes_are_caught(cfg, rule):
     assert causality_failures(cfg, src) == []
     assert names_group(src, REF) == ["reference_frame"]
     assert reads_columns(cfg, src, REF) is True
+
+
+def test_a_rare_btc_shock_rule_is_caught_by_the_runs_on_the_checks_stream(cfg):
+    src = shock(SHOCK_FOLLOW, f"bars[{BUILT_NAME}]")
+    assert causality_failures(cfg, src) == [] and names_group(src, REF) == []
+    assert actions(cfg, src, check_bars()) > 0                     # the check's one shock
+    assert reads_columns(cfg, src, REF) is True
+
+
+@pytest.mark.xfail(strict=True, reason="the runs see a read only when it changes a decision on the check's bars: "
+                                       "this filter's one shock falls inside a held position")
+def test_a_filter_that_changes_no_decision_on_the_checks_bars_is_seen_only_by_name(cfg):
+    src = shock(SHOCK_FILTER, f"bars[{BUILT_NAME}]")
+    assert names_group(src, REF) == []
+    assert reads_columns(cfg, src, REF) is True
+
+
+# ------------------------------------------------------------------ the check's bars, built once
+
+def test_check_bars_are_the_lookahead_checks_bars(cfg, monkeypatch):
+    checked = check_bars()
+    assert checked.equals(with_moving_columns(synthetic_bars(seed=1)))
+    real, seen = client.fresh_run, []
+
+    def spy(cfg, src, symbol, tf, bars, *a, **kw):
+        seen.append((symbol, bars))
+        return real(cfg, src, symbol, tf, bars, *a, **kw)
+
+    monkeypatch.setattr(client, "fresh_run", spy)
+    assert causality_failures(cfg, plugin()) == []
+    assert any(s == "X" and b.equals(checked) for s, b in seen)
+
+
+def test_the_runs_compare_the_checked_stream_with_seed_1(cfg, monkeypatch):
+    checked = check_bars()
+    seed_1 = checked.assign(**REF.synthetic(checked, 1))
+    assert not np.array_equal(checked.btc_close, seed_1.btc_close)
+    real, seen = client.fresh_run, []
+
+    def spy(cfg, src, symbol, tf, bars, *a, **kw):
+        seen.append(bars)
+        return real(cfg, src, symbol, tf, bars, *a, **kw)
+
+    monkeypatch.setattr(client, "fresh_run", spy)
+    assert reads_columns(cfg, plugin(), REF) is False
+    assert len(seen) == 2
+    assert sum(b.equals(checked) for b in seen) == 1 and sum(b.equals(seed_1) for b in seen) == 1

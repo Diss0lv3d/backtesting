@@ -201,23 +201,44 @@ def _named_in(s: str, group, stem: str | None) -> list[str]:
     return []
 
 
+# A run's failure that is the machine's or the pipe's, not the plugin's: a worker lost twice (`fresh_run`
+# retries a WorkerLost once, then raises PluginError with its kind) or a protocol error.
+_NOT_THE_PLUGINS = ("died", "timeout", "protocol")
+
+
 def reads_columns(cfg, src: PluginSource, group, params: dict | None = None) -> bool:
-    """Whether `src` reads `group`: it names it (`names_group`), or its decisions change when only the
-    group's stream does. The dynamic half runs as the lookahead check does, on its synthetic bars as coin
-    "X" at 1h, each run in a fresh sandbox worker: at the default params (and at `params`, when given),
-    once with `group.synthetic(bars, 1)` and once with seed 2. Any difference in entries or exits counts.
-    Features don't, so a plugin that passes every column through `prepare` and decides on close alone
-    does not read the group. A run's PluginError propagates."""
+    """Whether `src` reads `group`: it names it (`names_group`), or the dynamic half can't rule it out.
+
+    That half runs the plugin as the lookahead check does: on the check's own bars (`causality.check_bars()`,
+    whose group stream the check verified), as coin "X" at 1h, each run in a fresh sandbox worker, at the
+    default params and at `params` when given. For each params, one run is on those bars and one has only
+    the group's stream replaced, by `group.synthetic(bars, 1)`. The plugin reads the group when, for either
+    params:
+    - the two runs' decisions differ: entries and exits with their stop and target levels. Features don't
+      count, so a plugin that passes every column through `prepare` and decides on close alone doesn't read it;
+    - neither run makes a decision, so the runs can't tell;
+    - the plugin fails a run (a PluginError). A worker lost twice and a protocol error are the machine's
+      failures, not the plugin's, and are raised, as is any other error."""
     if names_group(src, group):
         return True
     from perp_lab.engine.backtest import EngineParams
     from perp_lab.sandbox import client             # client imports this module
+    from perp_lab.sandbox.errors import PluginError
     from perp_lab.validate import causality
 
-    bars = causality.with_moving_columns(causality.synthetic_bars(seed=1))
-    streams = [bars.assign(**group.synthetic(bars, seed)) for seed in (1, 2)]
+    checked = causality.check_bars()
+    sides = (checked, checked.assign(**group.synthetic(checked, 1)))
     variants = [{}] + ([dict(params)] if params else [])
     with ThreadPoolExecutor(client.max_workers(cfg)) as pool:
-        runs = [[pool.submit(client.fresh_run, cfg, src, "X", "1h", b, kw, EngineParams()) for b in streams]
+        runs = [[pool.submit(client.fresh_run, cfg, src, "X", "1h", b, kw, EngineParams()) for b in sides]
                 for kw in variants]
-        return any(not a.result().decisions.same(b.result().decisions) for a, b in runs)
+        for pair in runs:
+            try:
+                a, b = (f.result().decisions for f in pair)
+            except PluginError as e:
+                if e.kind in _NOT_THE_PLUGINS:
+                    raise
+                return True
+            if a.n_actions() == b.n_actions() == 0 or not a.same(b):
+                return True
+    return False
