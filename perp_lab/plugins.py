@@ -148,32 +148,57 @@ def parse_meta(text: bytes, name: str) -> PluginMeta:
 
 
 def names_group(src: PluginSource, group) -> list[str]:
-    """Where `src` names a column group (a `columns.ColumnGroup`), from the text with `ast`; no plugin
-    code runs. It counts a string constant or f-string part containing one of the group's columns or its
-    prefix, an attribute named like one (`bars.btc_close`), and a call to one of its helpers
-    (`reference_frame(bars)`, `ind.reference_frame(bars)`). Each name is listed once, in source order:
-    the column, or the prefix for a string that holds no whole column, or the helper. Comments aren't in
-    the tree, so they never count. Docstrings are string constants, so they do: a plugin can read its
-    own back, and a false positive only costs a refused paper run."""
+    """Where `src` names a column group (a `columns.ColumnGroup`), read from the text with `ast`; no
+    plugin code runs. Each name is listed once, in source order. It counts:
+    - a string constant or f-string part that holds one of the group's columns (listed); else its prefix
+      (`f"btc_{k}"` lists "btc_"); else, outside a docstring, the prefix's stem (`filter(like="btc")`
+      lists "btc");
+    - an attribute named like a column or a helper, or starting with the prefix (`bars.btc_close`,
+      `ind.reference_frame`), called or not;
+    - a name bound to a helper, called or not, listed as the helper: `reference_frame(bars)`, `rf(bars)`
+      after `import reference_frame as rf`, `f = reference_frame`. A bare import is not a read.
+    Comments aren't in the tree, so they never count. Docstrings count by column or prefix (a plugin can
+    read its own back, and a false positive only costs a refused paper run), not by the bare stem, which
+    prose uses for the coin."""
+    tree = ast.parse(src.text)
+    helper = {h: h for h in group.helpers} | {
+        a.asname or a.name: a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+        for a in n.names if a.name in group.helpers}
+    docs = {d for n in ast.walk(tree) if (d := _docstring(n)) is not None}
+    stem = group.prefix.rstrip("_")
     hits = []                                       # (line, column, name)
-    for node in ast.walk(ast.parse(src.text)):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            s = node.value
-            names = [c for c in group.columns if c in s] or ([group.prefix] if group.prefix in s else [])
-        elif isinstance(node, ast.Attribute) and (node.attr in group.columns or node.attr.startswith(group.prefix)):
+            names = _named_in(node.value, group, None if node in docs else stem)
+        elif isinstance(node, ast.Attribute) and (node.attr in group.columns or node.attr in group.helpers
+                                                  or node.attr.startswith(group.prefix)):
             names = [node.attr]
-        elif isinstance(node, ast.Call) and _called(node) in group.helpers:
-            names = [_called(node)]
+        elif isinstance(node, ast.Name) and node.id in helper:
+            names = [helper[node.id]]
         else:
             continue
         hits += [(node.lineno, node.col_offset, n) for n in names]
     return list(dict.fromkeys(n for *_, n in sorted(hits)))
 
 
-def _called(call: ast.Call) -> str | None:
-    """The called name: `f` for `f(...)` and `m.f(...)`; None for any other callee."""
-    f = call.func
-    return f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+def _docstring(node: ast.AST) -> ast.Constant | None:
+    """The docstring's constant of a module, class or function; None for any other node or none there."""
+    if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+        first = node.body[0].value if isinstance(node.body[0], ast.Expr) else None
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first
+    return None
+
+
+def _named_in(s: str, group, stem: str | None) -> list[str]:
+    """The group's columns that `s` holds; else its prefix, if `s` holds it; else `stem`, if given and held."""
+    cols = [c for c in group.columns if c in s]
+    if cols:
+        return cols
+    for name in (group.prefix, stem):
+        if name and name in s:
+            return [name]
+    return []
 
 
 def reads_columns(cfg, src: PluginSource, group, params: dict | None = None) -> bool:
