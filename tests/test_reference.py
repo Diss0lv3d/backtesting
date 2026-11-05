@@ -261,8 +261,7 @@ def test_duplicate_btc_open_time_keeps_row_count(cfg):
     assert b.index.equals(plain.index)
     np.testing.assert_array_equal(b.btc_close.to_numpy(), expected(b, btc).close.to_numpy())
     src = reference.load_source(cfg, "1h")
-    dup = reference.ReferenceSource(pd.concat([src.candles, src.candles.iloc[100:200]]).iloc[::-1],
-                                    src.funding, src.metrics)
+    dup = dataclasses.replace(src, candles=pd.concat([src.candles, src.candles.iloc[100:200]]).iloc[::-1])
     got = load_bars(cfg, "ETHUSDT", "1h", sources={"reference": dup})
     pd.testing.assert_frame_equal(got, b)
 
@@ -300,6 +299,34 @@ def test_a_given_source_is_used_instead_of_a_load(cfg):
     want = load_bars(cfg, "ETHUSDT", "1h")
     shutil.rmtree(cfg.data_dir / "BTCUSDT")
     pd.testing.assert_frame_equal(load_bars(cfg, "ETHUSDT", "1h", sources={"reference": src}), want)
+
+
+def test_a_source_knows_its_timeframe_and_end(cfg):
+    src = reference.load_source(cfg, "1h")
+    assert (src.tf, src.end) == ("1h", cfg.holdout_start)
+    assert reference.load_source(cfg, "4h", end=T("2026-01-01")).end == T("2026-01-01")
+
+
+def test_a_source_for_another_timeframe_is_refused(cfg):
+    # a cached 1h source on 4h bars would attach 1h values at the 4h open times
+    one = reference.load_source(cfg, "1h")
+    with pytest.raises(ValueError, match="a 1h reference source given to ETHUSDT 4h bars"):
+        load_bars(cfg, "ETHUSDT", "4h", sources={"reference": one})
+    with pytest.raises(ValueError, match="a 1h reference source"):
+        reference.attach(load_bars(cfg, "ETHUSDT", "4h", groups=False), "ETHUSDT", "4h", one)
+
+
+def test_a_source_cut_before_the_bars_end_is_refused(cfg):
+    # it would carry btc_funding_last and btc_oi_value forward past its cut, with no NaN to show it
+    end = T("2026-01-01")
+    upto = reference.load_source(cfg, "1h", end=end)
+    with pytest.raises(ValueError, match="cut at 2026-01-01 00:00:00"):
+        load_bars(cfg, "ETHUSDT", "1h", sources={"reference": upto})
+    short = reference.load_source(cfg, "1h", end=end - pd.Timedelta(milliseconds=1))   # the last bar's close
+    with pytest.raises(ValueError, match="cut at"):
+        load_bars(cfg, "ETHUSDT", "1h", end=end, sources={"reference": short})
+    got = load_bars(cfg, "ETHUSDT", "1h", end=end, sources={"reference": upto})
+    pd.testing.assert_frame_equal(got, load_bars(cfg, "ETHUSDT", "1h", end=end))
 
 
 def test_buy_and_hold_unchanged(cfg):

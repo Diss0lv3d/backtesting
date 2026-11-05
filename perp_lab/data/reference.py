@@ -45,10 +45,14 @@ _FUNDING_MS = 8 * 3_600_000
 class ReferenceSource:
     """BTC's data at one timeframe, shared by every coin, holding nothing at or after its end:
     `candles` (open_time, trades and BAR_COLUMNS), `funding` (funding_time, funding_rate,
-    interval_hours) and `metrics` (create_time, oi, oi_value); empty frames where data is missing."""
+    interval_hours) and `metrics` (create_time, oi, oi_value); empty frames where data is missing.
+    `tf` is the candles' timeframe and `end` the resolved end it was cut at, so `attach` can refuse
+    a source that doesn't fit the bars."""
     candles: pd.DataFrame
     funding: pd.DataFrame
     metrics: pd.DataFrame
+    tf: str
+    end: pd.Timestamp
 
 
 def _empty(cols: tuple[str, ...], time_col: str) -> pd.DataFrame:
@@ -80,12 +84,23 @@ def load_source(cfg, tf: str, start=None, end=None, holdout=None) -> ReferenceSo
                     tf, SYMBOL, ", ".join(missing))
     funding = funding.loc[funding.funding_time < e_ms, list(_FUNDING)].reset_index(drop=True)
     metrics = metrics.loc[metrics.create_time < e_ms, list(_METRICS)].reset_index(drop=True)
-    return ReferenceSource(candles, funding, metrics)
+    return ReferenceSource(candles, funding, metrics, tf, end)
 
 
 def attach(bars: pd.DataFrame, symbol: str, tf: str, source: ReferenceSource) -> pd.DataFrame:
     """`bars` with COLUMNS appended, all float64, on the same rows and index. Every coin, BTC
-    included, gets the same BTC values, so `symbol` and `tf` are unused (the source is per tf)."""
+    included, gets the same BTC values.
+
+    Refuses (ValueError) a source at another timeframe, whose candles would join at the wrong open
+    times, and one cut before the bars' last close, which would carry btc_funding_last and
+    btc_oi_value forward past its cut with no NaN to show it."""
+    if source.tf != tf:
+        raise ValueError(f"a {source.tf} reference source given to {symbol} {tf} bars")
+    if len(bars):
+        last_close = int(bars.close_time.max())
+        if int(source.end.value // 10**6) <= last_close:
+            raise ValueError(f"the reference source was cut at {source.end}, before {symbol} {tf}'s last bar "
+                             f"closed at {pd.Timestamp(last_close, unit='ms', tz='UTC')}")
     out = bars.copy()
     c = source.candles.drop_duplicates("open_time").set_index("open_time")
     c = c[c.trades != 0]                      # X6; NaN trades (ccxt-stitched) are not zero
