@@ -1,4 +1,5 @@
-"""Plugin source and metadata, read from the text with `ast`; no plugin code runs here.
+"""Plugin source and metadata, read from the text with `ast`; no plugin code runs here, except in
+sandbox workers for `reads_columns`'s dynamic half.
 
 The hash is the git blob SHA-1 of the bytes read, so it equals `git hash-object` for the file.
 """
@@ -7,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from perp_lab import strategy
@@ -143,3 +145,54 @@ def parse_meta(text: bytes, name: str) -> PluginMeta:
     doc = ast.get_docstring(tree, clean=False) or ""
     hypothesis = doc.strip().splitlines()[0].strip() if doc.strip() else ""
     return PluginMeta(parent, hypothesis, meta["params"], meta["grid"], meta["timeframes"], meta["session"])
+
+
+def names_group(src: PluginSource, group) -> list[str]:
+    """Where `src` names a column group (a `columns.ColumnGroup`), from the text with `ast`; no plugin
+    code runs. It counts a string constant or f-string part containing one of the group's columns or its
+    prefix, an attribute named like one (`bars.btc_close`), and a call to one of its helpers
+    (`reference_frame(bars)`, `ind.reference_frame(bars)`). Each name is listed once, in source order:
+    the column, or the prefix for a string that holds no whole column, or the helper. Comments aren't in
+    the tree, so they never count. Docstrings are string constants, so they do: a plugin can read its
+    own back, and a false positive only costs a refused paper run."""
+    hits = []                                       # (line, column, name)
+    for node in ast.walk(ast.parse(src.text)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            s = node.value
+            names = [c for c in group.columns if c in s] or ([group.prefix] if group.prefix in s else [])
+        elif isinstance(node, ast.Attribute) and (node.attr in group.columns or node.attr.startswith(group.prefix)):
+            names = [node.attr]
+        elif isinstance(node, ast.Call) and _called(node) in group.helpers:
+            names = [_called(node)]
+        else:
+            continue
+        hits += [(node.lineno, node.col_offset, n) for n in names]
+    return list(dict.fromkeys(n for *_, n in sorted(hits)))
+
+
+def _called(call: ast.Call) -> str | None:
+    """The called name: `f` for `f(...)` and `m.f(...)`; None for any other callee."""
+    f = call.func
+    return f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+
+
+def reads_columns(cfg, src: PluginSource, group, params: dict | None = None) -> bool:
+    """Whether `src` reads `group`: it names it (`names_group`), or its decisions change when only the
+    group's stream does. The dynamic half runs as the lookahead check does, on its synthetic bars as coin
+    "X" at 1h, each run in a fresh sandbox worker: at the default params (and at `params`, when given),
+    once with `group.synthetic(bars, 1)` and once with seed 2. Any difference in entries or exits counts.
+    Features don't, so a plugin that passes every column through `prepare` and decides on close alone
+    does not read the group. A run's PluginError propagates."""
+    if names_group(src, group):
+        return True
+    from perp_lab.engine.backtest import EngineParams
+    from perp_lab.sandbox import client             # client imports this module
+    from perp_lab.validate import causality
+
+    bars = causality.with_moving_columns(causality.synthetic_bars(seed=1))
+    streams = [bars.assign(**group.synthetic(bars, seed)) for seed in (1, 2)]
+    variants = [{}] + ([dict(params)] if params else [])
+    with ThreadPoolExecutor(client.max_workers(cfg)) as pool:
+        runs = [[pool.submit(client.fresh_run, cfg, src, "X", "1h", b, kw, EngineParams()) for b in streams]
+                for kw in variants]
+        return any(not a.result().decisions.same(b.result().decisions) for a, b in runs)
