@@ -67,6 +67,10 @@ def _research_months(cfg) -> list[str]:
     return [str(m) for m in pd.period_range(first, last, freq="M")]
 
 
+def _is_real(entry) -> bool:
+    return bool(entry) and entry.get("source") not in (None, "absent")
+
+
 def column_group_problems(cfg, symbols: list[str], tf: str) -> list[str]:
     """One string per research month a group's source data is missing or incomplete. Months at
     or after holdout_start are never looked at."""
@@ -86,7 +90,7 @@ def column_group_problems(cfg, symbols: list[str], tf: str) -> list[str]:
             seen_real = False
             for m in months:
                 if (symbol, dataset, m) in gaps:
-                    seen_real = seen_real or data.get(m, {}).get("source") not in (None, "absent")
+                    seen_real = seen_real or _is_real(data.get(m))
                     continue
                 e = data.get(m)
                 where = f"column group {g.name}: {symbol}/{dataset} {m}"
@@ -99,4 +103,6 @@ def column_group_problems(cfg, symbols: list[str], tf: str) -> list[str]:
                         problems.append(f"{where} is absent after the first real month")
                 else:
                     seen_real = True
+            if not seen_real:
+                problems.append(f"column group {g.name}: {symbol}/{dataset} has no real month in the research span")
     return problems

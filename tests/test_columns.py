@@ -62,7 +62,7 @@ def test_incomplete_month_is_one_problem(cfg):
 def test_missing_manifest_is_a_problem(cfg):
     with columns.registered(fake_group()):
         p = columns.column_group_problems(cfg, ["ETHUSDT"], "1h")
-    assert len(p) == len(months(cfg)) and "2025-01" in p[0]
+    assert len(p) == len(months(cfg)) + 1 and "2025-01" in p[0]
 
 
 def test_absent_before_first_real_month_is_fine(cfg):
@@ -92,9 +92,19 @@ def test_known_gap_clears_its_month(cfg):
         assert columns.column_group_problems(cfg, [], "4h") == []
 
 
-def test_excluded_symbol_is_skipped(cfg):
-    with_gaps(cfg, [], exclusions=["BTCUSDT"])
+@pytest.mark.parametrize("name", ["BTCUSDT", "BTC"])
+def test_excluded_symbol_is_skipped(cfg, name):
+    with_gaps(cfg, [], exclusions=[name])
     with columns.registered(fake_group()):
+        assert columns.column_group_problems(cfg, [], "4h") == []
+
+
+def test_all_absent_source_is_one_problem_and_exclusion_clears_it(cfg):
+    manifest(cfg, {m: {"complete": True, "rows": 0, "source": "absent"} for m in months(cfg)})
+    with columns.registered(fake_group()):
+        p = columns.column_group_problems(cfg, [], "4h")
+        assert len(p) == 1 and "no real month" in p[0] and "BTCUSDT/4h" in p[0]
+        with_gaps(cfg, [], exclusions=["BTC"])
         assert columns.column_group_problems(cfg, [], "4h") == []
 
 
