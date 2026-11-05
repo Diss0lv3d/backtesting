@@ -16,7 +16,7 @@ from perp_lab.validate.walkforward import WFResult, _window, modal_params, run_m
 def buy_and_hold(cfg, symbols, tf, a, b) -> dict:
     per = {}
     for s in symbols:
-        bars = load_bars(cfg, s, tf, with_regime=False, with_metrics=False)
+        bars = load_bars(cfg, s, tf, with_regime=False, with_metrics=False, groups=False)
         d = pd.DataFrame({"close": bars.close, "f": bars.funding_charge}).resample("1D").agg(
             {"close": "last", "f": "sum"})
         r = d.close.pct_change() - d.f          # 1x long pays positive funding

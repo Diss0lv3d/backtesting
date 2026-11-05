@@ -18,6 +18,13 @@ def fake_group(rule=1, name="fake"):
         synthetic=lambda b, seed: b, sources=lambda cfg, symbols, tf: [("BTCUSDT", tf)])
 
 
+@pytest.fixture(autouse=True)
+def fake_group_alone(monkeypatch):
+    """These tests exercise the registry with a fake group alone; the reference group's own
+    registration is pinned in tests/test_reference.py."""
+    monkeypatch.setattr(columns, "GROUPS", ())
+
+
 @pytest.fixture
 def cfg(tmp_path):
     return market_config(tmp_path)

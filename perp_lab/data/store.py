@@ -1,4 +1,4 @@
-"""Parquet readers + the holdout guard + bar assembly (candles + funding + OI + regime).
+"""Parquet readers + the holdout guard + bar assembly (candles, funding, OI, column groups, regime).
 
 Every research read goes through here. Reads at/after `holdout_start` raise
 unless a valid HoldoutToken is passed.
@@ -200,8 +200,14 @@ def attach_slippage(cfg: Config, candles: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_bars(cfg: Config, symbol: str, tf: str, start=None, end=None, holdout=None,
-              with_regime: bool = True, with_metrics: bool = True) -> pd.DataFrame:
-    """Candles + funding + OI + regime label, all strictly causal."""
+              with_regime: bool = True, with_metrics: bool = True, groups: bool = True,
+              sources: dict[str, object] | None = None) -> pd.DataFrame:
+    """Candles + funding + OI + each column group's columns + regime label, all strictly causal.
+
+    `sources`: a group's shared source by group name; a group without one builds it here with the
+    same start, end and token.
+    """
+    from perp_lab.data import columns          # not at module level: columns -> reference -> store
     from perp_lab.validate.regime import attach_regime
 
     lead = (cfg["costs"]["slippage_model"]["adv_days"] + 1) * 86_400_000
@@ -213,6 +219,12 @@ def load_bars(cfg: Config, symbol: str, tf: str, start=None, end=None, holdout=N
     c = align_funding(c, load_funding(cfg, symbol), tf)
     if with_metrics:
         c = align_metrics(c, load_metrics(cfg, symbol))
+    if groups:
+        for g in columns.GROUPS:
+            src = (sources or {}).get(g.name)
+            if src is None and g.load_source is not None:
+                src = g.load_source(cfg, tf, start, end, holdout)
+            c = g.attach(c, symbol, tf, src)
     if with_regime:
         c = attach_regime(cfg, c, symbol, start, end, holdout)
     return c
