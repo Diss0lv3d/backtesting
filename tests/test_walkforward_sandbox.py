@@ -69,9 +69,11 @@ class Failing(Strategy):
 def fresh_wf_caches():
     wfm._cfg.cache_clear()
     wfm._bars.cache_clear()
+    wfm._sources.cache_clear()
     yield
     wfm._cfg.cache_clear()
     wfm._bars.cache_clear()
+    wfm._sources.cache_clear()
 
 
 def test_chunks_never_mix_symbols_and_spread_work():

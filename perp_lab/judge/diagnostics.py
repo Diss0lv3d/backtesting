@@ -77,6 +77,15 @@ def _before_costs(s: dict) -> dict | None:
     return {k: _num(g.get(k)) for k in ("sharpe", "random_mean", "random_p95", "pctile")}
 
 
+def _market(s: dict) -> dict | None:
+    """The OOS portfolio's daily beta and correlation to BTC and its BTC-hedged Sharpe (research OOS
+    only; information, no gate reads it)."""
+    m = s.get("btc_exposure")
+    if m is None:               # a run from before the market diagnostic, or one without BTC data
+        return None
+    return {k: _num(m.get(k)) for k in ("beta", "corr", "hedged_sharpe")}
+
+
 def _mean(x: pd.Series) -> float | None:
     return _num(x.mean()) if len(x) else None
 
@@ -147,4 +156,5 @@ def diagnostics(cfg, run_dir: str | Path, *, data: str, earlier: list[dict]) -> 
         # sorted: keys in fold order would tell which combo won the earliest fold
         "selection": dict(sorted(Counter(str(f.get("combo")) for f in s.get("folds") or []).items())),
         "overlap": _overlap(t, _portfolio(run_dir), earlier),
+        "market": _market(s),
     }

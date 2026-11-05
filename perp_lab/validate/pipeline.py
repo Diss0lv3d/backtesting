@@ -9,11 +9,12 @@ import numpy as np
 import pandas as pd
 
 from perp_lab.config import TF_MS
+from perp_lab.data import columns
 from perp_lab.plugins import PluginSource, require_timeframe
 from perp_lab.runs import MIN_OOS_TRADES_PER_COIN, new_run_id, per_coin_min, repo_commit, verdict, write_run
 from perp_lab.session_window import in_session
 from perp_lab.store import db
-from perp_lab.validate.benchmarks import buy_and_hold, random_entry, regime_split
+from perp_lab.validate.benchmarks import btc_exposure, buy_and_hold, random_entry, regime_split
 from perp_lab.validate.gross import before_costs
 from perp_lab.validate.montecarlo import coins_per_day, mc_drawdown
 from perp_lab.validate.sensitivity import sensitivity
@@ -91,6 +92,9 @@ def validate_strategy(cfg, name: str, tf: str, symbols=None, seeds=None, workers
         raise ValueError(f"source of {src.name} given to validate {name}")
     require_timeframe(src, tf)                  # a trial at a timeframe it doesn't declare: nothing runs
     rule = cfg["universe_rule"]                 # the report states the survivor bias: no rule, nothing runs
+    problems = columns.column_group_problems(cfg, symbols or cfg.symbols, tf)
+    if problems:                                # X3: no trial counts on data a column group can't fill
+        raise ValueError(f"column group data not ready at {tf}; nothing ran:\n" + "\n".join(problems))
     rid = new_run_id()
     db.register_trial(cfg, name, src.hash, tf)   # before plugin code sees real bars: a crash still counts
     wf = walkforward(cfg, src, tf, symbols, workers, cfg.runs_dir / rid / "sandbox_stderr")
@@ -101,6 +105,7 @@ def validate_strategy(cfg, name: str, tf: str, symbols=None, seeds=None, workers
     mc = mc_drawdown(wf.oos_trades, coins_per_day(wf.oos_daily), cfg["validation"]["mc_iterations"])
     oa, ob = wf.raw["oos_span"]
     bh = buy_and_hold(cfg, wf.symbols, tf, oa, ob)
+    btc = btc_exposure(cfg, wf.oos_portfolio, tf, oa, ob)
     reg = regime_split(wf.oos_trades)
     monthly = monthly_table(wf.oos_portfolio)
     n_coins = listed_coins(wf.oos_daily, oa, ob)
@@ -121,7 +126,7 @@ def validate_strategy(cfg, name: str, tf: str, symbols=None, seeds=None, workers
         "sensitivity": sens, "random_entry": {k: v for k, v in rnd.items() if k != "sharpes"},
         "before_costs": gross,
         "min_oos_trades": per_coin_min(MIN_OOS_TRADES_PER_COIN, n_coins),
-        "monte_carlo": mc, "buy_and_hold": bh["portfolio"],
+        "monte_carlo": mc, "buy_and_hold": bh["portfolio"], "btc_exposure": btc,
         "regime_split": reg.reset_index().to_dict("records") if len(reg) else [],
         "folds": [{k: v for k, v in f.items()} for f in wf.selected],
         "status": status, "fail_reasons": fails, "outside_session": outside,

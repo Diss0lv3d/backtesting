@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from perp_lab.data import columns
 from perp_lab.store import db
 from perp_lab.strategy import plugin_hash
 from perp_lab.validate.pipeline import validate_strategy
@@ -32,6 +33,7 @@ def test_a_registered_trial_without_a_run_counts(cfg):
 
 
 def test_validate_strategy_registers_before_the_walk_forward(cfg, monkeypatch):
+    monkeypatch.setattr(columns, "column_group_problems", lambda *a: [])     # this store has no BTC data
     monkeypatch.setattr("perp_lab.validate.pipeline.walkforward",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     with pytest.raises(RuntimeError):

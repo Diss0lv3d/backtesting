@@ -512,9 +512,11 @@ def test_cli_exam_only_reads_the_proposer_record(cfg, plugins, tmp_path, held):
 def fresh_wf_caches():
     wfm._cfg.cache_clear()
     wfm._bars.cache_clear()
+    wfm._sources.cache_clear()
     yield
     wfm._cfg.cache_clear()
     wfm._bars.cache_clear()
+    wfm._sources.cache_clear()
 
 
 def test_end_to_end_real_exam_on_a_synthetic_market(tmp_path, plugins, fresh_wf_caches):

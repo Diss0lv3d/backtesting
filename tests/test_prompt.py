@@ -87,6 +87,7 @@ DIAGNOSTICS_BLOCKS = {
     "breadth": {"coins", "coins_net_pos", "folds", "folds_net_pos", "top_coin_share", "top_fold_share"},
     "is_vs_oos": {"is_sharpe", "oos_sharpe"},
     "overlap": {"position", "mirror", "correlation"},
+    "market": {"beta", "corr", "hedged_sharpe"},
 }
 DIAGNOSTICS_KEYS = {"data", "regimes", "selection", *DIAGNOSTICS_BLOCKS}
 EXIT_REASONS = {"stop", "target", "signal", "liq", "eow"}          # the engine's close_pos reasons
@@ -102,7 +103,8 @@ def test_the_blocks_passed_through_whole_have_exactly_the_keys_the_judge_writes(
     from tests.test_diagnostics import DAYS, recorded_run, trades
 
     earlier = [{"strategy": "s0", "timeframe": "1h", "run_dir": str(recorded_run(cfg, "r0", trades()))}]
-    d = diagnostics(cfg, recorded_run(cfg, "r1", trades()), data="judged", earlier=earlier)
+    market = {"beta": 1.1, "corr": 0.6, "hedged_sharpe": 0.2}
+    d = diagnostics(cfg, recorded_run(cfg, "r1", trades(), btc_exposure=market), data="judged", earlier=earlier)
     t = trades().assign(r_multiple=0.5)
     m = summarize(pd.Series(0.001, index=DAYS), t, 0.2)      # the walk-forward's OOS metrics (oos_summary)
     out = prompt.public_verdict({"decision": "kill", "diagnostics": d, "walkforward": {"run_id": RUN_ID,

@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 
 from perp_lab.config import TF_MS, Config, load_config
+from perp_lab.data import columns
 from perp_lab.data.store import load_bars, research_symbols
 from perp_lab.engine.backtest import BacktestResult, EngineParams
 from perp_lab.engine.metrics import daily_returns, portfolio_returns, sharpe, summarize
@@ -85,9 +86,18 @@ def _cfg() -> Config:
     return load_config(_CFG_PATH)
 
 
+@lru_cache(maxsize=3)
+def _sources(tf: str) -> dict[str, object]:
+    """Each column group's source at `tf` (BTC's, for the reference), built once per process per
+    timeframe and shared by every coin's bars. Research only: built with no token, so cut at
+    holdout_start. The exam builds its own with its token and never reads this cache."""
+    cfg = _cfg()
+    return {g.name: g.load_source(cfg, tf) for g in columns.GROUPS if g.load_source is not None}
+
+
 @lru_cache(maxsize=16)
 def _bars(symbol: str, tf: str) -> pd.DataFrame:
-    return load_bars(_cfg(), symbol, tf)
+    return load_bars(_cfg(), symbol, tf, sources=_sources(tf))
 
 
 LEVEL_COLS = ("level_time", "level_stop", "level_target")

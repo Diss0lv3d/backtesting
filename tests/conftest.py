@@ -76,14 +76,26 @@ CANDLE_COLS = ["open_time", "open", "high", "low", "close", "volume", "quote_vol
                "taker_buy_volume", "taker_buy_quote_volume", "close_time"]
 
 
+def _write_manifest(d: Path, entries: dict) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "_manifest.json").write_text(json.dumps(entries, indent=1, sort_keys=True))
+
+
 def write_market(data_dir, symbols, candles_until="2026-10-15", funding_until="2026-09-30 16:00", tfs=("4h",)):
-    """Synthetic candles from 2025-01-01 (4h, or each of `tfs`) and 8h funding, laid out like
-    `lab backfill` output, with its klines manifests: closed months from the monthly files, the
-    last one (still open on `candles_until`) from daily files and incomplete."""
+    """Synthetic candles from 2025-01-01 (4h, or each of `tfs`), 8h funding and hourly OI metrics
+    (to `candles_until`), laid out like `lab backfill` output, with its manifests: closed months
+    from the monthly files (metrics from daily ones: they have no monthly archive), the last one
+    (still open on `candles_until`) from daily files and incomplete. Funding has no daily files, so
+    its manifest stops at the last closed month. Every symbol's data starts in the first month, so a
+    research span from 2025-01 passes the readiness check (X3) for the reference coin, BTCUSDT."""
     t0, t1 = pd.Timestamp("2025-01-01", tz="UTC"), pd.Timestamp(candles_until, tz="UTC")
     months = pd.period_range(t0.tz_localize(None), t1.tz_localize(None), freq="M")
     manifest = {str(m): {"complete": m != months[-1], "source": "monthly" if m != months[-1] else "daily",
                          "rows": 0} for m in months}
+    last_funding = pd.Timestamp(funding_until).to_period("M")
+    funding_manifest = {str(m): {"complete": True, "source": "monthly", "rows": 0}
+                        for m in months[:-1] if m <= last_funding}
+    metrics_manifest = {str(m): {"complete": m != months[-1], "source": "daily", "rows": 0} for m in months}
     for i, s in enumerate(symbols):
         for k, tf in enumerate(tfs):
             n = int((t1 - t0) / pd.Timedelta(milliseconds=TF_MS[tf]))
@@ -91,12 +103,19 @@ def write_market(data_dir, symbols, candles_until="2026-10-15", funding_until="2
             d = Path(data_dir) / s / tf
             d.mkdir(parents=True, exist_ok=True)
             b[CANDLE_COLS].reset_index(drop=True).to_parquet(d / "all.parquet")
-            (d / "_manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True))
+            _write_manifest(d, manifest)
         ms = pd.date_range("2025-01-01", funding_until, freq="8h", tz="UTC").as_unit("ms").asi8
         fd = Path(data_dir) / s / "funding"
         fd.mkdir(parents=True, exist_ok=True)
         pd.DataFrame({"calc_time": ms, "interval_hours": 8.0, "funding_rate": 0.0001,
                       "funding_time": ms}).to_parquet(fd / "all.parquet")
+        _write_manifest(fd, funding_manifest)
+        ct = pd.date_range(t0, t1, freq="1h").as_unit("ms").asi8
+        oi = 1e6 * np.exp(np.cumsum(np.random.default_rng(100 + i).normal(0.0, 0.002, len(ct))))
+        md = Path(data_dir) / s / "metrics"
+        md.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"create_time": ct, "oi": oi, "oi_value": oi * 100.0}).to_parquet(md / "all.parquet")
+        _write_manifest(md, metrics_manifest)
 
 
 def market_config(tmp_path, **sections):

@@ -19,9 +19,11 @@ T = lambda s: pd.Timestamp(s, tz="UTC")  # noqa: E731
 def fresh_wf_caches():
     wfm._cfg.cache_clear()
     wfm._bars.cache_clear()
+    wfm._sources.cache_clear()
     yield
     wfm._cfg.cache_clear()
     wfm._bars.cache_clear()
+    wfm._sources.cache_clear()
 
 
 def keep_from(cfg, symbol, tf, since):
@@ -67,8 +69,7 @@ def test_walkforward_runs_with_a_coin_listed_mid_span(tmp_path):
 def test_oi_is_nan_before_the_first_metrics_snapshot(tmp_path):
     cfg = market_config(tmp_path)
     d = cfg.data_dir / "BTCUSDT" / "metrics"
-    d.mkdir()
     ct = pd.date_range("2025-06-01", "2026-07-01", freq="1h", tz="UTC", inclusive="left").as_unit("ms").asi8
-    pd.DataFrame({"create_time": ct, "oi": 1.0, "oi_value": 2.0}).to_parquet(d / "all.parquet")
+    pd.DataFrame({"create_time": ct, "oi": 1.0, "oi_value": 2.0}).to_parquet(d / "all.parquet")   # replaces the fixture's
     b = load_bars(cfg, "BTCUSDT", "4h")
     assert b.oi[b.index < T("2025-05-31")].isna().all() and (b.oi[b.index >= T("2025-06-01")] == 1.0).all()
