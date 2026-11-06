@@ -14,6 +14,8 @@ from perp_lab.data.store import load_bars, load_candles
 from perp_lab.engine.metrics import portfolio_returns, sharpe, summarize
 from perp_lab.validate.walkforward import WFResult, _window, modal_params, run_many
 
+BTC_EXPOSURE_MIN_DAYS = 30      # fewer overlapping daily returns give no BTC exposure: too few to estimate a beta
+
 
 def buy_and_hold(cfg, symbols, tf, a, b) -> dict:
     per = {}
@@ -35,15 +37,16 @@ def btc_exposure(cfg, oos_portfolio: pd.Series, tf: str, a, b) -> dict | None:
     with beta from the same span. The random-entry benchmark draws entries uniformly over flat bars,
     so it never shares a plugin's BTC timing; this shows a BTC-timed long for what it is.
 
-    None when BTC has no candles at `tf` or no two days overlap the portfolio's; `corr` is None for
-    a flat portfolio (one that never traded), whose beta and hedged Sharpe are 0."""
+    None when BTC has no candles at `tf` or fewer than BTC_EXPOSURE_MIN_DAYS daily returns overlap the
+    portfolio's; `corr` is None for a flat portfolio (one that never traded), whose beta and hedged
+    Sharpe are 0."""
     try:
         close = load_candles(cfg, reference.SYMBOL, tf).close.resample("1D").last()
     except FileNotFoundError:
         return None
     r_btc = close / close.shift(1) - 1
     both = _window(pd.concat([oos_portfolio, r_btc], axis=1, join="inner").dropna(), a, b)
-    if len(both) < 2:
+    if len(both) < BTC_EXPOSURE_MIN_DAYS:
         return None
     rp, rb = both.iloc[:, 0], both.iloc[:, 1]
     var = rb.var()

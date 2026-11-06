@@ -176,6 +176,20 @@ def test_btc_exposure_recovers_beta(tmp_path):
     assert sharpe(inside) < 0 < sharpe(noise) and abs(sharpe(inside) - sharpe(noise)) > 2
 
 
+@pytest.mark.parametrize("days, figures", [(29, False), (30, True)])
+def test_btc_exposure_needs_30_overlapping_days(tmp_path, days, figures):
+    cfg = market_config(tmp_path)
+    a, b = T("2025-07-01"), T("2026-07-01")
+    r_btc = daily_btc(cfg, a, b)
+    noise = pd.Series(np.random.default_rng(3).normal(0.001, 0.01, len(r_btc)), index=r_btc.index)
+    oos = (1.5 * r_btc + noise).iloc[:days]
+    got = benchmarks.btc_exposure(cfg, oos, "4h", a, b)
+    assert (got is not None) == figures
+    if figures:
+        assert set(got) == {"beta", "corr", "hedged_sharpe"} and all(np.isfinite(v) for v in got.values())
+    assert benchmarks.BTC_EXPOSURE_MIN_DAYS == 30
+
+
 def test_btc_exposure_is_none_without_btc(tmp_path):
     cfg = market_config(tmp_path, universe=["ETH"])
     oos = pd.Series(0.001, index=pd.date_range("2025-07-01", "2026-06-30", freq="D", tz="UTC"))
