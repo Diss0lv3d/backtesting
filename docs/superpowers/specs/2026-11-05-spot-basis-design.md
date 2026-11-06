@@ -236,7 +236,11 @@ NaN. It reads the filled `close`, `quote_volume`, `trades` and `taker_buy_quote_
 - `spot_taker_buy_quote_volume = spot_quote_volume × clip(0.5 + 0.6·(perp taker share − 0.5) + N(0, 0.05), 0.05,
   0.95)`.
 - `spot_trades = round(trades × s'_t)`, where s'_t is a second share built like s_t.
-- **NaN stretches:** all five are NaN on rows [0, 288) (spot not listed) and [1536, 1584) (a halt).
+- **NaN stretches:** all five are NaN on rows [0, 288) (spot not listed) and [432, 480) (a halt; moved from
+  [1536, 1584) by ruling S5).
+  - The halt sits right after the first NaN cut row (399, `causality.NAN_CUTS`), so a rolling window over spot
+    clears both by the later cuts and long windows stay visible to the check: up to 620 bars at 1100 and 2020 at
+    2500.
   - Both start and end on multiples of 48, so resampled 15m/1h/4h buckets are whole.
   - No `CUTS` value falls inside them.
   - A plugin that crashes on NaN spot fails the check, which is not a trial, rather than crashing on real bars as a

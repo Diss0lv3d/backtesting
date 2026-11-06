@@ -34,7 +34,7 @@
     - `BASIS_SLOW_PHI = 0.995`, `BASIS_SLOW_SD = 0.0010`, `BASIS_C = 0.0`;
     - `BASIS_FAST_PHI = 0.9`, `BASIS_FAST_SD = 0.0005`, `BASIS_JUMP_P = 0.01`, `BASIS_JUMP = (0.0020, 0.0060)`;
     - `SPOT_SHARE = 0.3`, `SHARE_PHI = 0.99`, `SHARE_SD = 0.3` (stationary), `SHARE_NOISE_SD = 0.3`, `TAKER_SLOPE = 0.6`, `TAKER_NOISE_SD = 0.05`;
-    - `NAN_STRETCHES = ((0, 288), (1536, 1584))`.
+    - `NAN_STRETCHES = ((0, 288), (432, 480))` (moved by ruling S5).
   - `MARKET_VERSION`: 4 in Task 5, 5 in Task 11.
 - `load_bars` stays tolerant. A missing spot folder gives NaN columns and one warning per process per (symbol, tf). All five columns are float64. Attaching never changes the frame's row count or index.
 - One concern per commit, each with its test. Every commit message ends with:
@@ -210,7 +210,7 @@ The lead does this task itself, in the main checkout, where `data/` lives. No la
     - the lag-24 autocorrelation of `basis` is > 0.3;
     - `basis.rolling(24).mean()` crosses `BASIS_C` at least 3 times.
   - `test_spot_volume_follows_perp_volume`: corr(log `spot_quote_volume`, log `quote_volume`) > 0.5.
-  - `test_nan_rows_are_the_stretches_and_the_rows_before_each_cut`: at n = 3000, the NaN rows are exactly [0,288) ∪ [1536,1584) ∪ {399, 1099, 1776, 2499}, for all five.
+  - `test_nan_rows_are_the_stretches_and_the_row_before_the_first_cut`: at n = 3000, the NaN rows are exactly [0,288) ∪ {399} ∪ [432,480), for all five (`NAN_CUTS`, ruling S5).
   - `test_values_up_to_t_ignore_later_rows`: the same n, with rows after t changed.
   - Under `with_spot`:
     - `test_peek_at_each_spot_column_is_reported` (parametrized over the five; `fails[0].startswith("defaults: AssertionError")`);
@@ -264,7 +264,7 @@ The lead does this task itself, in the main checkout, where `data/` lives. No la
   - `test_check_bars_carry_the_spot_stream`: equal to `spot.synthetic` on the filled bars at `EXTRAS_SEED`.
   - `test_market_version_is_4`.
   - `test_market_spot_resampling`: the sums use `min_count=1`, `spot_close` is the last value, and `basis == close / spot_close − 1` exactly at 15m, 1h and 4h.
-  - `test_market_spot_nan_stretches_whole`: at 15m, 1h and 4h, the spot NaN bars are exactly those inside the 5m rows [0,288) and [1536,1584).
+  - `test_market_spot_nan_stretches_whole`: at 15m, 1h and 4h, the spot NaN bars are exactly those inside the 5m rows [0,288) and [432,480) (ruling S5).
   - `test_market_pre_existing_columns_unchanged`: `pd.util.hash_pandas_object` sums of each frame without the spot columns, captured before the change and pinned.
 - [ ] **Step 2: Run them; they fail.**
 - [ ] **Step 3: Implement**, including the fixture and existing-test updates listed above. Weaken no check.

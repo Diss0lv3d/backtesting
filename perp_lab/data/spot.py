@@ -45,7 +45,9 @@ SHARE_SD = 0.3                         # the AR(1)'s stationary sd
 SHARE_NOISE_SD = 0.3
 TAKER_SLOPE = 0.6                      # spot taker share = 0.5 + slope·(perp taker share − 0.5) + noise
 TAKER_NOISE_SD = 0.05
-NAN_STRETCHES = ((0, 288), (1536, 1584))   # rows [start, end): spot not listed yet, then a halt
+# rows [start, end): spot not listed yet, then a halt just after the first NaN cut row (399), so a rolling
+# window over spot clears both by the later cuts (ruling S5); on multiples of 48, so resampled buckets are whole
+NAN_STRETCHES = ((0, 288), (432, 480))
 
 
 def dataset(tf: str) -> str:
@@ -169,8 +171,9 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
     run ends on that NaN and the full run has the next bar after it, so a fill from later bars (`bfill`,
     `interpolate`) is caught. Only the first, because a next-bar peek shows only on the cut run's last row:
     at the later cuts spot is set there, so a peek gated on a spot column can show. A rolling window over
-    them is NaN until it clears the NaN rows, so a gate on one is seen at 1100 up to 700 bars and, past the
-    halt, at 2500 up to 916; a longer window is seen only by the dated check."""
+    them is NaN until it clears the NaN rows, the last of which is the halt's, just after row 399: a gate on
+    one is seen at 1100 up to 620 bars and at 2500 up to 2020; a longer window is seen only by the dated
+    check."""
     from perp_lab.validate.causality import NAN_CUTS  # causality imports the groups' modules
     rng = np.random.default_rng((seed, SYNTHETIC_ID))
     n = len(bars)

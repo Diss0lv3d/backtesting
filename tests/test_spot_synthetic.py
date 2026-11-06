@@ -21,8 +21,8 @@ SPOT = ColumnGroup(name="spot", columns=spot.COLUMNS, prefix=spot.PREFIX, rule=1
                    exam_required="if_read", helpers=(), paper_ready=False, load_source=spot.load_source,
                    attach=spot.attach, synthetic=spot.synthetic, sources=spot.sources)
 PREFIXED = [c for c in spot.COLUMNS if c.startswith(spot.PREFIX)]     # the four spot_ columns
-# at n = 3000: the two stretches and the row before the first cut
-NAN_ROWS = [*range(0, 288), 399, *range(1536, 1584)]
+# at n = 3000: the stretch before the listing, the row before the first cut, then the halt
+NAN_ROWS = [*range(0, 288), 399, *range(432, 480)]
 
 
 @pytest.fixture
@@ -114,13 +114,16 @@ def test_spot_volume_follows_perp_volume():
 
 @pytest.mark.parametrize("n, rows", [
     (3000, NAN_ROWS),
-    (1560, [*range(0, 288), 399, *range(1536, 1560)]),            # the frame ends inside the halt
+    (450, [*range(0, 288), 399, *range(432, 450)]),               # the frame ends inside the halt
     (401, [*range(0, 288), 399]),
     (400, list(range(0, 288))),
-], ids=["3000", "1560", "401", "400"])
+], ids=["3000", "450", "401", "400"])
 def test_nan_rows_are_the_stretches_and_the_row_before_the_first_cut(n, rows):
     # at the later cuts the cut run ends on a set spot bar, so a peek gated on spot can show
-    assert spot.NAN_STRETCHES == ((0, 288), (1536, 1584)) and NAN_CUTS == [CUTS[0]]
+    assert spot.NAN_STRETCHES == ((0, 288), (432, 480)) and NAN_CUTS == [CUTS[0]]     # the halt: ruling S5
+    for a, b in spot.NAN_STRETCHES:
+        assert a % 48 == 0 and b % 48 == 0                    # so resampled 15m, 1h and 4h buckets are whole
+        assert not any(a <= k - 1 < b for k in CUTS)          # no cut's last row is inside one
     s = spot.synthetic(filled(n=n), EXTRAS_SEED)
     for c in spot.COLUMNS:
         assert np.flatnonzero(np.isnan(s[c])).tolist() == rows, c
@@ -205,11 +208,12 @@ def test_basis_mean_threshold_peek_is_caught(cfg, with_spot):
     "bars.spot_close > 0",
     f"bars.basis.rolling(24).mean() < {spot.BASIS_C!r}",
     "bars.basis > bars.basis.rolling(720).mean()",              # basis above its 30-day mean at 1h
-], ids=["spot_up", "spot_set", "basis_mean_24_below_centre", "basis_above_mean_720"])
+    "bars.spot_close > bars.spot_close.rolling(1500).mean()",   # spot above its 1500-bar mean
+], ids=["spot_up", "spot_set", "basis_mean_24_below_centre", "basis_above_mean_720", "spot_above_mean_1500"])
 def test_a_next_bar_peek_gated_on_a_spot_column_is_reported(cfg, with_spot, when):
     # the peek shows only on the cut run's last row, k - 1; the five are NaN there only before NAN_CUTS, and a
-    # rolling window over them is set again once it clears that row (and the halt), so the gate can open at a
-    # later cut. As BTC the coin's spot is its own, so the gate opens there too.
+    # rolling window over them is set again once it clears that row and the halt just after it, so the gate can
+    # open at a later cut. As BTC the coin's spot is its own, so the gate opens there too.
     bars = check_bars()
     cut = next((k for k in open_cuts(when, bars) if k not in NAN_CUTS), None)
     assert cut is not None                                   # the gate opens where the default check can see it
