@@ -162,11 +162,16 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
     fires, plus a fast AR(1) that the odd jump enters and decays with. `spot_close = close / (1 + basis)`,
     and `basis` is then recomputed as `close / spot_close − 1`, so the identity is exact. Spot quote volume
     and trades are the perp's times a moving share each; spot's taker share follows the perp's, clipped to
-    [0.05, 0.95]. The five are NaN on NAN_STRETCHES and on the row before each of the lookahead check's
-    cuts, as real spot's are before a listing, in a halt and on a zero-trade bar (X6): the cut run ends on
-    that NaN and the full run has the next bar after it, so a fill from later bars (`bfill`,
-    `interpolate`) is caught. A plugin that crashes on NaN spot fails the check, not a trial."""
-    from perp_lab.validate.causality import CUTS      # causality imports the groups' modules
+    [0.05, 0.95]. A plugin that crashes on NaN spot fails the check, not a trial.
+
+    The five are NaN on NAN_STRETCHES, as real spot's are before a listing and in a halt, and on the row
+    before the lookahead check's first cut only (`causality.NAN_CUTS`), as on a zero-trade bar (X6): the cut
+    run ends on that NaN and the full run has the next bar after it, so a fill from later bars (`bfill`,
+    `interpolate`) is caught. Only the first, because a next-bar peek shows only on the cut run's last row:
+    at the later cuts spot is set there, so a peek gated on a spot column can show. A rolling window over
+    them is NaN until it clears the NaN rows, so a gate on one is seen at 1100 up to 700 bars and, past the
+    halt, at 2500 up to 916; a longer window is seen only by the dated check."""
+    from perp_lab.validate.causality import NAN_CUTS  # causality imports the groups' modules
     rng = np.random.default_rng((seed, SYNTHETIC_ID))
     n = len(bars)
     z_slow, z_fast = rng.standard_normal(n), rng.standard_normal(n)
@@ -188,7 +193,7 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
            "spot_taker_buy_quote_volume": spot_quote * taker,
            "spot_trades": np.round(bars["trades"].to_numpy(dtype="float64") * _share(z_trades, noise_trades)),
            "basis": close / spot_close - 1}
-    gaps = [r for a, b in NAN_STRETCHES for r in range(a, min(b, n))] + [k - 1 for k in CUTS if k < n]
+    gaps = [r for a, b in NAN_STRETCHES for r in range(a, min(b, n))] + [k - 1 for k in NAN_CUTS if k < n]
     for c in COLUMNS:                         # last, after every draw, so no other value changes
         out[c][gaps] = np.nan
     return out
