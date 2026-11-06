@@ -90,9 +90,9 @@ The pooled 1h basis (all 17 coins) is negative at the median: the perp's close s
 
 The pooled median spot share is 0.213. These seven values are `calibration_targets.csv`.
 
-**Noisy-basis risk** (spec Risks). The 1h median |basis| per coin is 4.6–7.4 bp. The lab's own slippage estimate is 2.1–5.0 bp, and is used here as a half-spread proxy.
-- Most coins' median |basis| is within 2× that proxy. Examples: BTC 4.6 against 4.2 (2×2.1); XLM 7.3 against 9.9; ATOM 7.4 against 9.0.
-- So at the median, the basis is about the size of the two markets' last-trade noise. Any signal has to come from its tails (multi-bp moves held for hours), not from small readings.
+**Noisy-basis risk** (spec Risks). The 1h median |basis| per coin is 4.6–7.4 bp (BTC 4.6, XLM 7.3, ATOM 7.4). The half-spread wasn't measured here.
+- The lab's own slippage estimate (2.1–5.0 bp per coin) is no half-spread proxy. Its floor is 2 bp, so it overstates the half-spread, which the spec puts near 0.02 bp for BTC and ETH and at 0.5–1 bp for thin coins.
+- So whether the basis at the median is the two markets' last-trade noise is not established.
 - No coin is excluded for this. The context tells the builder.
 
 ## The main checkout's plugins
