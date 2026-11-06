@@ -45,6 +45,8 @@ SHARE_SD = 0.3                         # the AR(1)'s stationary sd
 SHARE_NOISE_SD = 0.3
 TAKER_SLOPE = 0.6                      # spot taker share = 0.5 + slope·(perp taker share − 0.5) + noise
 TAKER_NOISE_SD = 0.05
+MIN_BARS = 100                         # bars traded on both sides that make a month the symbol check's
+BASIS_LIMIT = 0.01                     # the symbol check's bound on a month's median basis
 # rows [start, end): spot not listed yet, then a halt just after the first NaN cut row (399), so a rolling
 # window over spot clears both by the later cuts (ruling S5); on multiples of 48, so resampled buckets are whole
 NAN_STRETCHES = ((0, 288), (432, 480))
@@ -213,3 +215,37 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
 def sources(cfg, symbols: list[str], tf: str) -> list[tuple[str, str]]:
     """The (symbol, dataset) directories the readiness check reads: each coin's own spot folder at `tf`."""
     return [(s, dataset(tf)) for s in symbols]
+
+
+def symbol_check(cfg, tf: str) -> list[str]:
+    """The symbol check: each coin of `cfg.symbols` that isn't excluded must have its spot pair be its perp's
+    market. On the last research month with at least 100 bars traded on both sides (perp and spot `trades`
+    above 0, joined on `open_time`) the median of `close / spot_close − 1` must be within ±1%; a coin with
+    no such month is a problem too. Reads research data only (both loaders' default end)."""
+    problems: list[str] = []
+    for sym in cfg.symbols:
+        if excluded(cfg, sym):
+            continue
+        where = f"column group spot: {sym}/{dataset(tf)}"
+        try:
+            perp = store.load_candles(cfg, sym, tf)[["open_time", "close", "trades"]]
+            spot = load_spot(cfg, sym, tf)[["open_time", "close", "trades"]]
+        except FileNotFoundError:
+            perp = spot = None
+        both = None if perp is None else perp.merge(spot, on="open_time", suffixes=("", "_spot"))
+        if both is not None:
+            both = both[(both.trades > 0) & (both.trades_spot > 0)]    # NaN trades are not traded
+            month = pd.to_datetime(both.open_time, unit="ms", utc=True).dt.tz_localize(None).dt.to_period("M")
+            counts = month.value_counts()
+            full = counts[counts >= MIN_BARS]
+        if both is None or full.empty:
+            problems.append(f"{where} has no research month with {MIN_BARS} bars traded on both perp and spot; "
+                            f"exclude the coin in column_groups.spot.exclusions")
+            continue
+        last = full.index.max()
+        rows = both[(month == last).to_numpy()]
+        m = float((rows.close / rows.close_spot - 1).median())
+        if abs(m) > BASIS_LIMIT:
+            problems.append(f"{where} {last}: median basis {m:+.2%}, outside ±1%; another pair? "
+                            f"exclude the coin in column_groups.spot.exclusions")
+    return problems

@@ -45,6 +45,7 @@ def test_symbol_check_names_a_month_of_another_timeframe(tmp_path):
     assert columns.column_group_problems(cfg, cfg.symbols, "4h") == []
     n = int((T("2026-10-15") - T("2025-01-01")) / pd.Timedelta(hours=1))
     btc_candles(cfg, "4h", make_bars(n=n, seed=3, start="2025-01-01", tf_ms=TF_MS["1h"]))   # 1h data, 4h folder
+    cfg.raw["column_groups"]["spot"]["exclusions"] = ["BTC"]    # this frame is no perp of BTC's spot: not under test
     assert columns.column_group_problems(cfg, cfg.symbols, "4h") == [
         "column group reference: BTCUSDT/4h 2026-06 has open times 1h apart, not 4h"]
 

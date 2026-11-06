@@ -103,6 +103,7 @@ def write_market(data_dir, symbols, candles_until="2026-10-15", funding_until="2
         for k, tf in enumerate(tfs):
             n = int((t1 - t0) / pd.Timedelta(milliseconds=TF_MS[tf]))
             b = make_bars(n=n, seed=10 + i + 10 * k, start="2025-01-01", tf_ms=TF_MS[tf])
+            b["trades"] = b.trades.fillna(b.volume)    # traded bars, so the spot symbol check finds a month
             d = Path(data_dir) / s / tf
             d.mkdir(parents=True, exist_ok=True)
             b[CANDLE_COLS].reset_index(drop=True).to_parquet(d / "all.parquet")

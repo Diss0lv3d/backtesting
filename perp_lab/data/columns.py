@@ -54,7 +54,8 @@ GROUPS: tuple[ColumnGroup, ...] = (
                 sources=reference.sources, symbol_check=reference.symbol_check),
     ColumnGroup(name="spot", columns=spot.COLUMNS, prefix=spot.PREFIX, rule=1, synthetic_id=spot.SYNTHETIC_ID,
                 exam_required="if_read", helpers=(), paper_ready=False,
-                load_source=spot.load_source, attach=spot.attach, synthetic=spot.synthetic, sources=spot.sources),
+                load_source=spot.load_source, attach=spot.attach, synthetic=spot.synthetic, sources=spot.sources,
+                symbol_check=spot.symbol_check),
 )
 
 
