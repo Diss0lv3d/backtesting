@@ -95,6 +95,21 @@ def test_the_reference_coin_keeps_version_2s_syn1_prices():
     assert [h4.close.iloc[i] for i in (0, 50, 1079)] == [91.00665693057778, 442.51733171293176, 9493.174574954965]
 
 
+@pytest.mark.parametrize("symbol, closes_5m, closes_4h", [
+    ("SYN2", [99.0648545518708, 99.51802287843947, 84.32424885171137, 86.94158325502612, 6.06493612424289],
+     [89.66268779565456, 319.1308622965845, 6.06493612424289]),
+    ("SYN3", [100.17823441150033, 101.10839104176925, 89.99760278093159, 435.8064615645195, 110.03039149741292],
+     [95.9129409226911, 548.624434058022, 110.03039149741292]),
+    ("SYN4", [99.46554577146432, 100.40292992026988, 93.96951781372255, 88.44041644832852, 5389.997531424877],
+     [95.9094062364508, 170.92847385308355, 5389.997531424877]),
+])
+def test_syn2_to_syn4_keep_version_3s_prices(symbol, closes_5m, closes_4h):
+    # captured from version 3 as built: a change to the mixing or to the seeds moves these and needs a bump
+    m5, h4 = market("5m")[symbol], market("4h")[symbol]
+    assert [m5.close.iloc[i] for i in (0, 1, 100, 5000, 51839)] == closes_5m
+    assert [h4.close.iloc[i] for i in (0, 50, 1079)] == closes_4h
+
+
 def test_syn2_to_syn4_follow_the_reference_in_order():
     m = market("5m")
     r = {s: np.log(m[s].close).diff().dropna() for s in SYMBOLS}
