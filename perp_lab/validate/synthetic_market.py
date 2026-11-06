@@ -12,6 +12,12 @@ mix their 5m log-returns with its returns at rho = 0.55, 0.7 and 0.85 (r' = rho*
 same variance) before close, open, high and low are rebuilt, so a correlation-gated plugin holds something.
 Every frame carries the `btc_` columns, taken from BTCUSDT's frame by open time (a bar with no trades is
 NaN, X6); BTCUSDT's equal its own.
+
+Version 4: every frame carries the spot group's five columns, drawn by `spot.synthetic` on each coin's own 5m
+path with the path's seed, before the `btc_` columns. Resampled, spot's quote volumes and trades add up (NaN
+for a bucket with no spot bar), `spot_close` is the bucket's last and `basis` is recomputed from the bucket's
+`close` and `spot_close`, as a coarser kline's would be. Spot's NaN stretches lie on multiples of 48 rows, so
+they are whole buckets at 15m, 1h and 4h. No other column changed.
 """
 
 from __future__ import annotations
@@ -22,10 +28,10 @@ import numpy as np
 import pandas as pd
 
 from perp_lab.config import TF_MS
-from perp_lab.data import reference
+from perp_lab.data import reference, spot
 from perp_lab.validate.causality import synthetic_bars, with_moving_columns
 
-MARKET_VERSION = 3
+MARKET_VERSION = 4
 SYMBOLS = (reference.SYMBOL, "SYN2", "SYN3", "SYN4")
 RHO = (None, 0.55, 0.7, 0.85)           # each coin's return correlation with the reference; None for itself
 DAYS = 180
@@ -34,6 +40,8 @@ BASE_MS = TF_MS["5m"]
 # coarser bars about as volatile as they were when the path was 15m.
 VOL_SCALE = (BASE_MS / TF_MS["15m"]) ** 0.5
 _SUMMED = ("volume", "quote_volume", "trades", "taker_buy_volume", "taker_buy_quote_volume", "funding_charge")
+# summed with min_count=1, so a bucket with no spot bar (all NaN) stays NaN rather than 0
+_SPOT_SUMMED = ("spot_quote_volume", "spot_taker_buy_quote_volume", "spot_trades")
 
 
 class NoMarket(ValueError):
@@ -66,6 +74,8 @@ def _mixed(bars: pd.DataFrame, ref: pd.DataFrame, rho: float) -> pd.DataFrame:
 
 
 def _path(i: int) -> pd.DataFrame:
+    """Coin i's 5m path with every column moving, its own spot stream included; the `btc_` columns are
+    dropped, to be joined from BTCUSDT's frame after resampling."""
     bars = _raw(i)
     if RHO[i] is not None:
         bars = _mixed(bars, _raw(0), RHO[i])
@@ -89,11 +99,15 @@ def _with_reference(bars: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
 def _resample(bars: pd.DataFrame, ms: int) -> pd.DataFrame:
     """OHLC as candles combine; volumes, trade counts, taker flow and funding charged add up; the
     bar's own open time; every other column (funding rate and interval, open interest, regime, the
-    close time) is its state at the bar's close."""
-    how = {c: "last" for c in bars.columns}
+    close time, `spot_close`) is its state at the bar's close. Spot's volumes and trades add up too,
+    NaN where the bucket has no spot bar; `basis` is recomputed from the bar's `close` and `spot_close`."""
+    how = {c: "last" for c in bars.columns if c not in _SPOT_SUMMED}
     how.update({c: "sum" for c in _SUMMED})
     how.update(open_time="first", open="first", high="max", low="min", close="last")
-    out = bars.resample(pd.Timedelta(milliseconds=ms), label="left", closed="left").agg(how)
+    buckets = bars.resample(pd.Timedelta(milliseconds=ms), label="left", closed="left")
+    out = buckets.agg(how)
+    out[list(_SPOT_SUMMED)] = buckets[list(_SPOT_SUMMED)].sum(min_count=1)
+    out["basis"] = out["close"] / out["spot_close"] - 1
     return out[bars.columns]
 
 

@@ -5,8 +5,8 @@ A group's `rule` is part of the data identity once it is above 1, so a later cha
 alignment, NaN or definition rule moves data_id. `column_group_problems` is the readiness check:
 every research month of every source must be complete in its manifest before a run reads it.
 
-store imports this module inside `load_bars` only, never at module level: this module imports
-perp_lab.data.reference, which imports store.
+store imports this module inside `load_bars` only, never at module level: this module imports the
+groups' modules, perp_lab.data.reference and perp_lab.data.spot, which import store.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Callable
 
 import pandas as pd
 
-from perp_lab.data import reference
+from perp_lab.data import reference, spot
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,9 @@ GROUPS: tuple[ColumnGroup, ...] = (
                 exam_required="always", helpers=("reference_frame",), paper_ready=False,
                 load_source=reference.load_source, attach=reference.attach, synthetic=reference.synthetic,
                 sources=reference.sources, symbol_check=reference.symbol_check),
+    ColumnGroup(name="spot", columns=spot.COLUMNS, prefix=spot.PREFIX, rule=1, synthetic_id=spot.SYNTHETIC_ID,
+                exam_required="if_read", helpers=(), paper_ready=False,
+                load_source=spot.load_source, attach=spot.attach, synthetic=spot.synthetic, sources=spot.sources),
 )
 
 

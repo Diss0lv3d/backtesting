@@ -113,13 +113,14 @@ def test_chunk_worker_receives_btc_columns(tmp_path, fresh_wf_caches, workers):
 
 
 def counting_groups(built: list):
-    """GROUPS with each source loader logging the timeframe it builds."""
+    """GROUPS with the reference's source loader logging the timeframe it builds. The spot group's source
+    is a handle that reads no rows, so only BTC's load is counted."""
     def counted(g):
         def load_source(cfg, tf, *a, **k):
             built.append(tf)
             return g.load_source(cfg, tf, *a, **k)
         return dataclasses.replace(g, load_source=load_source)
-    return tuple(counted(g) if g.load_source is not None else g for g in columns.GROUPS)
+    return tuple(counted(g) if g.name == "reference" else g for g in columns.GROUPS)
 
 
 def test_sources_built_once_per_process_per_tf(tmp_path, monkeypatch, fresh_wf_caches):

@@ -166,6 +166,9 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
     and trades are the perp's times a moving share each; spot's taker share follows the perp's, clipped to
     [0.05, 0.95]. A plugin that crashes on NaN spot fails the check, not a trial.
 
+    X6 holds by construction, as `attach_spot`'s does: the five are NaN where the drawn spot trades round
+    to 0 (a perp bar with few or no trades), and `basis` is NaN where the perp bar has no trades.
+
     The five are NaN on NAN_STRETCHES, as real spot's are before a listing and in a halt, and on the row
     before the lookahead check's first cut only (`causality.NAN_CUTS`), as on a zero-trade bar (X6): the cut
     run ends on that NaN and the full run has the next bar after it, so a fill from later bars (`bfill`,
@@ -192,13 +195,18 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
     with np.errstate(divide="ignore", invalid="ignore"):   # a zero-volume perp bar has no taker share
         perp_taker = bars["taker_buy_quote_volume"].to_numpy(dtype="float64") / quote
     taker = np.clip(0.5 + TAKER_SLOPE * (perp_taker - 0.5) + noise_taker, 0.05, 0.95)
+    trades = bars["trades"].to_numpy(dtype="float64")
     out = {"spot_close": spot_close, "spot_quote_volume": spot_quote,
            "spot_taker_buy_quote_volume": spot_quote * taker,
-           "spot_trades": np.round(bars["trades"].to_numpy(dtype="float64") * _share(z_trades, noise_trades)),
+           "spot_trades": np.round(trades * _share(z_trades, noise_trades)),
            "basis": close / spot_close - 1}
+    # last, after every draw, so no other value changes. X6: a spot bar drawn with no trades is no bar, and
+    # basis is NaN where the perp didn't trade (NaN perp trades are not zero)
+    quiet = np.flatnonzero(out["spot_trades"] == 0).tolist()
     gaps = [r for a, b in NAN_STRETCHES for r in range(a, min(b, n))] + [k - 1 for k in NAN_CUTS if k < n]
-    for c in COLUMNS:                         # last, after every draw, so no other value changes
-        out[c][gaps] = np.nan
+    for c in COLUMNS:
+        out[c][gaps + quiet] = np.nan
+    out["basis"][trades == 0] = np.nan
     return out
 
 

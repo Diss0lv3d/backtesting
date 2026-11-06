@@ -263,7 +263,8 @@ def test_exam_builds_sources_with_token_not_research_cache(tmp_path, monkeypatch
             built.append((tf, start, end, holdout))
             return g.load_source(cfg, tf, start, end, holdout)
         return dataclasses.replace(g, load_source=load_source)
-    monkeypatch.setattr(columns, "GROUPS", tuple(counted(g) for g in columns.GROUPS))
+    monkeypatch.setattr(columns, "GROUPS", tuple(counted(g) if g.name == "reference" else g   # BTC's load only
+                                                 for g in columns.GROUPS))
     given = []
     real = exam.load_bars
     monkeypatch.setattr(exam, "load_bars", lambda *a, **k: given.append(k.get("sources")) or real(*a, **k))

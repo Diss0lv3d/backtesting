@@ -6,10 +6,10 @@ import pandas as pd
 import pytest
 
 from perp_lab.data import columns, spot
-from perp_lab.data.columns import ColumnGroup
 from perp_lab.engine.backtest import EngineParams
 from perp_lab.plugins import PluginSource
 from perp_lab.sandbox import client
+from perp_lab.validate import synthetic_market
 from perp_lab.validate.causality import (CUTS, EXTRAS_SEED, NAN_CUTS, as_reference_coin, causality_failures,
                                          check_bars, synthetic_bars, with_moving_columns)
 from tests.conftest import REAL_PLUGINS, REPO
@@ -17,9 +17,6 @@ from tests.test_causality import peeker
 from tests.test_causality_reference import GATED_PEEK, MOMENTUM, OWN_SIG, from_momentum, labels, open_cuts
 from tests.test_store import cfg  # noqa: F401
 
-SPOT = ColumnGroup(name="spot", columns=spot.COLUMNS, prefix=spot.PREFIX, rule=1, synthetic_id=spot.SYNTHETIC_ID,
-                   exam_required="if_read", helpers=(), paper_ready=False, load_source=spot.load_source,
-                   attach=spot.attach, synthetic=spot.synthetic, sources=spot.sources)
 PREFIXED = [c for c in spot.COLUMNS if c.startswith(spot.PREFIX)]     # the four spot_ columns
 # at n = 3000: the stretch before the listing, the row before the first cut, then the halt
 NAN_ROWS = [*range(0, 288), 399, *range(432, 480)]
@@ -27,10 +24,8 @@ NAN_ROWS = [*range(0, 288), 399, *range(432, 480)]
 
 @pytest.fixture
 def with_spot():
-    """The spot group registered for the test, so the lookahead check fills it. Task 5 registers it in
-    columns.GROUPS and turns this into a no-op."""
-    with columns.registered(SPOT):
-        yield
+    """The spot group, registered in columns.GROUPS, so the lookahead check fills it."""
+    assert "spot" in [g.name for g in columns.GROUPS]
 
 
 def filled(**kw) -> pd.DataFrame:
@@ -127,6 +122,39 @@ def test_nan_rows_are_the_stretches_and_the_row_before_the_first_cut(n, rows):
     s = spot.synthetic(filled(n=n), EXTRAS_SEED)
     for c in spot.COLUMNS:
         assert np.flatnonzero(np.isnan(s[c])).tolist() == rows, c
+
+
+def test_x6_holds_by_construction_on_small_and_zero_trades():
+    # X6: the four spot_ columns are NaN where the drawn spot_trades rounds to 0, basis where the perp didn't trade
+    bars = filled()
+    r = np.arange(len(bars)) % 4
+    quiet = bars.assign(trades=np.select([r == 0, r == 1, r == 2], [0.0, 1.0, 2.0], bars.trades))
+    s, base = spot.synthetic(quiet, EXTRAS_SEED), spot.synthetic(bars, EXTRAS_SEED)
+    live = ~np.isin(np.arange(len(bars)), NAN_ROWS)
+    gone = np.isnan(s["spot_close"])
+    for c in spot.COLUMNS:
+        assert np.isnan(s[c][gone]).all() and not np.isnan(s[c][~gone]).any(), c
+    assert not (s["spot_trades"] == 0).any()
+    assert gone[r == 0].all() and np.isnan(s["basis"][quiet.trades.to_numpy() == 0]).all()
+    small = live & ((r == 1) | (r == 2))
+    assert gone[small].any() and not gone[small].all()               # some of 1 or 2 trades round to 0, not all
+    assert gone[~live].all() and not gone[live & (r == 3)].any()     # the stretches; 50 or more trades never
+    for c in PREFIXED[:3]:                                         # masking moves no other value
+        np.testing.assert_array_equal(s[c][~gone], base[c][~gone], err_msg=c)
+    np.testing.assert_array_equal(s["basis"][~gone], (quiet.close.to_numpy() / s["spot_close"] - 1)[~gone])
+
+
+@pytest.mark.parametrize("bars, seed", [
+    (synthetic_bars(seed=1), EXTRAS_SEED),
+    (synthetic_market._raw(0), 200),
+], ids=["check_bars", "market_5m"])
+def test_spot_leaves_every_other_fill_byte_identical(bars, seed, monkeypatch):
+    # the spot group draws from its own generator and reads the filled bars only: registering it changes no
+    # other column, on the lookahead check's bars and on a market coin's 5m path
+    registered = with_moving_columns(bars, seed)
+    monkeypatch.setattr(columns, "GROUPS", tuple(g for g in columns.GROUPS if g.name != "spot"))
+    pd.testing.assert_frame_equal(registered.drop(columns=list(spot.COLUMNS)), with_moving_columns(bars, seed),
+                                  check_exact=True)
 
 
 @pytest.mark.parametrize("t", [0, 288, 1100, 1777, 2998])

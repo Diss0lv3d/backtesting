@@ -3,6 +3,7 @@ import time
 
 import pytest
 
+from perp_lab.data import spot
 from perp_lab.plugins import PluginSource
 from perp_lab.sandbox import client
 from perp_lab.sandbox.errors import PluginError
@@ -12,7 +13,7 @@ from tests.test_lookahead import CHEATER, CHEATER_TEXT
 from tests.test_store import cfg  # noqa: F401
 
 EXCHANGE_COLUMNS = ["oi", "oi_value", "quote_volume", "trades", "taker_buy_volume",
-                    "taker_buy_quote_volume", "regime_adx", "funding_interval_h"]
+                    "taker_buy_quote_volume", "regime_adx", "funding_interval_h", *spot.COLUMNS]
 
 
 def test_real_plugins_are_found():

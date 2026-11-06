@@ -10,7 +10,7 @@ import pytest
 
 from perp_lab import runs
 from perp_lab.config import TF_MS
-from perp_lab.data import columns, reference
+from perp_lab.data import columns, reference, spot
 from perp_lab.data.store import load_bars
 from perp_lab.holdout import HoldoutViolation, issue_holdout_token
 from perp_lab.validate import benchmarks
@@ -115,7 +115,7 @@ def test_row_t_carries_btc_bar_t(cfg):
     plain = load_bars(cfg, "ETHUSDT", "1h", groups=False)
     assert b.index.equals(plain.index)
     own = [c for c in plain.columns if c not in ("regime", "regime_adx")]
-    assert list(b.columns) == [*own, *reference.COLUMNS, "regime", "regime_adx"]   # groups before regime
+    assert list(b.columns) == [*own, *reference.COLUMNS, *spot.COLUMNS, "regime", "regime_adx"]  # groups before regime
 
 
 def test_missing_btc_bar_gives_nan_on_that_row_only(cfg):

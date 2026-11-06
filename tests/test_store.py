@@ -9,13 +9,14 @@ from perp_lab.config import load_config
 from perp_lab.paper.tracking import count_regime_changes, paper_regime_status, replay_divergence
 from perp_lab.runs import write_run
 from perp_lab.store import db
-from tests.conftest import write_ready_reference
+from tests.conftest import write_ready_reference, write_ready_spot
 
 
 @pytest.fixture
 def cfg(tmp_path):
-    """lab.yaml with the store, runs and data under tmp_path. The data is only BTC's that passes the
-    readiness check (X3), which the judge runs before its stand-in walk-forwards."""
+    """lab.yaml with the store, runs and data under tmp_path. The data is the least that passes the
+    readiness check (X3), which the judge runs before its stand-in walk-forwards: BTC's
+    (`write_ready_reference`) and every coin's spot (`write_ready_spot`)."""
     raw = yaml.safe_load(open("config/lab.yaml"))
     raw["data_dir"] = str(tmp_path / "data")
     raw["runs_dir"] = str(tmp_path / "runs")
@@ -26,6 +27,7 @@ def cfg(tmp_path):
     p.write_text(yaml.safe_dump(raw))
     c = load_config(p)
     write_ready_reference(c, tfs=tuple(c["timeframes"]))
+    write_ready_spot(c, tfs=tuple(c["timeframes"]))
     return c
 
 

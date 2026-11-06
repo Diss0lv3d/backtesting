@@ -1,4 +1,5 @@
 import json
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -152,6 +153,7 @@ def test_spot_listing_prefix(monkeypatch):
 
 def test_spot_jobs_per_timeframe_skip_5m(tmp_path, monkeypatch):
     cfg = market_config(tmp_path)
+    shutil.rmtree(cfg.data_dir / "ETHUSDT" / "spot")                 # write_market's 4h spot: no month to skip
     looks, _ = stub(monkeypatch, None)
     vision.backfill(cfg, ["ETHUSDT"], ["5m", "1h", "4h"], ["spotKlines"], start=T("2025-01-01"),
                     end=T("2025-01-31"), workers=1)

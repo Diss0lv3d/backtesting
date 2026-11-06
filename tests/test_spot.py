@@ -9,12 +9,19 @@ import numpy as np
 import pandas as pd
 import pyarrow
 import pytest
+import yaml
 
-from perp_lab.config import TF_MS
+from perp_lab import runs
+from perp_lab.config import TF_MS, load_config
 from perp_lab.data import columns, reference, spot, vision
-from perp_lab.data.store import load_bars
+from perp_lab.data.store import load_bars, load_candles
 from perp_lab.holdout import HoldoutViolation, issue_holdout_token
-from tests.conftest import CANDLE_COLS, market_config, spot_candles, write_spot
+from perp_lab.validate import walkforward as wfm
+from perp_lab.validate.causality import EXTRAS_SEED, check_bars
+from tests.conftest import (CANDLE_COLS, market_config, spot_candles, write_ready_reference, write_ready_spot,
+                            write_spot)
+from tests.test_columns import PRE_CHANGE_DATA_ID
+from tests.test_reference_pipeline import fresh_wf_caches  # noqa: F401
 
 T = lambda s: pd.Timestamp(s, tz="UTC")  # noqa: E731
 H = 3_600_000
@@ -22,6 +29,7 @@ FIVE = list(spot.COLUMNS)
 SPOT = FIVE[:4]
 FROM = ["close", "quote_volume", "taker_buy_quote_volume", "trades"]    # each spot_ column's spot field
 HOLDOUT_PRICE = 1e12
+END = T("2026-10-01")                                                    # an exam's end, past holdout_start
 MANIFEST = {str(m): {"complete": True, "source": "monthly", "rows": 0}
             for m in pd.period_range("2025-01", "2026-10", freq="M")}
 
@@ -335,6 +343,7 @@ def test_a_token_built_handle_reads_the_holdout(cfg, tmp_path):
 
 def test_missing_spot_folder_gives_nan_and_one_warning_per_coin_tf(cfg, caplog):
     (spot_dir(cfg) / "all.parquet").unlink()                             # the folder keeps its manifest only
+    shutil.rmtree(spot_dir(cfg, "BTCUSDT"))                              # write_market's, the folder and all
     assert not (spot_dir(cfg, "BTCUSDT")).exists()
     for symbol in ("ETHUSDT", "BTCUSDT"):
         with pytest.raises(FileNotFoundError):
@@ -412,3 +421,130 @@ def test_sources_name_spot_tf_dirs(cfg):
     assert spot.sources(cfg, ["BTCUSDT", "ETHUSDT"], "15m") == [("BTCUSDT", "spot/15m"), ("ETHUSDT", "spot/15m")]
     for symbol, d in spot.sources(cfg, cfg.symbols, "4h"):
         assert cfg.data_dir / symbol / d == vision.dataset_dir(cfg.data_dir, symbol, "spotKlines", "4h")
+
+
+# ---- registered in columns.GROUPS: load_bars, the walk-forward, the exam and data_id
+
+
+def test_spot_group_is_registered_after_the_reference():
+    assert [g.name for g in columns.GROUPS] == ["reference", "spot"]
+    g = columns.GROUPS[1]
+    assert (g.columns, g.prefix, g.rule, g.synthetic_id, g.exam_required, g.helpers, g.paper_ready) == (
+        spot.COLUMNS, "spot_", 1, 2, "if_read", (), False)
+    assert (g.load_source, g.attach, g.synthetic, g.sources) == (
+        spot.load_source, spot.attach, spot.synthetic, spot.sources)
+
+
+def test_load_bars_carries_spot_after_btc_columns(cfg):
+    for symbol in ("ETHUSDT", "BTCUSDT"):
+        b = load_bars(cfg, symbol, "4h")
+        cols = list(b.columns)
+        assert cols[-15:] == [*reference.COLUMNS, *FIVE, "regime", "regime_adx"], symbol
+        assert [b[c].dtype for c in FIVE] == [np.dtype("float64")] * 5
+        assert not [c for c in cols if c.startswith("btc_spot") or c == "btc_basis"]
+        assert b[FIVE].notna().all().all(), symbol                      # both coins' spot traded on every bar
+        plain = load_bars(cfg, symbol, "4h", groups=False, with_regime=False)
+        want = spot.attach_spot(plain, spot.load_spot(cfg, symbol, "4h"))
+        pd.testing.assert_frame_equal(b[FIVE], want[FIVE])
+
+
+def plant_holdout_file(cfg):
+    """ETH's spot at and after holdout_start moved out of all.parquet into a file of its own, with an
+    absurd close."""
+    p = spot_dir(cfg) / "all.parquet"
+    s = pd.read_parquet(p)
+    held = s.open_time >= ms(cfg.holdout_start)
+    assert held.any()
+    s[~held].to_parquet(p)
+    s[held].assign(close=HOLDOUT_PRICE).to_parquet(spot_dir(cfg) / "holdout.parquet")
+
+
+def test_holdout_spot_files_change_nothing(cfg):
+    plant_holdout_file(cfg)
+    planted = load_bars(cfg, "ETHUSDT", "4h")
+    (spot_dir(cfg) / "holdout.parquet").unlink()
+    pd.testing.assert_frame_equal(planted, load_bars(cfg, "ETHUSDT", "4h"))
+    assert planted.index.max() < cfg.holdout_start and planted.close_time.max() < ms(cfg.holdout_start)
+    assert planted.spot_close.notna().all() and (planted.spot_close < HOLDOUT_PRICE).all()
+
+
+def test_exam_token_reads_holdout_spot(cfg, tmp_path):
+    plant_holdout_file(cfg)
+    tok = issue_holdout_token("lineage", "test", tmp_path / "holdout.jsonl")
+    b = load_bars(cfg, "ETHUSDT", "4h", end=END, holdout=tok)
+    held = b.index >= cfg.holdout_start
+    assert b.index.max() == T("2026-09-30 20:00") and held.any()
+    assert (b.spot_close[held] == HOLDOUT_PRICE).all() and (b.spot_close[~held] < HOLDOUT_PRICE).all()
+    np.testing.assert_array_equal(b.basis[held].to_numpy(), (b.close[held] / HOLDOUT_PRICE - 1).to_numpy())
+
+
+def test_walkforward_bars_carry_spot(cfg, fresh_wf_caches):
+    wfm._init_worker(str(cfg.path))
+    source = wfm._sources("4h")["spot"]
+    assert (source.tf, source.end, source.holdout) == ("4h", cfg.holdout_start, None)   # research only
+    bars = wfm._bars("ETHUSDT", "4h")
+    assert bars[FIVE].notna().all().all()
+    pd.testing.assert_frame_equal(bars, load_bars(cfg, "ETHUSDT", "4h"))
+
+
+def test_data_id_unchanged_with_spot_registered(cfg, monkeypatch):
+    registered = runs.data_id(runs.data_identity(cfg, cfg.symbols))
+    assert registered == PRE_CHANGE_DATA_ID
+    monkeypatch.setattr(columns, "GROUPS", tuple(g for g in columns.GROUPS if g.name == "reference"))
+    assert runs.data_id(runs.data_identity(cfg, cfg.symbols)) == registered
+
+
+def test_spot_rule_2_moves_data_id(cfg, monkeypatch):
+    monkeypatch.setattr(columns, "GROUPS", tuple(dataclasses.replace(g, rule=2) if g.name == "spot" else g
+                                                 for g in columns.GROUPS))
+    assert columns.identity_block() == {"columns": {"spot": 2}}
+    assert runs.data_id(runs.data_identity(cfg, cfg.symbols)) != PRE_CHANGE_DATA_ID
+
+
+def test_check_bars_carry_the_spot_stream(monkeypatch):
+    bars = check_bars()
+    assert list(bars.columns)[-5:] == FIVE
+    monkeypatch.setattr(columns, "GROUPS", tuple(g for g in columns.GROUPS if g.name != "spot"))
+    want = spot.synthetic(check_bars(), EXTRAS_SEED)                    # on the bars filled without spot
+    for c in FIVE:
+        np.testing.assert_array_equal(bars[c].to_numpy(), want[c], err_msg=c)
+
+
+# ---- the fixtures' spot: traded on every bar unless a test plants a quiet one
+
+
+def test_fixture_spot_volumes_and_trades_are_positive(tmp_path):
+    # synthetic_bars leaves the perp's quote volume, trades and taker flow NaN, and a perp bar may trade once
+    c = market_config(tmp_path)
+    flow = ["volume", "quote_volume", "taker_buy_volume", "taker_buy_quote_volume", "trades"]
+    for symbol in c.symbols:
+        d = spot.load_spot(c, symbol, "4h")
+        assert len(d) and d[flow].gt(0).all().all(), symbol
+    quiet = hourly().assign(trades=[0.0, 1.0, 2.0, np.nan] * 12)
+    assert (spot_candles(quiet).trades >= 1).all()
+    np.testing.assert_array_equal(spot_candles(hourly()).trades, np.round(0.5 * hourly().trades.to_numpy()))
+
+
+def test_write_ready_spot_passes_readiness_with_bars_traded_on_both(tmp_path):
+    raw = yaml.safe_load(open("config/lab.yaml"))
+    raw.update(data_dir=str(tmp_path / "data"), universe=["BTC", "ETH", "SOL"])
+    p = tmp_path / "lab.yaml"
+    p.write_text(yaml.safe_dump(raw))
+    c = load_config(p)
+    tfs = ("1h", "4h")
+    write_ready_reference(c, tfs=tfs)
+    kept = {tf: pd.read_parquet(c.data_dir / "BTCUSDT" / tf) for tf in tfs}
+    write_ready_spot(c, tfs=tfs)
+    last = pd.Period(columns._research_months(c)[-1], "M")
+    lo, hi = (m.start_time.tz_localize("UTC") for m in (last, last + 1))
+    for tf in tfs:
+        assert columns.column_group_problems(c, c.symbols, tf) == []
+        pd.testing.assert_frame_equal(pd.read_parquet(c.data_dir / "BTCUSDT" / tf), kept[tf])   # kept if present
+        for symbol in c.symbols:
+            bars = load_candles(c, symbol, tf, start=lo, end=hi).reset_index(drop=True)
+            s = spot.load_spot(c, symbol, tf, start=lo, end=hi)
+            both = bars.merge(s, on="open_time", suffixes=("", "_spot"))
+            both = both[(both.trades > 0) & (both.trades_spot > 0)]
+            assert len(both) == len(bars) == len(s) >= 100, (symbol, tf)
+            assert abs((both.close / both.close_spot - 1).median()) < 0.01
+            assert s[["quote_volume", "taker_buy_quote_volume"]].gt(0).all().all()
