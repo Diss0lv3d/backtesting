@@ -30,6 +30,23 @@ SYNTHETIC_ID = 2                       # the group's generator stream (X5): defa
 _FIELDS = ("close", "quote_volume", "taker_buy_quote_volume", "trades")   # each spot_ column's candle field
 _missing_warned: set[tuple[str, str]] = set()   # (symbol, tf) warned about: one warning per process each
 
+# the synthetic spot stream (spec "The lookahead check and the synthetic bars"); the calibration rule there
+# sets BASIS_C, BASIS_SLOW_SD, BASIS_FAST_SD, BASIS_JUMP and SPOT_SHARE from real 1h bars
+BASIS_SLOW_PHI = 0.995                 # basis = slow + fast; slow: half-life about 140 bars
+BASIS_SLOW_SD = 0.0010                 # its stationary sd
+BASIS_C = 0.0                          # its mean
+BASIS_FAST_PHI = 0.9
+BASIS_FAST_SD = 0.0005                 # stationary sd, before jumps
+BASIS_JUMP_P = 0.01                    # the share of rows a jump enters the fast state on
+BASIS_JUMP = (0.0020, 0.0060)          # its size range, either sign
+SPOT_SHARE = 0.3                       # spot's median share of perp quote volume, and of trades
+SHARE_PHI = 0.99                       # log share = log SPOT_SHARE + an AR(1) + iid noise
+SHARE_SD = 0.3                         # the AR(1)'s stationary sd
+SHARE_NOISE_SD = 0.3
+TAKER_SLOPE = 0.6                      # spot taker share = 0.5 + slope·(perp taker share − 0.5) + noise
+TAKER_NOISE_SD = 0.05
+NAN_STRETCHES = ((0, 288), (1536, 1584))   # rows [start, end): spot not listed yet, then a halt
+
 
 def dataset(tf: str) -> str:
     """The spot folder under a symbol's data directory, as readiness and `known_gaps` name it."""
@@ -111,6 +128,70 @@ def attach(bars: pd.DataFrame, symbol: str, tf: str, source: SpotSource) -> pd.D
                         symbol, tf)
         spot = None
     return attach_spot(bars, spot)
+
+
+def _ar1(phi: float, sd: float, z: np.ndarray, kicks: np.ndarray | None = None) -> np.ndarray:
+    """An AR(1) with coefficient `phi` and stationary sd `sd`, started from its stationary distribution:
+    `z` holds one standard normal per row, and `kicks` (when given) enter the state and decay with it."""
+    shocks = sd * np.sqrt(1 - phi * phi) * z
+    if len(z):
+        shocks[0] = sd * z[0]
+    if kicks is not None:
+        shocks = shocks + kicks
+    out, x = [], 0.0
+    for e in shocks.tolist():
+        x = phi * x + e
+        out.append(x)
+    return np.array(out, dtype="float64")
+
+
+def _share(z: np.ndarray, noise: np.ndarray) -> np.ndarray:
+    """A moving share of the perp's: SPOT_SHARE times the exp of an AR(1) in logs plus iid noise."""
+    return SPOT_SHARE * np.exp(_ar1(SHARE_PHI, SHARE_SD, z) + SHARE_NOISE_SD * noise)
+
+
+def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
+    """The synthetic spot stream for the lookahead check (X5): {column: float64 array} for COLUMNS on bars'
+    rows, drawn from `default_rng((seed, SYNTHETIC_ID))`. It reads the filled `close`, `quote_volume`,
+    `trades` and `taker_buy_quote_volume`, and each value at row t depends on bars' rows up to t. Every draw
+    is made up front, in a fixed order, one per row, so the draws depend on the frame's length alone; drawn
+    on bars[:k], the stream isn't the full frame's cut at k. That is harmless: the lookahead check fills
+    once, on the whole frame, before cutting.
+
+    `basis` is a slow AR(1) around BASIS_C, persistent for days at 1h so a threshold on its 24-bar mean
+    fires, plus a fast AR(1) that the odd jump enters and decays with. `spot_close = close / (1 + basis)`,
+    and `basis` is then recomputed as `close / spot_close − 1`, so the identity is exact. Spot quote volume
+    and trades are the perp's times a moving share each; spot's taker share follows the perp's, clipped to
+    [0.05, 0.95]. The five are NaN on NAN_STRETCHES and on the row before each of the lookahead check's
+    cuts, as real spot's are before a listing, in a halt and on a zero-trade bar (X6): the cut run ends on
+    that NaN and the full run has the next bar after it, so a fill from later bars (`bfill`,
+    `interpolate`) is caught. A plugin that crashes on NaN spot fails the check, not a trial."""
+    from perp_lab.validate.causality import CUTS      # causality imports the groups' modules
+    rng = np.random.default_rng((seed, SYNTHETIC_ID))
+    n = len(bars)
+    z_slow, z_fast = rng.standard_normal(n), rng.standard_normal(n)
+    jump_on, jump_size = rng.random(n) < BASIS_JUMP_P, rng.uniform(*BASIS_JUMP, n)
+    jump_sign = rng.choice([-1.0, 1.0], n)
+    z_volume, noise_volume = rng.standard_normal(n), rng.standard_normal(n)
+    noise_taker = rng.normal(0.0, TAKER_NOISE_SD, n)
+    z_trades, noise_trades = rng.standard_normal(n), rng.standard_normal(n)
+
+    jumps = np.where(jump_on, jump_size * jump_sign, 0.0)
+    raw = BASIS_C + _ar1(BASIS_SLOW_PHI, BASIS_SLOW_SD, z_slow) + _ar1(BASIS_FAST_PHI, BASIS_FAST_SD, z_fast, jumps)
+    close, quote = (bars[c].to_numpy(dtype="float64") for c in ("close", "quote_volume"))
+    spot_close = close / (1 + raw)
+    spot_quote = quote * _share(z_volume, noise_volume)
+    with np.errstate(divide="ignore", invalid="ignore"):   # a zero-volume perp bar has no taker share
+        perp_taker = bars["taker_buy_quote_volume"].to_numpy(dtype="float64") / quote
+    taker = np.clip(0.5 + TAKER_SLOPE * (perp_taker - 0.5) + noise_taker, 0.05, 0.95)
+    out = {"spot_close": spot_close, "spot_quote_volume": spot_quote,
+           "spot_taker_buy_quote_volume": spot_quote * taker,
+           "spot_trades": np.round(bars["trades"].to_numpy(dtype="float64") * _share(z_trades, noise_trades)),
+           "basis": close / spot_close - 1}
+    gaps = [r for a, b in NAN_STRETCHES for r in range(a, min(b, n))] + [k - 1 for k in CUTS if k < n]
+    for c in COLUMNS:                         # last, after every draw, so no other value changes
+        out[c][gaps] = np.nan
+    return out
 
 
 def sources(cfg, symbols: list[str], tf: str) -> list[tuple[str, str]]:
