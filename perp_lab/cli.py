@@ -34,6 +34,12 @@ def _sandbox_required():
         raise typer.Exit(1)
 
 
+def _and(names) -> str:
+    """Names joined in prose: `a`, `a and b`, `a, b and c`."""
+    names = list(names)
+    return " and ".join(filter(None, [", ".join(names[:-1]), names[-1]]))
+
+
 def _syms(cfg, symbols: Optional[str]) -> list[str]:
     if not symbols:
         return cfg.symbols
@@ -190,11 +196,12 @@ def paper(from_run: str = typer.Argument(..., help="walk-forward run_id approved
                     f"this machine holds {held}. Pass --symbols with at most {held} coins.", fg="red")
         raise typer.Exit(2)
     with _sandbox_required():                   # reads_columns runs the plugin to rule a group out
-        unfed = next((g for g in columns.GROUPS if not g.paper_ready and reads_columns(cfg, src, g, params)), None)
-    if unfed is not None:                       # the paper feed for its columns doesn't exist yet
+        unfed = [g for g in columns.GROUPS if not g.paper_ready and reads_columns(cfg, src, g, params)]
+    if unfed:                                   # the paper feed for their columns doesn't exist yet
         # reads_columns is also true when its runs can't tell (neither acts, or the plugin fails one)
-        typer.secho(f"refused: {r['strategy']} reads, or can't be shown not to read, the {unfed.name} column "
-                    f"group ({unfed.prefix} columns), which paper trading can't feed yet", fg="red")
+        typer.secho(f"refused: {r['strategy']} reads, or can't be shown not to read, the "
+                    f"{_and(g.name for g in unfed)} column group{'s' if len(unfed) > 1 else ''} "
+                    f"({_and(g.prefix for g in unfed)} columns), which paper trading can't feed yet", fg="red")
         raise typer.Exit(2)
     started = datetime.now(timezone.utc)
     record_run(cfg, {"run_id": rid, "strategy": r["strategy"], "strategy_hash": src.hash,

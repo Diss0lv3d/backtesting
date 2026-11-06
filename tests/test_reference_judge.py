@@ -298,7 +298,7 @@ from perp_lab.strategy import HOLD, Strategy, enter
 
 
 class ReadsBtc(Strategy):
-    params = {}
+    params = {"n": 20}                         # the fake run's base params: a param the plugin lacks fails a run
     timeframes = ["4h"]
 
     def prepare(self, bars):
@@ -330,7 +330,8 @@ def test_paper_refuses_reference_reader_before_recording(tmp_path, monkeypatch, 
     before = sorted(cfg.runs_dir.iterdir())
     r = runner.invoke(app, ["paper", "c1", "--config", str(cfg.path)])
     assert (r.exit_code, type(r.exception)) == (2, SystemExit), r.output
-    assert "reads_btc reads, or can't be shown not to read, the reference column group" in r.output
+    assert ("reads_btc reads, or can't be shown not to read, the reference column group (btc_ columns), which "
+            "paper trading can't feed yet") in r.output                  # spot is ruled out, so not named
     assert db.read_table(cfg, db.runs, db.runs.c.validation_mode == "paper").empty
     assert sorted(cfg.runs_dir.iterdir()) == before                     # no run directory either
 

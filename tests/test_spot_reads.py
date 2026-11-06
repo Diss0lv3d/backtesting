@@ -132,6 +132,38 @@ def test_paper_refuses_spot_reader_before_recording(tmp_path, monkeypatch, plugi
     before = sorted(cfg.runs_dir.iterdir())
     r = runner.invoke(app, ["paper", "c1", "--config", str(cfg.path)])
     assert (r.exit_code, type(r.exception)) == (2, SystemExit), r.output
-    assert "reads_spot reads, or can't be shown not to read, the spot column group (spot_ columns)" in r.output
+    assert ("reads_spot reads, or can't be shown not to read, the spot column group (spot_ columns), which paper "
+            "trading can't feed yet") in r.output
+    assert db.read_table(cfg, db.runs, db.runs.c.validation_mode == "paper").empty
+    assert sorted(cfg.runs_dir.iterdir()) == before
+
+
+READS_BOTH = '''"""Long when BTC's close beats the coin's and the perp trades rich to spot."""
+from perp_lab.indicators import reference_frame
+from perp_lab.strategy import HOLD, Strategy, enter
+
+
+class ReadsBoth(Strategy):
+    params = {"n": 20}
+    timeframes = ["4h"]
+
+    def prepare(self, bars):
+        return bars[[]].assign(btc=reference_frame(bars).close, rich=bars.basis)
+
+    def entry(self, ctx):
+        return enter(1, 0.9 * ctx["close"]) if ctx["btc"] > ctx["close"] and ctx["rich"] > 0 else HOLD
+'''
+
+
+def test_paper_refusal_names_every_unfed_group(tmp_path, monkeypatch, plugins):
+    add_plugin(plugins, "reads_both", READS_BOTH)
+    cfg = approved_paper_run(tmp_path, "reads_both")
+    monkeypatch.setattr(client, "max_workers", lambda c: 8)
+    monkeypatch.setattr(PaperRunner, "run", lambda self, max_bars=None: pytest.fail("the paper run started"))
+    before = sorted(cfg.runs_dir.iterdir())
+    r = runner.invoke(app, ["paper", "c1", "--config", str(cfg.path)])
+    assert (r.exit_code, type(r.exception)) == (2, SystemExit), r.output
+    assert ("reads_both reads, or can't be shown not to read, the reference and spot column groups (btc_ and "
+            "spot_ columns), which paper trading can't feed yet") in r.output
     assert db.read_table(cfg, db.runs, db.runs.c.validation_mode == "paper").empty
     assert sorted(cfg.runs_dir.iterdir()) == before
