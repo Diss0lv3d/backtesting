@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from perp_lab.data import reference
+from perp_lab.data import reference, spot
 from perp_lab.plugins import PluginSource
 from perp_lab.validate.causality import (CUTS, EXTRAS_SEED, NAN_CUTS, as_reference_coin, causality_failures,
                                          check_bars, synthetic_bars, with_moving_columns)
@@ -257,9 +257,10 @@ def fills_before_the_reference(bars: pd.DataFrame, seed: int = EXTRAS_SEED) -> p
 ], ids=["default", "check_bars", "market_5m"])
 def test_existing_fills_byte_identical(bars, seed):
     out, old = with_moving_columns(bars, seed), fills_before_the_reference(bars, seed)
-    assert [c for c in out.columns if not c.startswith("btc_")] == list(old.columns)
+    groups = list(reference.COLUMNS + spot.COLUMNS)
+    assert [c for c in out.columns if c not in groups] == list(old.columns)
     pd.testing.assert_frame_equal(out[list(old.columns)], old, check_exact=True)
-    assert list(out.columns) == list(old.columns) + list(reference.COLUMNS)
+    assert list(out.columns) == list(old.columns) + groups
 
 
 def test_the_group_is_kept_when_it_moves_and_redrawn_whole_when_any_column_is_dead():

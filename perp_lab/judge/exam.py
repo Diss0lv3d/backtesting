@@ -18,7 +18,6 @@ read back (spec R7). `stream.run_batch` does it, and before a rerun too.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,15 +25,17 @@ import numpy as np
 import pandas as pd
 
 from perp_lab.config import TF_MS
-from perp_lab.data import columns, reference
-from perp_lab.data.store import OI_PUBLISH_LAG_MS, load_bars
+from perp_lab.data import columns
+from perp_lab.data.archive import (  # noqa: F401  (the constants stay importable from here)
+    CCXT, DAY_MS, DEFAULT_FUNDING_H, EXCHANGE_SOURCES, REGIME_SOURCES, data_end, missing_days, month_problems,
+    window_months)
+from perp_lab.data.store import load_bars
 from perp_lab.engine.backtest import EngineParams
 from perp_lab.engine.metrics import daily_returns, portfolio_returns
 from perp_lab.holdout import check_token
-from perp_lab.plugins import PluginSource
+from perp_lab.plugins import PluginSource, reads_columns
 from perp_lab.sandbox import client, stream
 
-DEFAULT_FUNDING_H = 8.0
 COST_PROBES = 3                         # timed `prepare` calls; the estimate uses their median
 
 
@@ -48,56 +49,71 @@ class ExamResult:
     trades: pd.DataFrame
 
 
-def _files(d: Path) -> list[Path]:
-    files = sorted(d.glob("*.parquet"))
-    if not files:
-        raise FileNotFoundError(f"no parquet files in {d}; run `lab backfill`")
-    return files
+def _checked(groups) -> tuple[columns.ColumnGroup, ...]:
+    """`groups` as a tuple. ValueError when one's `exam_required` is neither "always" nor "if_read": the
+    exam can't tell whether to cover it, so it refuses rather than leave the group out."""
+    groups = tuple(groups)
+    bad = [f"{g.name} ({g.exam_required!r})" for g in groups if g.exam_required not in ("always", "if_read")]
+    if bad:
+        raise ValueError(f"column group exam_required must be 'always' or 'if_read': {', '.join(bad)}")
+    return groups
 
 
-def _stamps(cfg, s: str, dataset: str) -> np.ndarray:
-    """Every row's time stamp in `s`'s `dataset` files as int64 ms: `open_time` for candles, `create_time`
-    for metrics (scaled from seconds where written so, as `store.load_metrics` does). That column only,
-    never a price. FileNotFoundError when there are no files."""
-    col = "create_time" if dataset == "metrics" else "open_time"
-    t = np.concatenate([pd.read_parquet(f, columns=[col])[col].to_numpy("int64")
-                        for f in _files(cfg.data_dir / s / dataset)])
-    return np.where(t >= 10**11, t, t * 1000) if dataset == "metrics" else t
+def always_groups() -> tuple[columns.ColumnGroup, ...]:
+    """The registered `always` groups (the reference): what every exam covers, whatever the plugin reads."""
+    return tuple(g for g in _checked(columns.GROUPS) if g.exam_required == "always")
 
 
-def _data_end(cfg, s: str, tfs) -> int:
-    """Where `s`'s data stops, in ms: its last candle's close at each of `tfs`, and its funding."""
-    closes = [int(_stamps(cfg, s, t).max()) + TF_MS[t] for t in tfs]
-    fund = (pd.concat([pd.read_parquet(f, columns=["funding_time", "interval_hours"])
-                       for f in _files(cfg.data_dir / s / "funding")])
-            .sort_values("funding_time").iloc[-1])
-    ih = fund.interval_hours if pd.notna(fund.interval_hours) else DEFAULT_FUNDING_H
-    return min(*closes, int(fund.funding_time) + int(ih * 3_600_000))
+def exam_groups(cfg, src: PluginSource, params: dict) -> tuple[columns.ColumnGroup, ...]:
+    """The column groups `src`'s exam covers, in `columns.GROUPS` order: every `always` group (the
+    reference), and each `if_read` group `plugins.reads_columns` says it reads at `params` (or can't
+    rule out). That may run the plugin in sandbox workers, on the lookahead check's synthetic bars
+    only, never on holdout data. Every group's `exam_required` is checked before any run."""
+    return tuple(g for g in _checked(columns.GROUPS)
+                 if g.exam_required == "always" or reads_columns(cfg, src, g, params))
 
 
-def window_end(cfg, symbols: list[str], tf: str) -> pd.Timestamp:
+def _covered(groups) -> tuple[columns.ColumnGroup, ...]:
+    """`groups`, or when None the `always` groups, each `exam_required` checked."""
+    return always_groups() if groups is None else _checked(groups)
+
+
+def window_end(cfg, symbols: list[str], tf: str, groups=None) -> pd.Timestamp:
     """The last 00:00 UTC up to which every symbol has closed candles, at `tf` and at the regime
     timeframe (`load_bars` builds `regime` from those: past their last one it would carry a single
     label forward), and funding.
 
-    The reference coin (`reference.SYMBOL`) counts too, an exam coin or not, since every coin's bars
-    carry its `btc_` columns: its candles at `tf`, its funding, and its last metrics snapshot plus the
-    publish lag, past which `btc_oi_value` would carry that snapshot forward.
+    Each of the exam's column groups (`groups`; None: the `always` ones, the reference) counts too,
+    through its `exam_end`: where its data for these coins stops, since every coin's bars carry its
+    columns. The reference's is BTC's, an exam coin or not (`reference.exam_end`). A group with no
+    `exam_end`, or one that returns None, sets no end.
 
     Reads timestamps only (open_time, funding_time, interval_hours, create_time), never prices."""
     tfs = tuple(dict.fromkeys((tf, cfg["regime"]["timeframe"])))
-    ends = [_data_end(cfg, s, tfs) for s in symbols]
-    b = reference.SYMBOL
-    ends.append(min(_data_end(cfg, b, (tf,)), int(_stamps(cfg, b, "metrics").max()) + OI_PUBLISH_LAG_MS))
+    ends = [data_end(cfg, s, tfs) for s in symbols]
+    for g in _covered(groups):
+        e = g.exam_end(cfg, symbols, tf) if g.exam_end is not None else None
+        if e is not None:
+            ends.append(e)
     return pd.Timestamp(min(ends), unit="ms", tz="UTC").floor("D")
 
 
-EXCHANGE_SOURCES = ("monthly", "daily")    # data.binance.vision files: every column, taker flow included
-REGIME_SOURCES = (*EXCHANGE_SOURCES, "ccxt")  # the regime labels need OHLC only, which ccxt candles have
-CCXT = "stitched from ccxt (no taker, trade-count or quote-volume columns)"
+def group_ends(cfg, symbols: list[str], tf: str, groups) -> list[tuple[str, str, pd.Timestamp]]:
+    """(group name, coin, end) for each of `groups` and each exam coin: where that group's data for that coin
+    alone stops, from its `exam_end` on the one coin. A group with no `exam_end`, or a coin it sets no end
+    for (an excluded coin), is left out. Timestamps only, as `window_end` reads them."""
+    out = []
+    for g in _covered(groups):
+        if g.exam_end is None:
+            continue
+        for s in symbols:
+            e = g.exam_end(cfg, [s], tf)
+            if e is not None:
+                out.append((g.name, s, pd.Timestamp(e, unit="ms", tz="UTC")))
+    return out
 
 
-def window_data_problems(cfg, symbols: list[str], tf: str, end: pd.Timestamp) -> list[str]:
+def window_data_problems(cfg, symbols: list[str], tf: str, end: pd.Timestamp, groups=None) -> list[str]:
     """Where the exam window's candles didn't come from exchange files, as "SYMBOL tf YYYY-MM: why",
     from the klines manifests (`lab backfill` and `lab tail` write them); no candle is read.
 
@@ -118,78 +134,25 @@ def window_data_problems(cfg, symbols: list[str], tf: str, end: pd.Timestamp) ->
     the open month, which `complete` can't show, while a short exchange outage, which monthly files
     carry too, doesn't hold an exam back for good.
 
-    The reference coin's data is checked as well, an exam coin or not, each line ending in
-    " (BTC reference)": its months at `tf` with the exchange sources (its `btc_` volume and taker
-    columns would be NaN through a ccxt month), its days at `tf` with no candle, and its days with no
-    metrics snapshot (`btc_oi_value` would carry the last one over the whole day). When it is an exam
-    coin its candles were checked above, so only the metrics are."""
+    Each of the exam's column groups (`groups`; None: the `always` ones, the reference) adds its
+    `exam_problems` lines after these, in order; a group with none, or one that returns None, adds
+    nothing. The reference's (`reference.exam_problems`) check BTC's data, an exam coin or not, each
+    line ending in " (BTC reference)"."""
     start = cfg.holdout_start
     if end <= start:
         return []
-    months = pd.period_range(start.tz_localize(None), (end - pd.Timedelta(milliseconds=1)).tz_localize(None),
-                             freq="M")
+    months = window_months(start, end)
     rtf = cfg["regime"]["timeframe"]
     out = []
     for s in symbols:
-        out += _month_problems(cfg, s, tf, months, end, EXCHANGE_SOURCES, "")
+        out += month_problems(cfg, s, tf, months, end, EXCHANGE_SOURCES, "")
         if rtf != tf:
-            out += _month_problems(cfg, s, rtf, months, end, REGIME_SOURCES, " (for the regime labels)")
+            out += month_problems(cfg, s, rtf, months, end, REGIME_SOURCES, " (for the regime labels)")
         for t in dict.fromkeys((tf, rtf)):
-            out += _missing_days(cfg, s, t, start, end)
-    b, note = reference.SYMBOL, " (BTC reference)"
-    if b not in symbols:
-        out += _month_problems(cfg, b, tf, months, end, EXCHANGE_SOURCES, note)
-        out += _missing_days(cfg, b, tf, start, end, note=note)
-    return out + _missing_days(cfg, b, "metrics", start, end, "metrics snapshots", note)
-
-
-def _month_problems(cfg, s: str, tf: str, months, end: pd.Timestamp, sources: tuple, note: str) -> list[str]:
-    """`window_data_problems` for one symbol at one timeframe, each line ending in `note`."""
-    p = cfg.data_dir / s / tf / "_manifest.json"
-    try:
-        man = json.loads(p.read_text())
-        if not isinstance(man, dict):
-            raise ValueError("not an object")
-    except FileNotFoundError:
-        return [f"{s} {tf} {m}: no manifest{note}" for m in months]
-    except (OSError, ValueError):
-        return [f"{s} {tf} {m}: manifest unreadable{note}" for m in months]
-    out = []
-    for m in months:
-        e = man.get(str(m))
-        covered = (m + 1).start_time.tz_localize("UTC") <= end     # the window runs to its end
-        if not isinstance(e, dict):
-            why = "no manifest entry"
-        elif e.get("source") not in sources:
-            why = CCXT if e.get("source") == "ccxt" else f"unknown source {e.get('source')!r}"
-        elif covered and e.get("source") != "ccxt" and e.get("complete") is not True:
-            why = "incomplete (days missing from data.binance.vision)"
-        else:
-            continue
-        out.append(f"{s} {tf} {m}: {why}{note}")
-    return out
-
-
-DAY_MS = 86_400_000
-
-
-def _missing_days(cfg, s: str, dataset: str, start: pd.Timestamp, end: pd.Timestamp, what: str = "candles",
-                  note: str = "") -> list[str]:
-    """The UTC days in [start, end) without a single row of `s`'s `dataset` (a timeframe's candles, or
-    "metrics"), as runs ("SYMBOL tf 2026-09-10 to 2026-09-12: no candles (3 days)"), each line ending in
-    `note`; reads the time stamps only (`_stamps`), never a price."""
-    lo, hi = start.value // 10**6, end.value // 10**6
-    try:
-        t = _stamps(cfg, s, dataset)
-    except FileNotFoundError:
-        t = np.empty(0, dtype="int64")
-    t = t[(t >= lo) & (t < hi)]
-    missing = np.setdiff1d(np.arange(lo // DAY_MS, -(-hi // DAY_MS)), t // DAY_MS)
-    out = []
-    for run in (np.split(missing, np.flatnonzero(np.diff(missing) != 1) + 1) if len(missing) else []):
-        a, b = (pd.Timestamp(int(d) * DAY_MS, unit="ms").strftime("%Y-%m-%d") for d in (run[0], run[-1]))
-        out.append(f"{s} {dataset} {a}: no {what}{note}" if len(run) == 1
-                   else f"{s} {dataset} {a} to {b}: no {what} ({len(run)} days){note}")
+            out += missing_days(cfg, s, t, start, end)
+    for g in _covered(groups):
+        if g.exam_problems is not None:
+            out += g.exam_problems(cfg, symbols, tf, end) or []
     return out
 
 

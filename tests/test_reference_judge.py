@@ -45,6 +45,7 @@ def test_symbol_check_names_a_month_of_another_timeframe(tmp_path):
     assert columns.column_group_problems(cfg, cfg.symbols, "4h") == []
     n = int((T("2026-10-15") - T("2025-01-01")) / pd.Timedelta(hours=1))
     btc_candles(cfg, "4h", make_bars(n=n, seed=3, start="2025-01-01", tf_ms=TF_MS["1h"]))   # 1h data, 4h folder
+    cfg.raw["column_groups"]["spot"]["exclusions"] = ["BTC"]    # this frame is no perp of BTC's spot: not under test
     assert columns.column_group_problems(cfg, cfg.symbols, "4h") == [
         "column group reference: BTCUSDT/4h 2026-06 has open times 1h apart, not 4h"]
 
@@ -263,7 +264,8 @@ def test_exam_builds_sources_with_token_not_research_cache(tmp_path, monkeypatch
             built.append((tf, start, end, holdout))
             return g.load_source(cfg, tf, start, end, holdout)
         return dataclasses.replace(g, load_source=load_source)
-    monkeypatch.setattr(columns, "GROUPS", tuple(counted(g) for g in columns.GROUPS))
+    monkeypatch.setattr(columns, "GROUPS", tuple(counted(g) if g.name == "reference" else g   # BTC's load only
+                                                 for g in columns.GROUPS))
     given = []
     real = exam.load_bars
     monkeypatch.setattr(exam, "load_bars", lambda *a, **k: given.append(k.get("sources")) or real(*a, **k))
@@ -296,7 +298,7 @@ from perp_lab.strategy import HOLD, Strategy, enter
 
 
 class ReadsBtc(Strategy):
-    params = {}
+    params = {"n": 20}                         # the fake run's base params: a param the plugin lacks fails a run
     timeframes = ["4h"]
 
     def prepare(self, bars):
@@ -328,7 +330,8 @@ def test_paper_refuses_reference_reader_before_recording(tmp_path, monkeypatch, 
     before = sorted(cfg.runs_dir.iterdir())
     r = runner.invoke(app, ["paper", "c1", "--config", str(cfg.path)])
     assert (r.exit_code, type(r.exception)) == (2, SystemExit), r.output
-    assert "reads_btc reads, or can't be shown not to read, the reference column group" in r.output
+    assert ("reads_btc reads, or can't be shown not to read, the reference column group (btc_ columns), which "
+            "paper trading can't feed yet") in r.output                  # spot is ruled out, so not named
     assert db.read_table(cfg, db.runs, db.runs.c.validation_mode == "paper").empty
     assert sorted(cfg.runs_dir.iterdir()) == before                     # no run directory either
 

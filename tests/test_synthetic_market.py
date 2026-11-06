@@ -3,8 +3,8 @@ import pandas as pd
 import pytest
 
 from perp_lab.config import TF_MS
-from perp_lab.data import reference
-from perp_lab.validate.causality import synthetic_bars, with_moving_columns
+from perp_lab.data import reference, spot
+from perp_lab.validate.causality import NAN_CUTS, synthetic_bars, with_moving_columns
 from perp_lab.validate.synthetic_market import DAYS, MARKET_VERSION, SYMBOLS, VOL_SCALE, market
 
 
@@ -27,16 +27,17 @@ def test_15m_is_resampled_from_5m():
 
 
 def test_the_market_is_fixed():
-    assert (MARKET_VERSION, SYMBOLS, DAYS) == (3, ("BTCUSDT", "SYN2", "SYN3", "SYN4"), 180)
+    assert (MARKET_VERSION, SYMBOLS, DAYS) == (5, ("BTCUSDT", "SYN2", "SYN3", "SYN4"), 180)
     m = market("5m")
     assert tuple(m) == SYMBOLS and market("5m") is m                 # built once per timeframe
+    groups = list(reference.COLUMNS + spot.COLUMNS)
     base = with_moving_columns(synthetic_bars(n=DAYS * 288, seed=102, start="2023-01-01", funding_every=96,
                                               tf_ms=300_000, vol_scale=VOL_SCALE), seed=202)
-    base = base.drop(columns=list(reference.COLUMNS))
-    pd.testing.assert_frame_equal(m["BTCUSDT"].drop(columns=list(reference.COLUMNS)), with_moving_columns(
+    base = base.drop(columns=groups)
+    pd.testing.assert_frame_equal(m["BTCUSDT"].drop(columns=groups), with_moving_columns(
         synthetic_bars(n=DAYS * 288, seed=100, start="2023-01-01", funding_every=96, tf_ms=300_000,
-                       vol_scale=VOL_SCALE), seed=200).drop(columns=list(reference.COLUMNS)))
-    assert m["SYN3"].drop(columns=list(reference.COLUMNS)).shape == base.shape       # mixed, so not the seed-102 path
+                       vol_scale=VOL_SCALE), seed=200).drop(columns=groups))
+    assert m["SYN3"].drop(columns=groups).shape == base.shape       # mixed, so not the seed-102 path
     assert m["BTCUSDT"].index[0] == pd.Timestamp("2023-01-01", tz="UTC")
     assert not m["BTCUSDT"].close.equals(m["SYN2"].close)                # one path per symbol
 
@@ -54,11 +55,12 @@ def test_resampling_aggregates_each_column_by_its_meaning():
 
 def test_every_timeframe_has_every_column_with_no_gaps():
     cols = list(market("5m")["BTCUSDT"].columns)
-    assert cols[-len(reference.COLUMNS):] == list(reference.COLUMNS)
+    # spot is drawn on each coin's 5m path; the btc_ columns are joined after resampling, so they stay last
+    assert cols[-len(reference.COLUMNS) - len(spot.COLUMNS):] == list(spot.COLUMNS + reference.COLUMNS)
     for tf in ("15m", "1h", "4h", "1d"):
         for s, df in market(tf).items():
             assert list(df.columns) == cols and len(df) == DAYS * 86_400_000 // TF_MS[tf]
-            assert df.drop(columns="regime").notna().all().all()
+            assert df.drop(columns=["regime", *spot.COLUMNS]).notna().all().all()     # spot has its NaN stretches
             assert (np.diff(df.open_time.to_numpy()) == TF_MS[tf]).all()
 
 
@@ -135,3 +137,74 @@ def test_reference_symbol_is_the_configs_btc():
     from perp_lab.config import load_config
     cfg = load_config()
     assert reference.SYMBOL == "BTC" + cfg["quote"] and "BTC" in cfg["universe"]
+
+
+# ------------------------------------------------------------------ the spot group (version 4)
+
+FIVE = list(spot.COLUMNS)
+SPOT_SUMMED = ["spot_quote_volume", "spot_taker_buy_quote_volume", "spot_trades"]
+
+
+def test_market_version_is_5():
+    assert MARKET_VERSION == 5   # 5: spot calibrated (plan Task 11)
+
+
+@pytest.mark.parametrize("tf", ["15m", "1h", "4h"])
+def test_market_spot_resampling(tf):
+    k = TF_MS[tf] // TF_MS["5m"]
+    for s in SYMBOLS:
+        m5, m = market("5m")[s], market(tf)[s]
+        bucket = m5.groupby(np.arange(len(m5)) // k)
+        for c in SPOT_SUMMED:                         # min_count=1: a bucket with no spot bar is NaN, not 0
+            want = bucket[c].sum(min_count=1).to_numpy()
+            assert np.isnan(want).any() and not (want == 0).any()
+            np.testing.assert_allclose(m[c].to_numpy(), want, rtol=1e-12, err_msg=f"{s} {c}")
+        last = m5.iloc[k - 1::k]                      # the bucket's last 5m bar: never a NaN row unless all are
+        np.testing.assert_array_equal(m.spot_close.to_numpy(), last.spot_close.to_numpy(), err_msg=s)
+        np.testing.assert_array_equal(m.basis.to_numpy(), (m.close / m.spot_close - 1).to_numpy(), err_msg=s)
+        np.testing.assert_array_equal(m.basis.to_numpy(), last.basis.to_numpy(), err_msg=s)
+
+
+@pytest.mark.parametrize("tf", ["5m", "15m", "1h", "4h"])
+def test_market_spot_nan_stretches_whole(tf):
+    # ruling S5: at 15m, 1h and 4h the NaN bars are exactly the buckets inside the 5m stretches; at 5m the
+    # row before the lookahead check's first cut is NaN too, and every coarser bucket holding it is not
+    k = TF_MS[tf] // TF_MS["5m"]
+    want = [i for a, b in spot.NAN_STRETCHES for i in range(a // k, b // k)]
+    if tf == "5m":
+        want = sorted(want + [cut - 1 for cut in NAN_CUTS])
+    for s, df in market(tf).items():
+        for c in FIVE:
+            assert np.flatnonzero(df[c].isna().to_numpy()).tolist() == want, (s, c)
+
+
+# hash_pandas_object sums of each frame without the spot columns, captured from version 3 before spot was
+# registered: the spot columns change no other column, at any timeframe
+PRE_SPOT_HASHES = {
+    "5m": [17969628142834356824, 14986892942727429196, 7851917052932312749, 10407428671937934215],
+    "15m": [8524389208028684765, 3518741898660839041, 4904552601250995757, 17006380583731575392],
+    "1h": [15142064789493710281, 13300092846650806367, 4286491101074938586, 5373710348511338589],
+    "4h": [13023897928200926206, 2164061988692270364, 11915280444696585250, 823188312973466877],
+    "1d": [2382705713924388717, 2057505535612692657, 4345179035570960741, 12010016461512015824],
+}
+
+
+@pytest.mark.parametrize("tf", list(PRE_SPOT_HASHES))
+def test_market_pre_existing_columns_unchanged(tf):
+    m = market(tf)
+    got = [int(pd.util.hash_pandas_object(df.drop(columns=FIVE)).sum()) for df in m.values()]
+    assert got == PRE_SPOT_HASHES[tf]
+
+
+def test_resampled_basis_is_nan_where_the_perp_bucket_has_no_trades():
+    # X6: `basis` is NaN on a bar the perp didn't trade, spot set or not. The market's perp trades are never 0,
+    # so this plants a zero-trade 1h bucket, outside spot's NaN stretches.
+    from perp_lab.validate.synthetic_market import _path, _resample
+    k, j = TF_MS["1h"] // TF_MS["5m"], 30
+    bars = _path(1).copy()
+    bars.iloc[j * k:(j + 1) * k, bars.columns.get_loc("trades")] = 0.0
+    out = _resample(bars, TF_MS["1h"])
+    assert out.trades.iloc[j] == 0 and not np.isnan(out.spot_close.iloc[j])
+    assert np.isnan(out.basis.iloc[j])
+    rest = np.arange(len(out)) != j
+    np.testing.assert_array_equal(out.basis.to_numpy()[rest], (out.close / out.spot_close - 1).to_numpy()[rest])

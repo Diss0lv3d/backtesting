@@ -1,4 +1,6 @@
+import io
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -87,7 +89,8 @@ def write_market(data_dir, symbols, candles_until="2026-10-15", funding_until="2
     from the monthly files (metrics from daily ones: they have no monthly archive), the last one
     (still open on `candles_until`) from daily files and incomplete. Funding has no daily files, so
     its manifest stops at the last closed month. Every symbol's data starts in the first month, so a
-    research span from 2025-01 passes the readiness check (X3) for the reference coin, BTCUSDT."""
+    research span from 2025-01 passes the readiness check (X3) for the reference coin, BTCUSDT. Each
+    symbol's spot at each of `tfs` comes from its candles (`write_spot`), with the candles' manifest."""
     t0, t1 = pd.Timestamp("2025-01-01", tz="UTC"), pd.Timestamp(candles_until, tz="UTC")
     months = pd.period_range(t0.tz_localize(None), t1.tz_localize(None), freq="M")
     manifest = {str(m): {"complete": m != months[-1], "source": "monthly" if m != months[-1] else "daily",
@@ -100,10 +103,12 @@ def write_market(data_dir, symbols, candles_until="2026-10-15", funding_until="2
         for k, tf in enumerate(tfs):
             n = int((t1 - t0) / pd.Timedelta(milliseconds=TF_MS[tf]))
             b = make_bars(n=n, seed=10 + i + 10 * k, start="2025-01-01", tf_ms=TF_MS[tf])
+            b["trades"] = b.trades.fillna(b.volume)    # traded bars, so the spot symbol check finds a month
             d = Path(data_dir) / s / tf
             d.mkdir(parents=True, exist_ok=True)
             b[CANDLE_COLS].reset_index(drop=True).to_parquet(d / "all.parquet")
             _write_manifest(d, manifest)
+            write_spot(data_dir, s, tf, b, manifest)
         ms = pd.date_range("2025-01-01", funding_until, freq="8h", tz="UTC").as_unit("ms").asi8
         fd = Path(data_dir) / s / "funding"
         fd.mkdir(parents=True, exist_ok=True)
@@ -118,11 +123,48 @@ def write_market(data_dir, symbols, candles_until="2026-10-15", funding_until="2
         _write_manifest(md, metrics_manifest)
 
 
+def spot_candles(candles, basis=0.0003):
+    """Spot candles made from perp `candles`: prices ÷ (1 + basis), so close / spot close − 1 is `basis`
+    up to rounding; volumes × 0.3, taker buys half of that; trades halved and rounded, and at least 1.
+    Where the perp's quote volume or trades are NaN (`synthetic_bars` leaves them unset), its volume × close
+    and its volume stand in, so every spot bar traded: a zero-trade spot bar is one a test plants."""
+    s = candles[CANDLE_COLS].reset_index(drop=True).copy()
+    s["quote_volume"] = s.quote_volume.fillna(s.volume * s.close)
+    s["trades"] = s.trades.fillna(s.volume)
+    for c in ("open", "high", "low", "close"):
+        s[c] = s[c] / (1 + basis)
+    for c in ("volume", "quote_volume"):
+        s[c] = s[c] * 0.3
+        s["taker_buy_" + c] = s[c] / 2
+    s["trades"] = np.maximum(np.round(0.5 * s["trades"].astype("float64")), 1.0)
+    return s
+
+
+def write_spot(data_dir, symbol, tf, candles, manifest, basis=0.0003):
+    """`spot_candles(candles, basis)` as data/<symbol>/spot/<tf>/all.parquet, with `manifest` as the
+    folder's _manifest.json, laid out like `lab backfill`'s spotKlines output."""
+    d = Path(data_dir) / symbol / "spot" / tf
+    d.mkdir(parents=True, exist_ok=True)
+    spot_candles(candles, basis).to_parquet(d / "all.parquet")
+    _write_manifest(d, manifest)
+
+
+def traded_month(month: pd.Period, tf: str) -> pd.DataFrame:
+    """`tf` candles over `month` from `make_bars`, CANDLE_COLS on a RangeIndex, with the quote volume,
+    trades and taker flow it leaves NaN set from its volume and close, so every bar traded."""
+    b = make_bars(n=month.days_in_month * 86_400_000 // TF_MS[tf], start=str(month.start_time.date()),
+                  tf_ms=TF_MS[tf])[CANDLE_COLS].reset_index(drop=True)
+    b["quote_volume"] = b.volume * b.close
+    b["trades"] = np.round(b.volume)
+    b["taker_buy_volume"], b["taker_buy_quote_volume"] = b.volume / 2, b.quote_volume / 2
+    return b
+
+
 def write_ready_reference(cfg, tfs=("4h",)):
     """The least BTCUSDT data under cfg.data_dir that passes the readiness check (X3) at each of `tfs`:
     a complete manifest entry for every research month of its candles, funding and metrics, and
-    candles in the symbol check's month (the last research month) only. For tests whose runs are
-    stand-ins and read no bars."""
+    candles in the symbol check's month (the last research month) only, every one traded. For tests
+    whose runs are stand-ins and read no bars."""
     from perp_lab.data import columns
     months = columns._research_months(cfg)
     for dataset in (*tfs, "funding", "metrics"):
@@ -130,9 +172,50 @@ def write_ready_reference(cfg, tfs=("4h",)):
                         {m: {"complete": True, "source": "monthly", "rows": 0} for m in months})
     last = pd.Period(months[-1], "M")
     for tf in tfs:
-        b = make_bars(n=last.days_in_month * 86_400_000 // TF_MS[tf], start=str(last.start_time.date()),
-                      tf_ms=TF_MS[tf])
-        b[CANDLE_COLS].reset_index(drop=True).to_parquet(Path(cfg.data_dir) / "BTCUSDT" / tf / f"{last}.parquet")
+        traded_month(last, tf).to_parquet(Path(cfg.data_dir) / "BTCUSDT" / tf / f"{last}.parquet")
+
+
+def write_ready_spot(cfg, tfs=("4h",)):
+    """The least spot data under cfg.data_dir that passes the readiness check (X3) at each of `tfs`, for
+    every coin in cfg.symbols: a complete `spot/<tf>` manifest entry for every research month, and in the
+    symbol check's month (the last research month) the coin's perp candles and spot candles made from them
+    by `spot_candles`, every bar traded on both. Perp candles already there (`write_ready_reference`'s BTC)
+    are kept; a coin with none gets `traded_month`'s, written with their spot from files made once per
+    process, since `test_store`'s `cfg` writes 17 coins. For tests whose runs are stand-ins and read no bars."""
+    from perp_lab.data import columns
+    months = columns._research_months(cfg)
+    manifest = {m: {"complete": True, "source": "monthly", "rows": 0} for m in months}
+    last = pd.Period(months[-1], "M")
+    lo, hi = (int(m.start_time.tz_localize("UTC").value // 10**6) for m in (last, last + 1))
+    inside = [("open_time", ">=", lo), ("open_time", "<", hi)]
+    for symbol in cfg.symbols:
+        for tf in tfs:
+            d = Path(cfg.data_dir) / symbol / tf
+            if any(d.glob("*.parquet")):
+                candles = pd.concat([pd.read_parquet(f, filters=inside) for f in sorted(d.glob("*.parquet"))])
+                write_spot(cfg.data_dir, symbol, tf,
+                           candles.drop_duplicates("open_time").sort_values("open_time"), manifest)
+                continue
+            perp, spot = _ready_month(str(last), tf)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{last}.parquet").write_bytes(perp)
+            sd = Path(cfg.data_dir) / symbol / "spot" / tf
+            sd.mkdir(parents=True, exist_ok=True)
+            (sd / "all.parquet").write_bytes(spot)
+            _write_manifest(sd, manifest)
+
+
+@lru_cache(maxsize=None)
+def _ready_month(month: str, tf: str) -> tuple[bytes, bytes]:
+    """`traded_month`'s candles and `spot_candles` of them, as parquet files' bytes."""
+    perp = traded_month(pd.Period(month, "M"), tf)
+    return _parquet_bytes(perp), _parquet_bytes(spot_candles(perp))
+
+
+def _parquet_bytes(df: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    df.to_parquet(buf)
+    return buf.getvalue()
 
 
 def market_config(tmp_path, **sections):

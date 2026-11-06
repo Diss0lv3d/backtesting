@@ -93,6 +93,11 @@ BAR_COLUMNS = """\
 | funding_interval_h | hours between settlements for funding_last | hours |
 | oi | open interest at the bar's close (below); NaN before 2021-12-01, or 2020-09-01 for BTC | coins |
 | oi_value | open interest at the bar's close (below); NaN before 2021-12-01, or 2020-09-01 for BTC | USDT |
+| spot_close | the last trade on Binance spot (`{COIN}USDT`) in the bar; NaN where spot didn't trade in the bar | USDT |
+| spot_quote_volume | volume traded on spot in the bar; NaN where spot didn't trade | USDT |
+| spot_taker_buy_quote_volume | spot volume bought by takers (the rest was sold by takers); NaN where spot didn't trade | USDT |
+| spot_trades | number of spot trades in the bar; NaN where spot didn't trade | count |
+| basis | `close / spot_close − 1`, the perp's premium over spot at the bar's close; NaN where spot or the perp didn't trade | fraction |
 | slippage | not available to plugins: real bars carry it, but the checks' synthetic bars don't, so a plugin that reads it fails the lookahead check | none |
 | regime | the coin's 4h regime label (below) | text |
 | regime_adx | the 4h ADX behind the label | ADX points |
@@ -132,7 +137,33 @@ def _plugin_columns(table: str) -> tuple[str, ...]:
 PLUGIN_COLUMNS = _plugin_columns(BAR_COLUMNS)
 
 
-def _api() -> str:
+def _spot_text(cfg) -> str:
+    """The spot paragraph. Fixed text (Ruling R23) but for the exclusions, which come from the config."""
+    quote = cfg.get("quote", "USDT")
+    out = ((cfg.get("column_groups") or {}).get("spot") or {}).get("exclusions") or []
+    names = ", ".join(n if n.endswith(quote) else f"{n}{quote}" for n in out) or "none"
+    return (
+        "`spot_close`, `spot_quote_volume`, `spot_taker_buy_quote_volume` and `spot_trades` come from the same "
+        "coin's Binance spot market (`BTCUSDT` spot for the `BTCUSDT` perp), from the spot bar with the same open "
+        "time, and are known at the bar's close like the perp's own columns. They are NaN on a bar in which spot "
+        "didn't trade (before a coin's spot listing, and in exchange gaps); `basis` is NaN then too, and on a bar "
+        f"in which the perp didn't trade. Spot columns are NaN on every bar for: {names}. A coin's spot columns "
+        "may start after its first research bar, so a plugin that reads them must handle NaN. A bar in which spot "
+        "stopped trading early (rare; around exchange maintenance) carries its last spot trade, which may be "
+        "stale. `basis` is the perp's premium over spot now. `funding_last` is the settled rate; for an 8-hour "
+        "coin it is F = P + clamp(0.01% − P, −0.05%, +0.05%), P the interval's average premium. F is exactly "
+        "0.01% whenever P is between −0.04% and +0.06%, whatever P is, so inside that band funding says nothing "
+        "about the premium and `basis` is the only view of it. Outside the band F = P − 0.05% (above) or P + "
+        "0.05% (below); there, basis averaged over a funding interval tracks the next funding rate, and an idea "
+        "built on that average is a funding idea. On thin coins `basis` carries a few bp of noise from last "
+        "trades; smooth it or set thresholds well above that. The harness trades the perp only: a basis that "
+        "closes pays only through the perp's own move. Spot's share of volume differs by coin, was larger in the "
+        "early years and has fallen since, so a rule should read it as a change against its own recent level, not "
+        "as a level. BTC's spot volume and trade count are inflated from 2022-07 to 2023-03, during Binance's "
+        "zero-fee BTC spot promotion. A plugin that reads spot columns can't be paper traded yet.")
+
+
+def _api(cfg) -> str:
     return "\n\n".join([
         "## The plugin API",
         "A plugin is a module with a docstring and exactly one `Strategy` subclass. The harness names the module, "
@@ -141,7 +172,7 @@ def _api() -> str:
         "time, and `ctx.symbol` names it. Two modules define everything a plugin may use:",
         "### perp_lab/strategy.py", fence(_read("perp_lab/strategy.py"), "python"),
         "### perp_lab/indicators.py", fence(_read("perp_lab/indicators.py"), "python"),
-        "### Bar columns", BAR_COLUMNS,
+        "### Bar columns", BAR_COLUMNS, _spot_text(cfg),
         "### Imports",
         f"A plugin may import only these modules: {', '.join(ALLOWED_IMPORTS)}.",
     ])
@@ -303,10 +334,11 @@ def _piles(cfg, pc: ProposerConfig) -> str:
             "(each plugin at its defaults) with every judged plugin. A near-copy (overlap ≥ "
             f"{om}) of a judged plugin outside the proposal's port group is refused: a closed idea's outright, an "
             "open idea's with the advice to refine or port that idea instead. A mirror (the same overlap with one "
-            "side flipped) of any judged plugin is refused. The synthetic bars' taker, open-interest and volume "
-            "columns are random walks, their `btc_` columns a synthetic BTC that moves with the coin, and they have "
-            "no `slippage` column. The lookahead check also runs each plugin as BTCUSDT, its `btc_` columns equal "
-            "to its own.",
+            "side flipped) of any judged plugin is refused. The synthetic bars' taker, open-interest, volume and "
+            "spot columns are random walks, their `basis` has slow and fast mean-reverting parts, their spot "
+            "columns are NaN over two stretches and on the one row before the lookahead check's first cut, their "
+            "`btc_` columns are a synthetic BTC that moves with the coin, and they have no `slippage` column. The "
+            "lookahead check also runs each plugin as BTCUSDT, its `btc_` columns equal to its own.",
             f"- A refused reply comes back with the errors. A proposal gets {pc.fixups_per_proposal} fix-ups; then it "
             "is dropped, with no trial.",
         ]),
@@ -317,7 +349,7 @@ def static_context(cfg, pc: ProposerConfig) -> str:
     text = "\n\n".join([
         "# Perp Lab",
         LAB,
-        _api(),
+        _api(cfg),
         _examples(),
         _costs(cfg),
         _universe(cfg, pc),

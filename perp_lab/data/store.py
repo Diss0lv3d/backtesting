@@ -59,17 +59,27 @@ def _drop_dead_tail(df: pd.DataFrame, symbol: str, tf: str) -> pd.DataFrame:
     return df
 
 
+def _read_window(cfg: Config, d: Path, start: pd.Timestamp | None, end: pd.Timestamp | None,
+                 holdout) -> pd.DataFrame | None:
+    """The rows of `d`'s parquet files with open_time in [start, end), duplicate open times (a daily file
+    over a monthly one) dropped, sorted, on a RangeIndex; None when `d` holds no parquet. start defaults
+    to history_start; end goes through `_resolve_end` before anything is read."""
+    end = _resolve_end(cfg, end, holdout)
+    start = start or cfg.history_start
+    df = _read_dir(d)
+    if df is None:
+        return None
+    df = df.drop_duplicates("open_time").sort_values("open_time")
+    s_ms, e_ms = int(start.value // 10**6), int(end.value // 10**6)
+    return df[(df.open_time >= s_ms) & (df.open_time < e_ms)].reset_index(drop=True)
+
+
 def load_candles(cfg: Config, symbol: str, tf: str, start: pd.Timestamp | None = None,
                  end: pd.Timestamp | None = None, holdout=None) -> pd.DataFrame:
     """Closed candles with open_time in [start, end). end defaults to holdout_start."""
-    end = _resolve_end(cfg, end, holdout)
-    start = start or cfg.history_start
-    df = _read_dir(cfg.data_dir / symbol / tf)
+    df = _read_window(cfg, cfg.data_dir / symbol / tf, start, end, holdout)
     if df is None:
         raise FileNotFoundError(f"no candles for {symbol} {tf}; run `lab backfill`")
-    df = df.drop_duplicates("open_time").sort_values("open_time")
-    s_ms, e_ms = int(start.value // 10**6), int(end.value // 10**6)
-    df = df[(df.open_time >= s_ms) & (df.open_time < e_ms)].reset_index(drop=True)
     df = _drop_dead_tail(df, symbol, tf)
     step = TF_MS[tf]
     gaps = np.flatnonzero(np.diff(df.open_time.values) != step)
@@ -149,6 +159,17 @@ def metrics_at(close_times: np.ndarray, metrics: pd.DataFrame | None,
     jj = np.clip(j, 0, len(known) - 1)
     return (np.where(valid, metrics.oi.values[jj], np.nan),
             np.where(valid, metrics.oi_value.values[jj], np.nan))
+
+
+def exact_join(bars: pd.DataFrame, rows: pd.DataFrame, value_cols) -> pd.DataFrame:
+    """`rows`' `value_cols` on `bars`' rows and index, as float64, each bar taking the row with its exact
+    `open_time` (X6): `rows` deduplicated by open_time first, a row with `trades == 0` is no row (NaN
+    trades, ccxt-stitched, are not zero), NaN where no row is left, rows with no bar dropped. No fill.
+    Pure: the same rule for every column group whose source is another set of candles."""
+    r = rows.drop_duplicates("open_time").set_index("open_time")
+    r = r[r.trades != 0]
+    joined = r.reindex(bars.open_time.to_numpy())
+    return pd.DataFrame({c: joined[c].to_numpy(dtype="float64") for c in value_cols}, index=bars.index)
 
 
 def align_funding(candles: pd.DataFrame, funding: pd.DataFrame, tf: str) -> pd.DataFrame:

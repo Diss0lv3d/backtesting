@@ -129,7 +129,8 @@ def test_the_columns_a_plugin_may_read_are_the_bar_tables_but_slippage():
     assert context.PLUGIN_COLUMNS == (
         "open_time", "close_time", "open", "high", "low", "close", "volume", "quote_volume", "trades",
         "taker_buy_volume", "taker_buy_quote_volume", "funding_charge", "funding_last", "funding_interval_h", "oi",
-        "oi_value", "regime", "regime_adx", "btc_open", "btc_high", "btc_low", "btc_close", "btc_quote_volume",
+        "oi_value", "spot_close", "spot_quote_volume", "spot_taker_buy_quote_volume", "spot_trades", "basis",
+        "regime", "regime_adx", "btc_open", "btc_high", "btc_low", "btc_close", "btc_quote_volume",
         "btc_taker_buy_quote_volume", "btc_funding_last", "btc_oi_value")
     from perp_lab.proposer.seed import load_seed
     assert {c for e in load_seed() for c in e["card"]["columns"]} <= set(context.PLUGIN_COLUMNS)
@@ -144,3 +145,74 @@ def test_the_builder_is_told_about_the_btc_columns(cfg):
                    "as BTCUSDT"):
         assert phrase in text, phrase
     assert len(text.encode("utf-8")) < context.STATIC_MAX_BYTES
+
+
+SPOT_ROWS = (
+    "| spot_close | the last trade on Binance spot (`{COIN}USDT`) in the bar; NaN where spot didn't trade in the bar "
+    "| USDT |",
+    "| spot_quote_volume | volume traded on spot in the bar; NaN where spot didn't trade | USDT |",
+    "| spot_taker_buy_quote_volume | spot volume bought by takers (the rest was sold by takers); NaN where spot "
+    "didn't trade | USDT |",
+    "| spot_trades | number of spot trades in the bar; NaN where spot didn't trade | count |",
+    "| basis | `close / spot_close − 1`, the perp's premium over spot at the bar's close; NaN where spot or the "
+    "perp didn't trade | fraction |",
+)
+
+
+def test_spot_rows_in_bar_table(cfg):
+    text = context.static_context(cfg, load(cfg))
+    for row in SPOT_ROWS:
+        assert row in text.splitlines(), row
+    lines = text.splitlines()
+    assert lines.index(SPOT_ROWS[0]) == lines.index(_row(text, "oi_value")) + 1
+
+
+def test_clamp_sentence_exact(cfg):
+    assert "F = P + clamp(0.01% − P, −0.05%, +0.05%)" in context.static_context(cfg, load(cfg))
+
+
+def test_band_phrases(cfg):
+    text = " ".join(context.static_context(cfg, load(cfg)).split())
+    for phrase in ("inside that band funding says nothing about the premium",
+                   "Outside the band F = P − 0.05% (above) or P + 0.05% (below)",
+                   "an idea built on that average is a funding idea"):
+        assert phrase in text, phrase
+
+
+def test_spot_exclusions_line_from_config(cfg):
+    assert "for: none." in context.static_context(cfg, load(cfg))
+    cfg.raw["column_groups"]["spot"]["exclusions"] = ["FIL", "AAVEUSDT"]
+    text = context.static_context(cfg, load(cfg))
+    assert "for: FILUSDT, AAVEUSDT." in text and "for: none." not in text
+
+
+def test_perp_only_and_paper_phrases(cfg):
+    text = context.static_context(cfg, load(cfg))
+    assert "The harness trades the perp only" in text and "can't be paper traded yet" in text
+
+
+def test_the_spot_paragraph_warns_of_the_promotion_and_the_falling_share(cfg):
+    """Fixed text from the real-data inventory (Ruling S2; R23: no number computed from data/)."""
+    text = " ".join(context.static_context(cfg, load(cfg)).split())
+    assert "BTC's spot volume and trade count are inflated from 2022-07 to 2023-03" in text
+    assert "zero-fee BTC spot promotion" in text
+    assert ("Spot's share of volume differs by coin, was larger in the early years and has fallen since, so a rule "
+            "should read it as a change against its own recent level, not as a level.") in text
+    assert "ratio against its own recent history" not in text                  # one sentence says it, not two
+
+
+def test_plugin_columns_hold_spot():
+    for name in ("spot_close", "spot_quote_volume", "spot_taker_buy_quote_volume", "spot_trades", "basis"):
+        assert name in context.PLUGIN_COLUMNS, name
+
+
+def test_piles_mentions_spot_and_basis(cfg):
+    text = " ".join(context.static_context(cfg, load(cfg)).split())
+    assert ("The synthetic bars' taker, open-interest, volume and spot columns are random walks, their `basis` "
+            "has slow and fast mean-reverting parts, their spot columns are NaN over two stretches and on the one "
+            "row before the lookahead check's first cut, their `btc_` columns are a synthetic BTC that moves with "
+            "the coin, and they have no `slippage` column.") in text
+
+
+def test_static_context_under_cap(cfg):
+    assert len(context.static_context(cfg, load(cfg)).encode("utf-8")) < context.STATIC_MAX_BYTES

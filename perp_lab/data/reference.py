@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from perp_lab.config import TF_MS
-from perp_lab.data import store
+from perp_lab.data import archive, store
 
 log = logging.getLogger(__name__)
 
@@ -95,19 +95,12 @@ def attach(bars: pd.DataFrame, symbol: str, tf: str, source: ReferenceSource) ->
     Refuses (ValueError) a source at another timeframe, whose candles would join at the wrong open
     times, and one cut before the bars' last close, which would carry btc_funding_last and
     btc_oi_value forward past its cut with no NaN to show it."""
-    if source.tf != tf:
-        raise ValueError(f"a {source.tf} reference source given to {symbol} {tf} bars")
-    if len(bars):
-        last_close = int(bars.close_time.max())
-        if int(source.end.value // 10**6) <= last_close:
-            raise ValueError(f"the reference source was cut at {source.end}, before {symbol} {tf}'s last bar "
-                             f"closed at {pd.Timestamp(last_close, unit='ms', tz='UTC')}")
+    from perp_lab.data import columns          # not at module level: columns imports this module
+    columns.check_source_fits("reference", source.tf, source.end, bars, symbol, tf)
     out = bars.copy()
-    c = source.candles.drop_duplicates("open_time").set_index("open_time")
-    c = c[c.trades != 0]                      # X6; NaN trades (ccxt-stitched) are not zero
-    joined = c.reindex(out.open_time.to_numpy())
+    joined = store.exact_join(out, source.candles, BAR_COLUMNS)      # X6
     for col in BAR_COLUMNS:
-        out[PREFIX + col] = joined[col].to_numpy(dtype="float64")
+        out[PREFIX + col] = joined[col].to_numpy()
     close = out.close_time.to_numpy(dtype="int64")
     out[PREFIX + "funding_last"] = store.funding_last_at(close, source.funding)[0].astype("float64")
     out[PREFIX + "oi_value"] = store.metrics_at(close, source.metrics)[1].astype("float64")
@@ -172,6 +165,29 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
 def sources(cfg, symbols: list[str], tf: str) -> list[tuple[str, str]]:
     """The (symbol, dataset) directories the readiness check reads: BTC's, whatever the coins."""
     return [(SYMBOL, tf), (SYMBOL, "funding"), (SYMBOL, "metrics")]
+
+
+def exam_end(cfg, symbols: list[str], tf: str) -> int:
+    """Where BTC's exam data stops, in ms, an exam coin or not, since every coin's bars carry its `btc_`
+    columns: its candles at `tf`, its funding, and its last metrics snapshot plus the publish lag, past which
+    `btc_oi_value` would carry that snapshot forward. Reads timestamps only, never prices."""
+    return min(archive.data_end(cfg, SYMBOL, (tf,)),
+               int(archive.stamps(cfg, SYMBOL, "metrics").max()) + store.OI_PUBLISH_LAG_MS)
+
+
+def exam_problems(cfg, symbols: list[str], tf: str, end: pd.Timestamp) -> list[str]:
+    """BTC's exam data problems in [holdout_start, end), an exam coin or not, each line ending in
+    " (BTC reference)": its months at `tf` with the exchange sources (its `btc_` volume and taker columns
+    would be NaN through a ccxt month), its days at `tf` with no candle, and its days with no metrics
+    snapshot (`btc_oi_value` would carry the last one over the whole day). When it is an exam coin the
+    exam checks its candles already, so only the metrics are. From manifests and timestamps only."""
+    start, note = cfg.holdout_start, " (BTC reference)"
+    out = []
+    if SYMBOL not in symbols:
+        months = archive.window_months(start, end)
+        out += archive.month_problems(cfg, SYMBOL, tf, months, end, archive.EXCHANGE_SOURCES, note)
+        out += archive.missing_days(cfg, SYMBOL, tf, start, end, note=note)
+    return out + archive.missing_days(cfg, SYMBOL, "metrics", start, end, "metrics snapshots", note)
 
 
 def symbol_check(cfg, tf: str) -> list[str]:

@@ -25,8 +25,9 @@ from perp_lab.engine.metrics import summarize
 from perp_lab import runlock
 from perp_lab.judge import budget, gates
 from perp_lab.judge.diagnostics import diagnostics
-from perp_lab.judge.exam import cost_hours, run_exam, window_data_problems, window_end
-from perp_lab.plugins import PluginMetaError, PluginSource, UndeclaredTimeframe, require_timeframe
+from perp_lab.judge.exam import (always_groups, cost_hours, exam_groups, group_ends, run_exam, window_data_problems,
+                                  window_end)
+from perp_lab.plugins import MACHINE_KINDS, PluginMetaError, PluginSource, UndeclaredTimeframe, require_timeframe
 from perp_lab.sandbox import client
 from perp_lab.sandbox.errors import TRANSIENT_KINDS, PluginError, SandboxUnavailable
 from perp_lab.runs import data_id, data_identity, new_run_id, per_coin_min, repo_commit, write_run
@@ -482,26 +483,35 @@ def _record_failed_holdout_run(cfg, j: dict, s: dict, end: pd.Timestamp, err: Pl
 
 
 def attempt_exam(cfg, jid: int, *, run: Callable = run_exam, end_fn: Callable = window_end,
-                 cost_fn: Callable = cost_hours, data_fn: Callable = window_data_problems) -> dict:
+                 cost_fn: Callable = cost_hours, data_fn: Callable = window_data_problems,
+                 groups_fn: Callable = exam_groups) -> dict:
     """Try the holdout exam for a pending judgement, under the budget rules. Run by `lab exam`
     only. In order (the sandbox spec's "Streamed exam"):
 
     1. read the plugin once; an edit since it was judged waits as plugin_changed;
     2. a judgement already holding its read: failed / exam_error after exam_max_attempts, else the
-       window end stored at the mint, and on to 3b, then 6 (the read is spent and the window fixed);
-    3. the window end (shorter than min_holdout_days: pending / too_short, before any worker
-       starts); 3b. where the window's candles came from, from the manifests only: a month not
-       from exchange files (stitched from ccxt, incomplete, unknown) waits as pending /
-       incomplete_data, with the months under `detail`, so no read is spent and no attempt used
-       on candles a plugin may not be able to trade on; 4. the dated lookahead check over it;
-       5. the cost probe (too_slow, or plugin_error if the plugin fails it); 6. the sandbox
-       check; 7. the judgement read again (no longer pending, e.g. superseded meanwhile: stop,
-       no read), then mint, storing the window end (refused, failed / exam_error, once the
-       read's attempts are used up); 8. the streamed exam.
+       window end stored at the mint; 2b. the column groups its exam covers (as 3a), and on to 3b,
+       then 6 (the read is spent and the window fixed);
+    3. the window end over the `always` column groups (the reference); shorter than
+       min_holdout_days: pending / too_short, before any worker starts; 3a. the column groups the
+       exam covers (`exam.exam_groups`: the `always` ones, and each `if_read` one the plugin reads,
+       which may run it in sandbox workers on the lookahead check's synthetic bars; a machine
+       failure there is handled as SandboxUnavailable), then the window end over them all, too
+       short again if an `if_read` group's data ends earlier, with each such group, coin and end
+       under `detail`, and the backfill hint; 3b. where the window's candles came
+       from, from the manifests only: a month not from exchange files (stitched from ccxt,
+       incomplete, unknown) waits as pending / incomplete_data, with the months under `detail`, so
+       no read is spent and no attempt used on candles a plugin may not be able to trade on; 4. the
+       dated lookahead check over it; 5. the cost probe (too_slow, or plugin_error if the plugin
+       fails it); 6. the sandbox check; 7. the judgement read again (no longer pending, e.g.
+       superseded meanwhile: stop, no read), then mint, storing the window end (refused, failed /
+       exam_error, once the read's attempts are used up); 8. the streamed exam.
 
     SandboxUnavailable at any step before the mint is pending / exam_error, re-raised: nothing is
-    minted and no attempt used. A plugin error in the exam itself is failed / plugin_error (the read
-    is spent); its kind and message go only to the holdout run's report, never to the verdict.
+    minted and no attempt used. So is a PluginError of a machine kind (`plugins.MACHINE_KINDS`) from
+    the column groups' check runs (2b, 3a). A plugin error in the exam itself is failed /
+    plugin_error (the read is spent); its kind and message go only to the holdout run's report,
+    never to the verdict.
 
     One attempt per judgement at a time (`budget.exam_lock`, held throughout), and one exam at a
     time on this machine (`budget.exams_lock`, likewise): while another `lab exam` examines this
@@ -519,10 +529,11 @@ def attempt_exam(cfg, jid: int, *, run: Callable = run_exam, end_fn: Callable = 
         if not (mine and alone):
             return {**j, "in_progress": True}
         with runlock.exam_exclusive(cfg):        # after the non-blocking locks: waits for running judges
-            return _attempt(cfg, j, run, end_fn, cost_fn, data_fn)
+            return _attempt(cfg, j, run, end_fn, cost_fn, data_fn, groups_fn)
 
 
-def _attempt(cfg, j: dict, run: Callable, end_fn: Callable, cost_fn: Callable, data_fn: Callable) -> dict:
+def _attempt(cfg, j: dict, run: Callable, end_fn: Callable, cost_fn: Callable, data_fn: Callable,
+             groups_fn: Callable) -> dict:
     """attempt_exam's steps, under the judgement's exam lock."""
     jid = j["id"]
     try:                                                     # 1. these bytes are checked and examined
@@ -536,21 +547,58 @@ def _attempt(cfg, j: dict, run: Callable, end_fn: Callable, cost_fn: Callable, d
     s = run_summary(child["run_dir"])
     syms, tf, params, fam = s["universe"], j["timeframe"], s["sensitivity"]["base_params"], j["lineage_id"]
     jc = cfg["judge"]
+
+    def short(end: pd.Timestamp) -> bool:
+        return (end - cfg.holdout_start).days < jc["min_holdout_days"]
+
+    def early_group_ends(read: list) -> list[str]:
+        """One line per `if_read` group of `read` and exam coin whose data, floored to the day as
+        `window_end` floors it, ends the window short: the group, the coin and where its data stops."""
+        need = cfg.holdout_start + pd.Timedelta(days=jc["min_holdout_days"])
+        return [f"column group {g}: {s} data ends {e:%Y-%m-%d %H:%M} UTC; the exam needs it to {need:%Y-%m-%d} "
+                f"({jc['min_holdout_days']} days from holdout_start)"
+                for g, s, e in group_ends(cfg, syms, tf, read) if short(e.floor("D"))]
+
+    def exam_error() -> None:
+        db.update_holdout(cfg, jid, "pending", "exam_error")
+        finish(cfg, jid)
+
+    def covered() -> tuple:
+        """The column groups the exam covers (`groups_fn`). A machine failure in its check runs (a
+        worker lost twice, a timeout, a protocol error) is the sandbox down: pending / exam_error,
+        re-raised."""
+        try:
+            return groups_fn(cfg, src, params)
+        except PluginError as err:
+            if err.kind in MACHINE_KINDS:
+                exam_error()
+            raise
+
     try:                                    # the sandbox down at any step before the mint: no read, no attempt
         retry = budget.holds_read(cfg, jid, fam)
         if retry:                                            # 2. a retry on the same read
             if budget.attempts(cfg, jid, fam) >= jc["exam_max_attempts"]:   # (the mint re-checks, locked)
-                db.update_holdout(cfg, jid, "failed", "exam_error")
+                db.update_holdout(cfg, jid, "failed", "exam_error")      # before any worker starts
                 return finish(cfg, jid)
             end = budget.stored_window_end(cfg, jid, fam)
+            groups = covered()                               # 2b
             if end is None:                                  # minted before window ends were stored
-                end = end_fn(cfg, syms, tf)
+                end = end_fn(cfg, syms, tf, groups)
         else:
-            end = end_fn(cfg, syms, tf)                      # 3
-            if (end - cfg.holdout_start).days < jc["min_holdout_days"]:   # too short: no worker started
+            always = always_groups()
+            end = end_fn(cfg, syms, tf, always)              # 3. the `always` groups' end first, so a
+            why = []                                         # short window starts no worker
+            if not short(end):
+                groups = covered()                           # 3a. an `if_read` group may end earlier
+                if groups != always:
+                    end = end_fn(cfg, syms, tf, groups)
+                    if short(end):                           # name the group and coin that end it
+                        why = early_group_ends([g for g in groups if g not in always])
+            if short(end):                                   # too short: no exam worker started
                 db.update_holdout(cfg, jid, "pending", "too_short")       # (the mint checks again, locked)
-                return finish(cfg, jid)
-        problems = data_fn(cfg, syms, tf, end)               # 3b. manifests only: no candle is read
+                done = finish(cfg, jid)
+                return {**done, "detail": [*why, BACKFILL_HINT.format(tf=tf)]} if why else done
+        problems = data_fn(cfg, syms, tf, end, groups)       # 3b. manifests only: no candle is read
         if problems:
             log.warning("exam of judgement %s waits for exchange data:\n  %s", jid, "\n  ".join(problems))
             db.update_holdout(cfg, jid, "pending", "incomplete_data")
@@ -571,8 +619,7 @@ def _attempt(cfg, j: dict, run: Callable, end_fn: Callable, cost_fn: Callable, d
                 return finish(cfg, jid)
         client.check(cfg)                                    # 6. no sandbox, no mint
     except SandboxUnavailable:
-        db.update_holdout(cfg, jid, "pending", "exam_error")
-        finish(cfg, jid)
+        exam_error()
         raise
     if db.get_judgement_by_id(cfg, jid)["holdout_status"] != "pending":   # e.g. superseded since step 1:
         return finish(cfg, jid)                                          # no read

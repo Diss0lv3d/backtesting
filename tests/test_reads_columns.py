@@ -263,9 +263,10 @@ def test_check_bars_are_the_lookahead_checks_bars(cfg, monkeypatch):
     assert any(s == "X" and b.equals(checked) for s, b in seen)
 
 
-def test_the_runs_compare_the_checked_stream_with_seed_1(cfg, monkeypatch):
+def test_the_runs_compare_the_checked_stream_with_seed_1_and_with_none(cfg, monkeypatch):
     checked = check_bars()
     seed_1 = checked.assign(**REF.synthetic(checked, 1))
+    blank = checked.assign(**{c: np.nan for c in REF.columns})
     assert not np.array_equal(checked.btc_close, seed_1.btc_close, equal_nan=True)
     real, seen = client.fresh_run, []
 
@@ -275,5 +276,5 @@ def test_the_runs_compare_the_checked_stream_with_seed_1(cfg, monkeypatch):
 
     monkeypatch.setattr(client, "fresh_run", spy)
     assert reads_columns(cfg, plugin(), REF) is False
-    assert len(seen) == 2
-    assert sum(b.equals(checked) for b in seen) == 1 and sum(b.equals(seed_1) for b in seen) == 1
+    assert len(seen) == 3
+    assert [sum(b.equals(side) for b in seen) for side in (checked, seed_1, blank)] == [1, 1, 1]

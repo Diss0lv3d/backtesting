@@ -25,9 +25,10 @@ holdout_start: "2026-07-01"
 # entries the readiness check accepts; fixed before any trial of the group, never edited after.
 column_groups:
   reference: {known_gaps: []}
+  spot: {exclusions: [], known_gaps: []}   # from docs/research/spot-inventory (2026-11-06): every coin passes, no incomplete month
 
 backfill:
-  datasets: [klines, fundingRate, metrics]   # aggTrades: not wired (optional, huge)
+  datasets: [klines, fundingRate, metrics, spotKlines]   # aggTrades: not wired (optional, huge)
   workers: 8
   max_retries: 6
 

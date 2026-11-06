@@ -8,7 +8,7 @@ from perp_lab.cli import app
 from perp_lab.proposer import context, human, piles
 from perp_lab.proposer.record import Record
 from perp_lab.config import load_config
-from tests.conftest import REPO, write_ready_reference
+from tests.conftest import REPO, write_ready_reference, write_ready_spot
 
 runner = CliRunner()
 
@@ -40,6 +40,7 @@ def test_propose_prints_the_stop_reason_and_digest_path(tmp_path, monkeypatch):
     monkeypatch.chdir(context.ROOT)
     cfg = _config(tmp_path)
     write_ready_reference(load_config(cfg), tfs=("15m", "1h", "4h"))     # readiness (X3) at each proposer timeframe
+    write_ready_spot(load_config(cfg), tfs=("15m", "1h", "4h"))
     state = tmp_path / "proposer"
 
     def fake(cfg_, pc, *, days, trials, repo):
