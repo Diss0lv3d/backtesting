@@ -25,6 +25,11 @@ from perp_lab.sandbox.errors import PluginError
 
 H = 3_600_000
 CUTS = [400, 1100, 1777, 2500]
+# The cuts whose row k - 1 a synthetic group stream leaves NaN in its bar columns, as a real zero-trade bar
+# does: there the cut run ends on a NaN its full run has a bar after, so a fill from later bars (`bfill`) is
+# caught. Alternate cuts only, since a next-bar peek shows only on row k - 1: at the cuts between, those
+# columns hold values, so a peek gated on them can show too.
+NAN_CUTS = CUTS[0::2]
 
 
 def synthetic_bars(n=3000, seed=0, start="2023-01-01", funding_every=8, tf_ms=H, vol_scale=1.0):

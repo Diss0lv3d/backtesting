@@ -230,6 +230,10 @@ value at row t uses the coin's rows up to t only:
 - `btc_funding_last`: a new value every 8 hours of bar time, 0.0001 + N(0, 0.0001), one in 15 a ±0.001 spike.
 - `btc_oi_value`: a log random walk times `btc_close`, NaN on the first 300 rows, as real BTC OI is NaN before
   2020-09-01, so a plugin that breaks on NaN breaks here. The first cut (400) is past it.
+- The six bar columns are NaN on row k−1 for alternate cuts only (`causality.NAN_CUTS`, the first and third), as
+  real BTC's are on a zero-trade bar (X6): a fill from later bars (`bfill`, `interpolate`) is caught at those cuts,
+  and since a next-bar peek shows only on the cut run's last row, the other two, where BTC's bar is set, still
+  catch a peek gated on a `btc_` column.
 
 **`perp_lab/validate/causality.py`.**
 - `with_moving_columns` adds each group's columns through `group.synthetic` when any of them is missing, all-NaN
