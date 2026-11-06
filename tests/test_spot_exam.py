@@ -88,6 +88,18 @@ def test_spot_month_without_entry_named(tmp_path, entry, why):
     assert exam.window_data_problems(cfg, cfg.symbols, "4h", END) == []    # the `always` groups: no spot
 
 
+def test_ccxt_spot_month_named_for_spot_reader(tmp_path):
+    # a complete month still isn't exchange data when ccxt stitched it: no spot taker, trade-count or quote volume
+    cfg = market_config(tmp_path)
+    _spot_manifest(cfg, "ETHUSDT", "2026-08", {"source": "ccxt", "complete": True})
+    reader = exam.exam_groups(cfg, SPOT_READER, {})
+    assert reader == (REF, SPOT)
+    assert exam.window_data_problems(cfg, cfg.symbols, "4h", END, reader) == [
+        "ETHUSDT spot/4h 2026-08: stitched from ccxt (no taker, trade-count or quote-volume columns)"]
+    non_reader = exam.exam_groups(cfg, PluginSource.read("donchian_atr"), PARAMS)
+    assert exam.window_data_problems(cfg, cfg.symbols, "4h", END, non_reader) == []
+
+
 @pytest.mark.parametrize("plant", [_zero_trades, _drop_spot], ids=["zero trades", "dropped"])
 def test_zero_trade_spot_day_named(tmp_path, plant):
     cfg = market_config(tmp_path)
