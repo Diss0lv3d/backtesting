@@ -157,9 +157,9 @@ def names_group(src: PluginSource, group) -> list[str]:
       `ind.reference_frame`), called or not;
     - a name bound to a helper, called or not, listed as the helper: `reference_frame(bars)`, `rf(bars)`
       after `import reference_frame as rf`, `f = reference_frame`. A bare import is not a read.
-    Comments aren't in the tree, so they never count. Docstrings count by column or prefix (a plugin can
-    read its own back, and a false positive only costs a refused paper run), not by the bare stem, which
-    prose uses for the coin."""
+    Comments aren't in the tree, so they never count. Docstrings count by prefixed column or prefix (a plugin
+    can read its own back, and a false positive only costs a refused paper run), not by the bare stem, which
+    prose uses for the coin, nor by an unprefixed column (`basis`), which is an ordinary word."""
     tree = ast.parse(src.text)
     helper = {h: h for h in group.helpers} | {
         a.asname or a.name: a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
@@ -169,7 +169,7 @@ def names_group(src: PluginSource, group) -> list[str]:
     hits = []                                       # (line, column, name)
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            names = _named_in(node.value, group, None if node in docs else stem)
+            names = _named_in(node.value, group, node in docs, stem)
         elif isinstance(node, ast.Attribute) and (node.attr in group.columns or node.attr in group.helpers
                                                   or node.attr.startswith(group.prefix)):
             names = [node.attr]
@@ -190,12 +190,13 @@ def _docstring(node: ast.AST) -> ast.Constant | None:
     return None
 
 
-def _named_in(s: str, group, stem: str | None) -> list[str]:
-    """The group's columns that `s` holds; else its prefix, if `s` holds it; else `stem`, if given and held."""
-    cols = [c for c in group.columns if c in s]
+def _named_in(s: str, group, docstring: bool, stem: str) -> list[str]:
+    """The group's columns that `s` holds; else its prefix, if `s` holds it; else, outside a docstring, `stem`,
+    if held. In a docstring only the prefixed columns count: an unprefixed one (`basis`) is a word."""
+    cols = [c for c in group.columns if c in s and not (docstring and not c.startswith(group.prefix))]
     if cols:
         return cols
-    for name in (group.prefix, stem):
+    for name in (group.prefix, None if docstring else stem):
         if name and name in s:
             return [name]
     return []
