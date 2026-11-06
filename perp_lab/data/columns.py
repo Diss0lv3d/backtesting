@@ -4,6 +4,8 @@ docs/superpowers/specs/2026-11-05-cross-coin-reference-design.md).
 A group's `rule` is part of the data identity once it is above 1, so a later change to its
 alignment, NaN or definition rule moves data_id. `column_group_problems` is the readiness check:
 every research month of every source must be complete in its manifest before a run reads it.
+`exam_required`, `exam_end` and `exam_problems` are a group's holdout-exam coverage: the exam
+(perp_lab.judge.exam) covers the `always` groups, and each `if_read` group the plugin reads.
 
 store imports this module inside `load_bars` only, never at module level: this module imports the
 groups' modules, perp_lab.data.reference and perp_lab.data.spot, which import store.
@@ -34,6 +36,8 @@ class ColumnGroup:
     synthetic: Callable                 # (bars, seed) -> {column: float64 array}; rng (seed, synthetic_id)
     sources: Callable                   # (cfg, symbols, tf) -> [(symbol, dataset directory name)]
     symbol_check: Callable | None = None    # (cfg, tf) -> [problem]: the source's own data, beyond its manifests
+    exam_end: Callable | None = None        # (cfg, symbols, tf) -> ms its data for those exam coins stops at, or None
+    exam_problems: Callable | None = None   # (cfg, symbols, tf, end) -> [problem]: its exam window's data
 
 
 class ReadinessRefused(ValueError):
@@ -51,7 +55,8 @@ GROUPS: tuple[ColumnGroup, ...] = (
                 synthetic_id=reference.SYNTHETIC_ID,
                 exam_required="always", helpers=("reference_frame",), paper_ready=False,
                 load_source=reference.load_source, attach=reference.attach, synthetic=reference.synthetic,
-                sources=reference.sources, symbol_check=reference.symbol_check),
+                sources=reference.sources, symbol_check=reference.symbol_check,
+                exam_end=reference.exam_end, exam_problems=reference.exam_problems),
     ColumnGroup(name="spot", columns=spot.COLUMNS, prefix=spot.PREFIX, rule=1, synthetic_id=spot.SYNTHETIC_ID,
                 exam_required="if_read", helpers=(), paper_ready=False,
                 load_source=spot.load_source, attach=spot.attach, synthetic=spot.synthetic, sources=spot.sources,

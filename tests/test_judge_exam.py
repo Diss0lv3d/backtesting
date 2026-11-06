@@ -75,7 +75,7 @@ def stub_run(mu, n_trades=30, seed=11, fail=False):
 
 
 def end_after(days):
-    return lambda cfg, symbols, tf: cfg.holdout_start + pd.Timedelta(days=days)
+    return lambda cfg, symbols, tf, groups=(): cfg.holdout_start + pd.Timedelta(days=days)
 
 
 def no_cost(cfg, src, tf, symbols, params, end):
@@ -83,7 +83,7 @@ def no_cost(cfg, src, tf, symbols, params, end):
     return 0.0
 
 
-def no_gaps(cfg, symbols, tf, end):
+def no_gaps(cfg, symbols, tf, end, groups=()):
     """Stand-in for the exam window's data check: exchange files throughout."""
     return []
 
@@ -97,12 +97,14 @@ def judged(cfg, name, outcomes, run, days=200):
     j = judge(cfg, name, "4h", validate=StubValidate(outcomes))
     if j["decision"] != "promote" or j.get("existing"):
         return j
-    return attempt_exam(cfg, j["id"], run=run, data_fn=no_gaps, end_fn=end_after(days), cost_fn=no_cost)
+    return attempt_exam(cfg, j["id"], run=run, data_fn=no_gaps, end_fn=end_after(days), cost_fn=no_cost,
+                        groups_fn=lambda *a: ())
 
 
 def exams(cfg, run, days=200):
     """`lab exam`, with a stand-in exam and window end."""
-    return exam_pending(cfg, run=run, data_fn=no_gaps, end_fn=end_after(days), cost_fn=no_cost)
+    return exam_pending(cfg, run=run, data_fn=no_gaps, end_fn=end_after(days), cost_fn=no_cost,
+                        groups_fn=lambda *a: ())
 
 
 ROOT_STRONG = {"donchian_atr": ("candidate", STRONG)}
@@ -772,7 +774,7 @@ def test_candles_not_from_exchange_files_keep_the_exam_pending_without_a_read(cf
     monkeypatch.setattr(jm, "dated_lookahead_failures", boom)
     seen = []
 
-    def ccxt_month(cfg, symbols, tf, end):
+    def ccxt_month(cfg, symbols, tf, end, groups=()):
         seen.append((symbols, tf, end))
         return [CCXT_MONTH]
     done = attempt_exam(cfg, j["id"], run=boom, data_fn=ccxt_month, end_fn=end_after(200), cost_fn=boom)
@@ -796,7 +798,7 @@ def test_a_retry_waits_for_exchange_data_without_using_an_attempt(cfg, plugins):
     crash(cfg, j["id"], days=200)
     seen = []
 
-    def ccxt_month(cfg, symbols, tf, end):
+    def ccxt_month(cfg, symbols, tf, end, groups=()):
         seen.append(end)
         return [CCXT_MONTH]
     done = attempt_exam(cfg, j["id"], run=boom, data_fn=ccxt_month, end_fn=boom, cost_fn=boom)
@@ -1059,7 +1061,9 @@ def test_a_short_window_waits_without_starting_a_worker(cfg, plugins, monkeypatc
     monkeypatch.setattr(jm, "dated_lookahead_failures", boom)
     monkeypatch.setattr(client, "check", boom)
     monkeypatch.setattr(client, "spawn", boom)
-    done = attempt_exam(cfg, j["id"], run=boom, data_fn=no_gaps, end_fn=end_after(100), cost_fn=boom)
+    # the exam's groups come first (exam_groups' reads_columns may start check workers): stood in here
+    done = attempt_exam(cfg, j["id"], run=boom, data_fn=no_gaps, end_fn=end_after(100), cost_fn=boom,
+                        groups_fn=lambda *a: ())
     assert (done["holdout_status"], done["holdout_reason"]) == ("pending", "too_short")
     assert budget.reads_used(cfg) == 0
 
@@ -1211,7 +1215,7 @@ def test_an_exam_holds_the_run_lock_exclusively_while_it_runs(cfg, plugins):
     j = _pending(cfg)
     seen = []
 
-    def end_fn(cfg_, syms, tf):
+    def end_fn(cfg_, syms, tf, groups=()):
         seen.append(_shared_nb_fails(cfg_))
         return cfg_.holdout_start + pd.Timedelta(days=200)
 
@@ -1226,7 +1230,7 @@ def test_an_exam_waits_for_a_running_judge(cfg, plugins):
     started, finished = threading.Event(), threading.Event()
     out = {}
 
-    def end_fn(cfg_, syms, tf):
+    def end_fn(cfg_, syms, tf, groups=()):
         started.set()
         return cfg_.holdout_start + pd.Timedelta(days=200)
 

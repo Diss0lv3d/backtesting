@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from perp_lab.config import TF_MS
-from perp_lab.data import store
+from perp_lab.data import archive, store
 
 log = logging.getLogger(__name__)
 
@@ -165,6 +165,29 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
 def sources(cfg, symbols: list[str], tf: str) -> list[tuple[str, str]]:
     """The (symbol, dataset) directories the readiness check reads: BTC's, whatever the coins."""
     return [(SYMBOL, tf), (SYMBOL, "funding"), (SYMBOL, "metrics")]
+
+
+def exam_end(cfg, symbols: list[str], tf: str) -> int:
+    """Where BTC's exam data stops, in ms, an exam coin or not, since every coin's bars carry its `btc_`
+    columns: its candles at `tf`, its funding, and its last metrics snapshot plus the publish lag, past which
+    `btc_oi_value` would carry that snapshot forward. Reads timestamps only, never prices."""
+    return min(archive.data_end(cfg, SYMBOL, (tf,)),
+               int(archive.stamps(cfg, SYMBOL, "metrics").max()) + store.OI_PUBLISH_LAG_MS)
+
+
+def exam_problems(cfg, symbols: list[str], tf: str, end: pd.Timestamp) -> list[str]:
+    """BTC's exam data problems in [holdout_start, end), an exam coin or not, each line ending in
+    " (BTC reference)": its months at `tf` with the exchange sources (its `btc_` volume and taker columns
+    would be NaN through a ccxt month), its days at `tf` with no candle, and its days with no metrics
+    snapshot (`btc_oi_value` would carry the last one over the whole day). When it is an exam coin the
+    exam checks its candles already, so only the metrics are. From manifests and timestamps only."""
+    start, note = cfg.holdout_start, " (BTC reference)"
+    out = []
+    if SYMBOL not in symbols:
+        months = archive.window_months(start, end)
+        out += archive.month_problems(cfg, SYMBOL, tf, months, end, archive.EXCHANGE_SOURCES, note)
+        out += archive.missing_days(cfg, SYMBOL, tf, start, end, note=note)
+    return out + archive.missing_days(cfg, SYMBOL, "metrics", start, end, "metrics snapshots", note)
 
 
 def symbol_check(cfg, tf: str) -> list[str]:
