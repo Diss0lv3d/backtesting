@@ -204,7 +204,7 @@ def _named_in(s: str, group, docstring: bool, stem: str) -> list[str]:
 
 # A run's failure that is the machine's or the pipe's, not the plugin's: a worker lost twice (`fresh_run`
 # retries a WorkerLost once, then raises PluginError with its kind) or a protocol error.
-_NOT_THE_PLUGINS = ("died", "timeout", "protocol")
+MACHINE_KINDS = ("died", "timeout", "protocol")
 
 
 def reads_columns(cfg, src: PluginSource, group, params: dict | None = None) -> bool:
@@ -237,7 +237,7 @@ def reads_columns(cfg, src: PluginSource, group, params: dict | None = None) -> 
             try:
                 a, b = (f.result().decisions for f in pair)
             except PluginError as e:
-                if e.kind in _NOT_THE_PLUGINS:
+                if e.kind in MACHINE_KINDS:
                     raise
                 return True
             if a.n_actions() == b.n_actions() == 0 or not a.same(b):

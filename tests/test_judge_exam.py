@@ -1061,9 +1061,7 @@ def test_a_short_window_waits_without_starting_a_worker(cfg, plugins, monkeypatc
     monkeypatch.setattr(jm, "dated_lookahead_failures", boom)
     monkeypatch.setattr(client, "check", boom)
     monkeypatch.setattr(client, "spawn", boom)
-    # the exam's groups come first (exam_groups' reads_columns may start check workers): stood in here
-    done = attempt_exam(cfg, j["id"], run=boom, data_fn=no_gaps, end_fn=end_after(100), cost_fn=boom,
-                        groups_fn=lambda *a: ())
+    done = attempt_exam(cfg, j["id"], run=boom, data_fn=no_gaps, end_fn=end_after(100), cost_fn=boom)
     assert (done["holdout_status"], done["holdout_reason"]) == ("pending", "too_short")
     assert budget.reads_used(cfg) == 0
 

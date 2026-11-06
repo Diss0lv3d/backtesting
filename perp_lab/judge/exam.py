@@ -49,19 +49,33 @@ class ExamResult:
     trades: pd.DataFrame
 
 
+def _checked(groups) -> tuple[columns.ColumnGroup, ...]:
+    """`groups` as a tuple. ValueError when one's `exam_required` is neither "always" nor "if_read": the
+    exam can't tell whether to cover it, so it refuses rather than leave the group out."""
+    groups = tuple(groups)
+    bad = [f"{g.name} ({g.exam_required!r})" for g in groups if g.exam_required not in ("always", "if_read")]
+    if bad:
+        raise ValueError(f"column group exam_required must be 'always' or 'if_read': {', '.join(bad)}")
+    return groups
+
+
+def always_groups() -> tuple[columns.ColumnGroup, ...]:
+    """The registered `always` groups (the reference): what every exam covers, whatever the plugin reads."""
+    return tuple(g for g in _checked(columns.GROUPS) if g.exam_required == "always")
+
+
 def exam_groups(cfg, src: PluginSource, params: dict) -> tuple[columns.ColumnGroup, ...]:
     """The column groups `src`'s exam covers, in `columns.GROUPS` order: every `always` group (the
     reference), and each `if_read` group `plugins.reads_columns` says it reads at `params` (or can't
     rule out). That may run the plugin in sandbox workers, on the lookahead check's synthetic bars
-    only, never on holdout data."""
-    return tuple(g for g in columns.GROUPS
-                 if g.exam_required == "always"
-                 or (g.exam_required == "if_read" and reads_columns(cfg, src, g, params)))
+    only, never on holdout data. Every group's `exam_required` is checked before any run."""
+    return tuple(g for g in _checked(columns.GROUPS)
+                 if g.exam_required == "always" or reads_columns(cfg, src, g, params))
 
 
 def _covered(groups) -> tuple[columns.ColumnGroup, ...]:
-    """`groups`, or when None the `always` groups: what every exam covers, whatever the plugin reads."""
-    return tuple(g for g in columns.GROUPS if g.exam_required == "always") if groups is None else tuple(groups)
+    """`groups`, or when None the `always` groups, each `exam_required` checked."""
+    return always_groups() if groups is None else _checked(groups)
 
 
 def window_end(cfg, symbols: list[str], tf: str, groups=None) -> pd.Timestamp:
