@@ -126,11 +126,12 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
     deviation (floored), z standard normal and d a drift of ±0.3·σ held for 300-bar blocks, so BTC trends
     apart from the coin and trend filters switch. Quote volume is heavier on big moves, funding changes
     every 8 hours of bar time with the odd spike, and OI is NaN on the first 300 rows, as real BTC OI
-    is before 2020-09-01. The six bar columns are NaN on the row before alternate cuts of the lookahead
-    check (`causality.NAN_CUTS`, the first and third), as real BTC's are on a zero-trade bar (X6): the cut
-    run ends on that NaN and the full run has BTC's next bar after it, so a fill from later bars (`bfill`,
-    `interpolate`) is caught. Only alternate cuts, because a next-bar peek shows only on the cut run's last
-    row: at the other two cuts BTC's bar is set there, so a peek gated on a `btc_` column can show."""
+    is before 2020-09-01. The six bar columns are NaN on the row before the lookahead check's first cut
+    only (`causality.NAN_CUTS`), as real BTC's are on a zero-trade bar (X6): the cut run ends on that NaN
+    and the full run has BTC's next bar after it, so a fill from later bars (`bfill`, `interpolate`) is
+    caught. Only the first, because a next-bar peek shows only on the cut run's last row: at the later cuts
+    BTC's bar is set there, so a peek gated on a `btc_` column can show. A rolling window over them is NaN
+    until it clears that row, so a gate on one longer than about 2100 bars is left to the dated check."""
     from perp_lab.validate.causality import NAN_CUTS  # causality imports this module
     rng = np.random.default_rng((seed, SYNTHETIC_ID))
     n = len(bars)

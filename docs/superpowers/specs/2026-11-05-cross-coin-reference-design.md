@@ -230,10 +230,11 @@ value at row t uses the coin's rows up to t only:
 - `btc_funding_last`: a new value every 8 hours of bar time, 0.0001 + N(0, 0.0001), one in 15 a ±0.001 spike.
 - `btc_oi_value`: a log random walk times `btc_close`, NaN on the first 300 rows, as real BTC OI is NaN before
   2020-09-01, so a plugin that breaks on NaN breaks here. The first cut (400) is past it.
-- The six bar columns are NaN on row k−1 for alternate cuts only (`causality.NAN_CUTS`, the first and third), as
-  real BTC's are on a zero-trade bar (X6): a fill from later bars (`bfill`, `interpolate`) is caught at those cuts,
-  and since a next-bar peek shows only on the cut run's last row, the other two, where BTC's bar is set, still
-  catch a peek gated on a `btc_` column.
+- The six bar columns are NaN on row k−1 for the first cut only (`causality.NAN_CUTS`, row 399), as real BTC's
+  are on a zero-trade bar (X6): a fill from later bars (`bfill`, `interpolate`) is caught there, and since a
+  next-bar peek shows only on the cut run's last row, the later cuts, where BTC's bar is set, still catch a peek
+  gated on a `btc_` column. A rolling window that spans row 399 stays NaN until it clears it, so a gate on one is
+  seen at 1100 up to 700 bars and at 2500 up to 2100; a longer window is seen only by the dated check.
 
 **`perp_lab/validate/causality.py`.**
 - `with_moving_columns` adds each group's columns through `group.synthetic` when any of them is missing, all-NaN
@@ -248,8 +249,10 @@ value at row t uses the coin's rows up to t only:
 
 What gets caught: `btc_close.shift(-1)` or any negative shift (row k−1 is NaN in the cut run and set in the full
 one); a full-sample beta or mean over a `btc_` column; a centred rolling window; a peek through `ctx._a` gated on
-`ctx.symbol == "BTCUSDT"`. What isn't new: the check can't see a branch gated on another real symbol's name; that
-hole exists today for every column and is bounded by the exam (G3).
+`ctx.symbol == "BTCUSDT"`; a `bfill` or `interpolate` over the `btc_` bar columns; a next-bar peek gated on a
+`btc_` bar column, including on a rolling window of one up to the bounds above. What isn't new: the check can't
+see a branch gated on another real symbol's name; that hole exists today for every column and is bounded by the
+exam (G3).
 
 **`perp_lab/validate/synthetic_market.py`.** `SYMBOLS = ("BTCUSDT", "SYN2", "SYN3", "SYN4")`: the reference coin
 keeps SYN1's path (seed 100), so its prices equal version 2's. SYN2 to SYN4 mix their 5m log-returns with it,
@@ -414,7 +417,10 @@ Tests use temporary data dirs, never `data/`, `runs/`, `proposer/` or `lab.db`.
    `np.polyfit` beta caught; a peek through `ctx._a` gated on `ctx.symbol == "BTCUSDT"` caught by "as BTC" only;
    a plugin that raises when `close == btc_close` fails "as BTC" only; a peek on `btc_close` past `holdout_start`
    caught by the dated check; a plugin whose peek is gated on a grid value fails "<params> as BTC" when given
-   those params; an honest plugin using `rolling_beta` passes; a plugin that never trades BTC passes.
+   those params; an honest plugin using `rolling_beta` passes; a plugin that never trades BTC passes; a `bfill`
+   or `interpolate` over `btc_close` caught at the first cut, and an `ffill` passes; a next-bar peek gated on
+   `btc_close` rising, on `btc_close > 0` and on `btc_close` below its 1200-bar mean caught by the default check
+   at the first cut where the gate opens.
 6. **Synthetic data.** BTC returns correlate with the coin's at 0.6 to 0.8; every `btc_` column is non-constant;
    `btc_oi_value` is NaN on exactly the first 300 rows; changing the coin's rows after t leaves every `btc_` value
    up to t unchanged; `reference.SYMBOL` equals `config/lab.yaml`'s universe format for BTC.
