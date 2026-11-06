@@ -8,8 +8,8 @@ import pytest
 
 from perp_lab.data import reference
 from perp_lab.plugins import PluginSource
-from perp_lab.validate.causality import (CUTS, EXTRAS_SEED, as_reference_coin, causality_failures, synthetic_bars,
-                                         with_moving_columns)
+from perp_lab.validate.causality import (CUTS, EXTRAS_SEED, NAN_CUTS, as_reference_coin, causality_failures,
+                                         check_bars, synthetic_bars, with_moving_columns)
 from tests.test_causality import peeker
 from tests.test_store import cfg  # noqa: F401
 
@@ -132,8 +132,8 @@ OWN_SIG = "        return bars[[]].assign(sig=np.sign(bars.close - bars.close.sh
 
 @pytest.mark.parametrize("fill", ["bfill", "interpolate"])
 def test_a_fill_from_later_btc_bars_is_reported(cfg, fill):
-    # the synthetic bar columns are NaN on the row before each cut: the cut run can't fill that row from
-    # the bar after it, the full run can
+    # the synthetic bar columns are NaN on the row before each of NAN_CUTS: the cut run can't fill that row
+    # from the bar after it, the full run can
     src = from_momentum(f"{fill}_btc", MOMENTUM.replace(OWN_SIG, FILLED.replace("FILL", fill)))
     fails = causality_failures(cfg, src)
     assert labels(fails) == ["defaults"]                         # as BTC, btc_close is its own close: no NaN
@@ -143,6 +143,37 @@ def test_a_fill_from_later_btc_bars_is_reported(cfg, fill):
 def test_a_forward_fill_over_btc_columns_passes(cfg):
     src = from_momentum("ffill_btc", MOMENTUM.replace(OWN_SIG, FILLED.replace("FILL", "ffill")))
     assert causality_failures(cfg, src) == []
+
+
+# the momentum's signal from the next close where WHEN holds on BTC's bar, its own momentum elsewhere
+GATED_PEEK = ("        own = np.sign(bars.close - bars.close.shift(1))\n"
+              "        peek = np.sign(bars.close.shift(-1) - bars.close).where(WHEN, own)\n"
+              "        return bars[[]].assign(sig=peek, atr=atr(bars, 14))\n")
+
+
+def open_cuts(when: str, bars: pd.DataFrame) -> list[int]:
+    """The cuts k at whose row k - 1 the gate `when` (a GATED_PEEK condition) holds on `bars`."""
+    gate = eval(when, {"bars": bars})                      # the fixture's own expression, so the two can't drift
+    return [k for k in CUTS if gate.iloc[k - 1]]
+
+
+@pytest.mark.parametrize("when", [
+    "bars.btc_close > bars.btc_close.shift(1)",
+    "bars.btc_close > 0",
+    "bars.btc_close < bars.btc_close.rolling(1200).mean()",   # BTC below its 50-day SMA at 1h
+], ids=["btc_up", "btc_set", "btc_below_sma_1200"])
+def test_a_next_bar_peek_gated_on_a_btc_bar_column_is_reported(cfg, when):
+    # the peek shows only on the cut run's last row, k - 1; the btc_ bar columns are NaN there only before
+    # NAN_CUTS, and a rolling window over them is set again once it clears that row, so the gate can open at a
+    # later cut
+    bars = check_bars()
+    cut = next((k for k in open_cuts(when, bars) if k not in NAN_CUTS), None)
+    assert cut is not None                                   # the gate opens where the default check can see it
+    as_btc = ["defaults as BTC"] if open_cuts(when, as_reference_coin(bars)) else []
+    src = from_momentum("btc_gated_peek", MOMENTUM.replace(OWN_SIG, GATED_PEEK.replace("WHEN", when)))
+    fails = causality_failures(cfg, src)
+    assert labels(fails) == ["defaults", *as_btc]
+    assert fails[0].startswith(f"defaults: AssertionError: features at cut {cut}")
 
 
 def test_an_honest_rolling_beta_plugin_passes(cfg):
@@ -273,7 +304,7 @@ def test_every_synthetic_btc_column_is_float64_and_moves():
     for c, v in btc.items():
         assert v.dtype == np.float64 and len(v) == len(bars) and pd.Series(v).nunique() > 1, c
     live = np.ones(len(bars), dtype=bool)
-    live[[k - 1 for k in CUTS]] = False                       # NaN bar rows, pinned below
+    live[[k - 1 for k in NAN_CUTS]] = False                   # NaN bar rows, pinned below
     for c in reference.COLUMNS[:-1]:
         assert np.isfinite(btc[c][live]).all(), c
     o, h, low, cl = (btc[reference.PREFIX + c][live] for c in ("open", "high", "low", "close"))
@@ -281,14 +312,14 @@ def test_every_synthetic_btc_column_is_float64_and_moves():
     assert (btc["btc_taker_buy_quote_volume"][live] < btc["btc_quote_volume"][live]).all()
 
 
-@pytest.mark.parametrize("n, gaps", [(3000, [399, 1099, 1776, 2499]), (1500, [399, 1099]), (401, [399]),
-                                     (400, [])])
-def test_synthetic_btc_bar_columns_are_nan_on_the_row_before_each_cut(n, gaps):
-    # as real BTC's are on a zero-trade bar (X6); the cut run then ends on a NaN its full run has a bar after
-    assert gaps == [k - 1 for k in CUTS if k < n]
+@pytest.mark.parametrize("n, gaps", [(3000, [399]), (1778, [399]), (401, [399]), (400, [])])
+def test_synthetic_btc_bar_columns_are_nan_on_the_row_before_the_first_cut_only(n, gaps):
+    # as real BTC's are on a zero-trade bar (X6): at CUTS[0] the cut run ends on a NaN its full run has a bar
+    # after; at the later cuts it ends on a set bar, so a peek gated on it can show
     btc = reference.synthetic(synthetic_bars(n=n), EXTRAS_SEED)
     for c in reference.BAR_COLUMNS:
         assert np.flatnonzero(np.isnan(btc[reference.PREFIX + c])).tolist() == gaps, c
+    assert NAN_CUTS == [CUTS[0]] and gaps == [k - 1 for k in NAN_CUTS if k < n]
     assert np.isfinite(btc["btc_funding_last"]).all()          # the as-of two keep their own rule
     assert np.isfinite(btc["btc_oi_value"][300:]).all()
 
