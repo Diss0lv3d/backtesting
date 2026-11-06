@@ -44,7 +44,7 @@ def _syms(cfg, symbols: Optional[str]) -> list[str]:
 @app.command()
 def backfill(symbols: Optional[str] = typer.Option(None, help="comma list, e.g. BTC,ETH"),
              tfs: Optional[str] = typer.Option(None, help="comma list of timeframes"),
-             datasets: Optional[str] = typer.Option(None, help="klines,fundingRate,metrics"),
+             datasets: Optional[str] = typer.Option(None, help="klines,fundingRate,metrics,spotKlines"),
              start: Optional[str] = None, workers: Optional[int] = None, config: Optional[str] = CfgOpt):
     """Backfill from data.binance.vision → parquet (idempotent, resumable)."""
     from perp_lab.data.vision import backfill as bf

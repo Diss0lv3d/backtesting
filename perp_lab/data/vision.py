@@ -2,6 +2,7 @@
 
 Layout:
     data/{SYMBOL}/{tf}/{YYYY-MM}.parquet        klines
+    data/{SYMBOL}/spot/{tf}/{YYYY-MM}.parquet   Binance spot klines (same schema as klines)
     data/{SYMBOL}/funding/{YYYY-MM}.parquet     funding settlements
     data/{SYMBOL}/metrics/{YYYY-MM}.parquet     OI / long-short metrics (5m)
     data/{SYMBOL}/{dataset}/_manifest.json      {month: {complete, source, rows}}
@@ -32,6 +33,8 @@ import requests
 log = logging.getLogger(__name__)
 
 BASE = "https://data.binance.vision/data/futures/um"
+SPOT_BASE = "https://data.binance.vision/data/spot"
+SPOT_TIMEFRAMES = ("15m", "1h", "4h")
 LIST_URL = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 
 KLINE_COLS = [
@@ -158,7 +161,7 @@ def parse_metrics(df: pd.DataFrame) -> pd.DataFrame:
 @dataclass
 class Job:
     symbol: str
-    dataset: str          # klines | fundingRate | metrics
+    dataset: str          # klines | fundingRate | metrics | spotKlines
     tf: str | None
     month: pd.Period
     first: pd.Period | None = None   # earliest month the archive holds; earlier months are absent
@@ -170,6 +173,7 @@ def first_archive_month(symbol: str, dataset: str, tf: str | None, max_retries: 
     S3 lists keys in ascending order, so the first page holds the earliest file.
     """
     prefix = {"klines": f"data/futures/um/monthly/klines/{symbol}/{tf}/",
+              "spotKlines": f"data/spot/monthly/klines/{symbol}/{tf}/",
               "fundingRate": f"data/futures/um/monthly/fundingRate/{symbol}/",
               "metrics": f"data/futures/um/daily/metrics/{symbol}/"}[dataset]
     try:
@@ -203,6 +207,8 @@ def _months(start: pd.Timestamp, end: pd.Timestamp) -> list[pd.Period]:
 
 
 def dataset_dir(data_dir: Path, symbol: str, dataset: str, tf: str | None) -> Path:
+    if dataset == "spotKlines":
+        return data_dir / symbol / "spot" / tf
     sub = {"klines": tf, "fundingRate": "funding", "metrics": "metrics"}[dataset]
     return data_dir / symbol / sub
 
@@ -234,6 +240,8 @@ def _monthly_url(job: Job) -> str:
     s = job.symbol
     if job.dataset == "klines":
         return f"{BASE}/monthly/klines/{s}/{job.tf}/{s}-{job.tf}-{m}.zip"
+    if job.dataset == "spotKlines":
+        return f"{SPOT_BASE}/monthly/klines/{s}/{job.tf}/{s}-{job.tf}-{m}.zip"
     if job.dataset == "fundingRate":
         return f"{BASE}/monthly/fundingRate/{s}/{s}-fundingRate-{m}.zip"
     raise ValueError(job.dataset)
@@ -244,13 +252,15 @@ def _daily_url(job: Job, day: pd.Timestamp) -> str:
     s = job.symbol
     if job.dataset == "klines":
         return f"{BASE}/daily/klines/{s}/{job.tf}/{s}-{job.tf}-{d}.zip"
+    if job.dataset == "spotKlines":
+        return f"{SPOT_BASE}/daily/klines/{s}/{job.tf}/{s}-{job.tf}-{d}.zip"
     if job.dataset == "metrics":
         return f"{BASE}/daily/metrics/{s}/{s}-metrics-{d}.zip"
     raise ValueError(job.dataset)
 
 
-_PARSERS = {"klines": parse_klines, "fundingRate": parse_funding, "metrics": parse_metrics}
-_SORT_KEY = {"klines": "open_time", "fundingRate": "funding_time", "metrics": "create_time"}
+_PARSERS = {"klines": parse_klines, "spotKlines": parse_klines, "fundingRate": parse_funding, "metrics": parse_metrics}
+_SORT_KEY = {"klines": "open_time", "spotKlines": "open_time", "fundingRate": "funding_time", "metrics": "create_time"}
 
 
 def run_job(job: Job, data_dir: Path, max_retries: int, today: pd.Timestamp) -> tuple[str, int]:
@@ -315,6 +325,8 @@ def backfill(cfg, symbols: list[str], tfs: list[str], datasets: list[str],
         for ds in datasets:
             if ds == "klines":
                 jobs += [Job(s, ds, tf, m) for tf in tfs for m in months]
+            elif ds == "spotKlines":
+                jobs += [Job(s, ds, tf, m) for tf in tfs if tf in SPOT_TIMEFRAMES for m in months]
             elif ds in ("fundingRate", "metrics"):
                 jobs += [Job(s, ds, None, m) for m in months]
             else:

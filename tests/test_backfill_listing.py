@@ -118,3 +118,100 @@ def test_candles_without_a_trade_count_are_never_dropped(tmp_path):
     cfg = market_config(tmp_path)
     write_1h(cfg, [5, 5, np.nan, np.nan])                  # ccxt-stitched
     assert len(load_candles(cfg, "BTCUSDT", "1h")) == 4
+
+
+# ---- spotKlines -----------------------------------------------------------------------------------------------
+
+def _csv(rows):
+    return pd.DataFrame(rows, dtype=str)
+
+
+def _spot_rows(t0_ms, n=3, step=3_600_000, mult=1):
+    return [[(t0_ms + i * step) * mult, "1", "2", "0.5", "1.5", "10", (t0_ms + i * step + step - 1) * mult,
+             "15", "7", "4", "6", "0"] for i in range(n)]
+
+
+def test_spot_dataset_dir(tmp_path):
+    assert vision.dataset_dir(tmp_path, "ETHUSDT", "spotKlines", "1h") == tmp_path / "ETHUSDT" / "spot" / "1h"
+
+
+def test_spot_monthly_and_daily_urls():
+    job = vision.Job("ETHUSDT", "spotKlines", "1h", pd.Period("2025-03", "M"))
+    assert vision._monthly_url(job) == \
+        "https://data.binance.vision/data/spot/monthly/klines/ETHUSDT/1h/ETHUSDT-1h-2025-03.zip"
+    assert vision._daily_url(job, T("2025-03-05")) == \
+        "https://data.binance.vision/data/spot/daily/klines/ETHUSDT/1h/ETHUSDT-1h-2025-03-05.zip"
+
+
+def test_spot_listing_prefix(monkeypatch):
+    seen = []
+    monkeypatch.setattr(vision, "_get", lambda url, r=6: seen.append(url) or XML.encode())
+    vision.first_archive_month("ETHUSDT", "spotKlines", "1h", 1)
+    assert "prefix=data/spot/monthly/klines/ETHUSDT/1h/" in seen[0]
+
+
+def test_spot_jobs_per_timeframe_skip_5m(tmp_path, monkeypatch):
+    cfg = market_config(tmp_path)
+    looks, _ = stub(monkeypatch, None)
+    vision.backfill(cfg, ["ETHUSDT"], ["5m", "1h", "4h"], ["spotKlines"], start=T("2025-01-01"),
+                    end=T("2025-01-31"), workers=1)
+    assert sorted(looks) == [("ETHUSDT", "spotKlines", "1h"), ("ETHUSDT", "spotKlines", "4h")]
+
+
+def test_spot_months_before_the_first_file_are_absent(tmp_path, monkeypatch):
+    cfg = market_config(tmp_path)
+    looks, urls = stub(monkeypatch, pd.Period("2025-03", "M"))
+    run = lambda: vision.backfill(cfg, ["ETHUSDT"], ["1h"], ["spotKlines"], start=T("2025-01-01"),  # noqa: E731
+                                  end=T("2025-03-31"), workers=1)
+    assert run()["absent"] == 2 and len(looks) == 1
+    assert not [u for u in urls if "2025-01" in u or "2025-02" in u]
+    man = json.loads((cfg.data_dir / "ETHUSDT" / "spot" / "1h" / "_manifest.json").read_text())
+    assert man["2025-01"] == man["2025-02"] == {"complete": True, "source": "absent", "rows": 0}
+    urls.clear()
+    again = run()
+    assert again["absent"] == 0 and again["skip"] == 2
+    assert not [u for u in urls if "2025-01" in u or "2025-02" in u]
+
+
+def test_spot_month_written_with_the_candle_schema(tmp_path, monkeypatch):
+    cfg = market_config(tmp_path)
+    t0 = T("2025-03-01").value // 10**6
+    monkeypatch.setattr(vision, "first_archive_month", lambda *a, **kw: None)
+    monkeypatch.setattr(vision, "_fetch_zip_csv", lambda url, *a, **kw: _csv(_spot_rows(t0)))
+    s = vision.backfill(cfg, ["ETHUSDT"], ["1h"], ["spotKlines"], start=T("2025-03-01"), end=T("2025-03-31"),
+                        workers=1)
+    assert s["ok"] == 1
+    d = cfg.data_dir / "ETHUSDT" / "spot" / "1h"
+    assert list(pd.read_parquet(d / "2025-03.parquet").columns) == vision.CANDLE_SCHEMA
+    man = json.loads((d / "_manifest.json").read_text())
+    assert man["2025-03"] == {"complete": True, "source": "monthly", "rows": 3}
+
+
+def test_spot_microsecond_file_parses_to_ms(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import zipfile
+    cfg = market_config(tmp_path)
+    t0 = T("2025-03-01").value // 10**6
+    rows = _spot_rows(t0, n=2, mult=1000)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("x.csv", "\n".join(",".join(map(str, r)) for r in rows))
+    blob = buf.getvalue()
+
+    def get(url, r=6):
+        return (hashlib.sha256(blob).hexdigest() + "  x.zip").encode() if url.endswith(".CHECKSUM") else blob
+    monkeypatch.setattr(vision, "_get", get)
+    monkeypatch.setattr(vision, "first_archive_month", lambda *a, **kw: None)
+    vision.backfill(cfg, ["ETHUSDT"], ["1h"], ["spotKlines"], start=T("2025-03-01"), end=T("2025-03-31"),
+                    workers=1)
+    df = pd.read_parquet(cfg.data_dir / "ETHUSDT" / "spot" / "1h" / "2025-03.parquet")
+    assert df.open_time.tolist() == [t0, t0 + 3_600_000]
+    assert (df.close_time == df.open_time + 3_599_999).all()
+
+
+def test_config_backfills_spot():
+    import yaml
+    from pathlib import Path
+    raw = yaml.safe_load((Path(__file__).resolve().parents[1] / "config" / "lab.yaml").read_text())
+    assert "spotKlines" in raw["backfill"]["datasets"]

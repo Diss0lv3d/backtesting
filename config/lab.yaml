@@ -27,7 +27,7 @@ column_groups:
   reference: {known_gaps: []}
 
 backfill:
-  datasets: [klines, fundingRate, metrics]   # aggTrades: not wired (optional, huge)
+  datasets: [klines, fundingRate, metrics, spotKlines]   # aggTrades: not wired (optional, huge)
   workers: 8
   max_retries: 6
 
