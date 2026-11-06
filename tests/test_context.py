@@ -207,8 +207,9 @@ def test_plugin_columns_hold_spot():
 def test_piles_mentions_spot_and_basis(cfg):
     text = " ".join(context.static_context(cfg, load(cfg)).split())
     assert ("The synthetic bars' taker, open-interest, volume and spot columns are random walks, their `basis` "
-            "has slow and fast mean-reverting parts, their spot columns are NaN over two stretches, their `btc_` "
-            "columns are a synthetic BTC that moves with the coin, and they have no `slippage` column.") in text
+            "has slow and fast mean-reverting parts, their spot columns are NaN over two stretches and on the one "
+            "row before the lookahead check's first cut, their `btc_` columns are a synthetic BTC that moves with "
+            "the coin, and they have no `slippage` column.") in text
 
 
 def test_static_context_under_cap(cfg):

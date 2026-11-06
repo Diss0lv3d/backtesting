@@ -337,9 +337,9 @@ def _piles(cfg, pc: ProposerConfig) -> str:
             "open idea's with the advice to refine or port that idea instead. A mirror (the same overlap with one "
             "side flipped) of any judged plugin is refused. The synthetic bars' taker, open-interest, volume and "
             "spot columns are random walks, their `basis` has slow and fast mean-reverting parts, their spot "
-            "columns are NaN over two stretches, their `btc_` columns are a synthetic BTC that moves with the "
-            "coin, and they have no `slippage` column. The lookahead check also runs each plugin as BTCUSDT, its "
-            "`btc_` columns equal to its own.",
+            "columns are NaN over two stretches and on the one row before the lookahead check's first cut, their "
+            "`btc_` columns are a synthetic BTC that moves with the coin, and they have no `slippage` column. The "
+            "lookahead check also runs each plugin as BTCUSDT, its `btc_` columns equal to its own.",
             f"- A refused reply comes back with the errors. A proposal gets {pc.fixups_per_proposal} fix-ups; then it "
             "is dropped, with no trial.",
         ]),
