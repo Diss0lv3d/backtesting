@@ -30,13 +30,18 @@ def files(d: Path) -> list[Path]:
     return found
 
 
-def stamps(cfg, symbol: str, dataset: str) -> np.ndarray:
+def stamps(cfg, symbol: str, dataset: str, traded: bool = False) -> np.ndarray:
     """Every row's time stamp in `symbol`'s `dataset` files as int64 ms: `open_time` for candles, `create_time`
-    for metrics (scaled from seconds where written so, as `store.load_metrics` does). That column only,
-    never a price. FileNotFoundError when there are no files."""
+    for metrics (scaled from seconds where written so, as `store.load_metrics` does). With `traded`, the
+    candles with `trades` above 0 only (X6: a zero-trade candle, or one with NaN trades, is no traded bar),
+    reading that column too. Never a price. FileNotFoundError when there are no files."""
     col = "create_time" if dataset == "metrics" else "open_time"
-    t = np.concatenate([pd.read_parquet(f, columns=[col])[col].to_numpy("int64")
-                        for f in files(cfg.data_dir / symbol / dataset)])
+    parts = []
+    for f in files(cfg.data_dir / symbol / dataset):
+        df = pd.read_parquet(f, columns=[col, "trades"] if traded else [col])
+        t = df[col].to_numpy("int64")
+        parts.append(t[df.trades.to_numpy("float64") > 0] if traded else t)
+    t = np.concatenate(parts)
     return np.where(t >= 10**11, t, t * 1000) if dataset == "metrics" else t
 
 
@@ -87,13 +92,14 @@ def month_problems(cfg, symbol: str, dataset: str, months, end: pd.Timestamp, so
 
 
 def missing_days(cfg, symbol: str, dataset: str, start: pd.Timestamp, end: pd.Timestamp, what: str = "candles",
-                 note: str = "") -> list[str]:
+                 note: str = "", traded: bool = False) -> list[str]:
     """The UTC days in [start, end) without a single row of `symbol`'s `dataset` (a timeframe's candles, or
     "metrics"), as runs ("SYMBOL tf 2026-09-10 to 2026-09-12: no candles (3 days)"), each line ending in
-    `note`; reads the time stamps only (`stamps`), never a price."""
+    `note`. With `traded`, a day needs a candle with trades: a day of zero-trade candles counts as missing.
+    Reads the time stamps (and with `traded`, `trades`) only (`stamps`), never a price."""
     lo, hi = start.value // 10**6, end.value // 10**6
     try:
-        t = stamps(cfg, symbol, dataset)
+        t = stamps(cfg, symbol, dataset, traded)
     except FileNotFoundError:
         t = np.empty(0, dtype="int64")
     t = t[(t >= lo) & (t < hi)]

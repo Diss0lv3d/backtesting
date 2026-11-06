@@ -10,6 +10,9 @@ the perp bar has no trades; NaN perp trades (ccxt-stitched) are not zero. No for
 Unlike the reference, whose one coin's data every coin shares, each coin reads its own spot. So the group's
 source is a lazy `SpotSource` handle holding no rows: `attach` reads that coin's spot through it, cut at the
 end resolved (and holdout-guarded) when the handle was built.
+
+The holdout exam covers spot only for a plugin that reads it (`exam_required: if_read`): `exam_end` and
+`exam_problems` check the exam coins' own spot, each from timestamps, `trades` and manifests, never a price.
 """
 from __future__ import annotations
 
@@ -19,7 +22,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from perp_lab.data import store
+from perp_lab.config import TF_MS
+from perp_lab.data import archive, store
 
 log = logging.getLogger(__name__)
 
@@ -215,6 +219,41 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
 def sources(cfg, symbols: list[str], tf: str) -> list[tuple[str, str]]:
     """The (symbol, dataset) directories the readiness check reads: each coin's own spot folder at `tf`."""
     return [(s, dataset(tf)) for s in symbols]
+
+
+def exam_end(cfg, symbols: list[str], tf: str) -> int | None:
+    """Where the exam coins' spot at `tf` stops, in ms: the earliest, over the coins not excluded, of the
+    last spot candle's close (its `open_time` + `tf`), zero-trade candles included (a day of them is an
+    `exam_problems` line). A coin with no spot files stops it at holdout_start, so a spot reader's window is
+    too short. None when every exam coin is excluded. Reads `open_time` only, past holdout_start too, as
+    the exam's other window checks do, before any read is minted."""
+    ends = []
+    for s in symbols:
+        if excluded(cfg, s):
+            continue
+        try:
+            ends.append(int(archive.stamps(cfg, s, dataset(tf)).max()) + TF_MS[tf])
+        except FileNotFoundError:
+            ends.append(int(cfg.holdout_start.value // 10**6))
+    return min(ends) if ends else None
+
+
+def exam_problems(cfg, symbols: list[str], tf: str, end: pd.Timestamp) -> list[str]:
+    """The spot problems of each exam coin not excluded, in [holdout_start, end): a month of its
+    `spot/<tf>` manifest not from exchange files (`monthly`, `daily`), or one the window covers to its end
+    that isn't complete; then its UTC days without a spot candle with trades (X6: a day of flat zero-trade
+    candles, a delisting or a maintenance, leaves the spot columns and `basis` NaN all day). From the
+    manifest, `open_time` and `trades` only."""
+    start = cfg.holdout_start
+    months = archive.window_months(start, end)
+    out = []
+    for s in symbols:
+        if excluded(cfg, s):
+            continue
+        out += archive.month_problems(cfg, s, dataset(tf), months, end, archive.EXCHANGE_SOURCES, "")
+        out += archive.missing_days(cfg, s, dataset(tf), start, end, what="spot candles with trades",
+                                    traded=True)
+    return out
 
 
 def symbol_check(cfg, tf: str) -> list[str]:

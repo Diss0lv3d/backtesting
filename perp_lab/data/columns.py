@@ -60,7 +60,7 @@ GROUPS: tuple[ColumnGroup, ...] = (
     ColumnGroup(name="spot", columns=spot.COLUMNS, prefix=spot.PREFIX, rule=1, synthetic_id=spot.SYNTHETIC_ID,
                 exam_required="if_read", helpers=(), paper_ready=False,
                 load_source=spot.load_source, attach=spot.attach, synthetic=spot.synthetic, sources=spot.sources,
-                symbol_check=spot.symbol_check),
+                symbol_check=spot.symbol_check, exam_end=spot.exam_end, exam_problems=spot.exam_problems),
 )
 
 
