@@ -1,6 +1,7 @@
 """The BTC reference in the judge, the holdout exam and the CLI (spec
 docs/superpowers/specs/2026-11-05-cross-coin-reference-design.md: X3, "Judging" (Exam), "Paper and live path"
 (Part A); Testing 10, 12 and 14; Review Focus 4 of the cross-coin plan; ledger rulings R6 and R7)."""
+import asyncio
 import dataclasses
 import json
 
@@ -17,13 +18,14 @@ from perp_lab.data.store import load_candles
 from perp_lab.holdout import issue_holdout_token
 from perp_lab.judge import exam
 from perp_lab.judge.judge import JudgeRefused, judge
+from perp_lab.paper.runner import PaperRunner
 from perp_lab.plugins import PluginSource
 from perp_lab.proposer import context
-from perp_lab.sandbox import session
+from perp_lab.sandbox import client, session
 from perp_lab.store import db
 from perp_lab.validate import walkforward as wfm
 from tests.conftest import CANDLE_COLS, REPO, make_bars, market_config
-from tests.judge_fixtures import STRONG, StubValidate, plugins  # noqa: F401
+from tests.judge_fixtures import STRONG, StubValidate, add_plugin, plugins  # noqa: F401
 from tests.test_exam import END, _drop, _manifest
 from tests.test_stream import assert_same_exam, batch_exam
 
@@ -284,3 +286,57 @@ def test_streamed_equals_batch_for_btc_reader(tmp_path):
                                      {"n": 20}, tok, END)
     assert len(trades) > 10 and set(trades.symbol) == set(cfg.symbols)
     assert_same_exam(res, daily, port, trades)
+
+
+# ------------------------------------------------------------------ paper (Part A)
+
+READS_BTC = '''"""Long when BTC's close beats the coin's: reads the reference through its helper."""
+from perp_lab.indicators import reference_frame
+from perp_lab.strategy import HOLD, Strategy, enter
+
+
+class ReadsBtc(Strategy):
+    params = {}
+    timeframes = ["4h"]
+
+    def prepare(self, bars):
+        return bars[[]].assign(btc=reference_frame(bars).close)
+
+    def entry(self, ctx):
+        return enter(1, 0.9 * ctx["close"]) if ctx["btc"] > ctx["close"] else HOLD
+'''
+
+
+def approved_paper_run(tmp_path, strategy):
+    from tests.test_store import fake_run
+    cfg = market_config(tmp_path)
+    fake_run(cfg, "c1", strategy=strategy, verdict="candidate")
+    jid = db.record_judgement(cfg, {
+        "strategy": strategy, "timeframe": "4h", "strategy_hash": "abc", "child_run_id": "c1",
+        "parent_run_id": None, "lineage_id": "c1", "decision": "promote", "reasons": [],
+        "holdout_status": "pending", "holdout_reason": "awaiting_exam"})
+    db.update_holdout(cfg, jid, "passed", "passed")
+    db.approve_paper(cfg, "c1", "me")
+    return cfg
+
+
+def test_paper_refuses_reference_reader_before_recording(tmp_path, monkeypatch, plugins):
+    add_plugin(plugins, "reads_btc", READS_BTC)
+    cfg = approved_paper_run(tmp_path, "reads_btc")
+    monkeypatch.setattr(client, "max_workers", lambda c: 8)
+    monkeypatch.setattr(PaperRunner, "run", lambda self, max_bars=None: pytest.fail("the paper run started"))
+    before = sorted(cfg.runs_dir.iterdir())
+    r = runner.invoke(app, ["paper", "c1", "--config", str(cfg.path)])
+    assert (r.exit_code, type(r.exception)) == (2, SystemExit), r.output
+    assert "reads_btc reads the reference column group" in r.output
+    assert db.read_table(cfg, db.runs, db.runs.c.validation_mode == "paper").empty
+    assert sorted(cfg.runs_dir.iterdir()) == before                     # no run directory either
+
+
+def test_paper_still_starts_a_plugin_that_reads_no_group(tmp_path, monkeypatch, plugins):
+    cfg = approved_paper_run(tmp_path, "donchian_atr")
+    monkeypatch.setattr(client, "max_workers", lambda c: 8)
+    monkeypatch.setattr(PaperRunner, "run", lambda self, max_bars=None: asyncio.sleep(0))
+    r = runner.invoke(app, ["paper", "c1", "--config", str(cfg.path)])
+    assert r.exit_code == 0, r.output
+    assert len(db.read_table(cfg, db.runs, db.runs.c.validation_mode == "paper")) == 1

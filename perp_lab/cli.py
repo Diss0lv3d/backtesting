@@ -162,11 +162,12 @@ def paper(from_run: str = typer.Argument(..., help="walk-forward run_id approved
     """Forward-test an APPROVED walk-forward run on live closed candles (modal params)."""
     import sqlalchemy as sa
 
+    from perp_lab.data import columns
     from perp_lab.paper.runner import PaperRunner
     from perp_lab.sandbox import client
     from perp_lab.runs import data_id, data_identity, new_run_id, repo_commit
     from perp_lab.store.db import current_status, engine, record_run, runs
-    from perp_lab.plugins import PluginSource
+    from perp_lab.plugins import PluginSource, reads_columns
     cfg = load_config(config)
     with engine(cfg).connect() as c:
         r = c.execute(sa.select(runs).where(runs.c.run_id == from_run)).mappings().first()
@@ -187,6 +188,12 @@ def paper(from_run: str = typer.Argument(..., help="walk-forward run_id approved
         # One paper worker per coin. Which real fix to pick waits until a strategy first passes an exam.
         typer.secho(f"refused: {len(syms)} coins need {len(syms)} paper workers of {cfg['sandbox']['memory_mb']} MB; "
                     f"this machine holds {held}. Pass --symbols with at most {held} coins.", fg="red")
+        raise typer.Exit(2)
+    with _sandbox_required():                   # reads_columns runs the plugin to rule a group out
+        unfed = next((g for g in columns.GROUPS if not g.paper_ready and reads_columns(cfg, src, g, params)), None)
+    if unfed is not None:                       # the paper feed for its columns doesn't exist yet
+        typer.secho(f"refused: {r['strategy']} reads the {unfed.name} column group ({unfed.prefix} columns), "
+                    "which paper trading can't feed yet", fg="red")
         raise typer.Exit(2)
     started = datetime.now(timezone.utc)
     record_run(cfg, {"run_id": rid, "strategy": r["strategy"], "strategy_hash": src.hash,
