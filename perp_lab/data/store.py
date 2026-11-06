@@ -16,6 +16,7 @@ from perp_lab.config import TF_MS, Config
 from perp_lab.holdout import HoldoutViolation, check_token
 
 log = logging.getLogger(__name__)
+OI_PUBLISH_LAG_MS = 300_000            # a metrics snapshot stamped T is known at T + this
 _gap_warned: set[tuple[str, str]] = set()
 _tail_warned: set[tuple[str, str]] = set()
 
@@ -134,7 +135,7 @@ def funding_last_at(close_times: np.ndarray, funding: pd.DataFrame) -> tuple[np.
 
 
 def metrics_at(close_times: np.ndarray, metrics: pd.DataFrame | None,
-               publish_lag_ms: int = 300_000) -> tuple[np.ndarray, np.ndarray]:
+               publish_lag_ms: int = OI_PUBLISH_LAG_MS) -> tuple[np.ndarray, np.ndarray]:
     """`oi` and `oi_value` as of each close time. A snapshot stamped T is known at T + lag.
 
     NaN before the first known snapshot, and everywhere when `metrics` is None or empty.
@@ -179,7 +180,7 @@ def align_funding(candles: pd.DataFrame, funding: pd.DataFrame, tf: str) -> pd.D
 
 
 def align_metrics(candles: pd.DataFrame, metrics: pd.DataFrame | None,
-                  publish_lag_ms: int = 300_000) -> pd.DataFrame:
+                  publish_lag_ms: int = OI_PUBLISH_LAG_MS) -> pd.DataFrame:
     """As-of join OI onto bars (see `metrics_at`)."""
     out = candles.copy()
     out["oi"], out["oi_value"] = metrics_at(out.close_time.values, metrics, publish_lag_ms)
