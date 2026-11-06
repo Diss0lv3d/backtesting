@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 from perp_lab.cli import app
 from perp_lab.data import columns
+from perp_lab.engine.backtest import EngineParams
 from perp_lab.paper.runner import PaperRunner
 from perp_lab.plugins import PluginSource, names_group, reads_columns
 from perp_lab.sandbox import client
@@ -86,6 +87,22 @@ def test_plugin_reading_no_spot_is_not_a_reader(cfg):
     src = plugin()
     assert actions(cfg, src, check_bars()) > 0
     assert reads_columns(cfg, src, SPOT) is False
+
+
+@pytest.mark.parametrize("line", [
+    "        ref = bars.dropna().close.shift(1)\n",
+    "        ref = bars.close.shift(1).mask(bars.isna().any(axis=1))\n",
+    '        ref = bars.close.shift(1).mask(bars["ba" + "sis"].isna())\n',
+], ids=["whole_frame_dropna", "any_nan_in_the_row", "gated_on_basis_nan"])
+def test_plugin_reading_only_where_spot_is_nan_is_a_reader(cfg, line):
+    # the swapped stream keeps spot's NaN rows in place, so only the run on all-NaN spot can tell
+    src = plugin(line)
+    assert names_group(src, SPOT) == []
+    checked = check_bars()
+    a, b = (client.fresh_run(cfg, src, "X", "1h", bars, {}, EngineParams()).decisions
+            for bars in (checked, checked.assign(**SPOT.synthetic(checked, 1))))
+    assert a.n_actions() > 0 and a.same(b)
+    assert reads_columns(cfg, src, SPOT) is True
 
 
 # ------------------------------------------------------------------ paper

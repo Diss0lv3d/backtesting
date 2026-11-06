@@ -212,12 +212,16 @@ def reads_columns(cfg, src: PluginSource, group, params: dict | None = None) -> 
 
     That half runs the plugin as the lookahead check does: on the check's own bars (`causality.check_bars()`,
     whose group stream the check verified), as coin "X" at 1h, each run in a fresh sandbox worker, at the
-    default params and at `params` when given. For each params, one run is on those bars and one has only
-    the group's stream replaced, by `group.synthetic(bars, 1)`. The plugin reads the group when, for either
-    params:
-    - the two runs' decisions differ: entries and exits with their stop and target levels. Features don't
-      count, so a plugin that passes every column through `prepare` and decides on close alone doesn't read it;
-    - neither run makes a decision, so the runs can't tell;
+    default params and at `params` when given. For each params there are three runs: one on those bars
+    (side A); one with only the group's stream replaced, by `group.synthetic(bars, 1)` (side B), which keeps
+    the group's NaN rows where they were; and one with the group's columns all NaN (side C). Side C costs
+    one more sandbox run per params; it sees a plugin whose decisions depend only on where the group is NaN
+    (a whole-frame `dropna()`, `isna().any(axis=1)`), which side B can't. The plugin reads the group when,
+    for either params:
+    - side A's decisions differ from side B's or from side C's: entries and exits with their stop and target
+      levels. Features don't count, so a plugin that passes every column through `prepare` and decides on
+      close alone doesn't read it;
+    - neither side A nor side B makes a decision, so the runs can't tell;
     - the plugin fails a run (a PluginError). A worker lost twice and a protocol error are the machine's
       failures, not the plugin's, and are raised, as is any other error."""
     if names_group(src, group):
@@ -228,18 +232,19 @@ def reads_columns(cfg, src: PluginSource, group, params: dict | None = None) -> 
     from perp_lab.validate import causality
 
     checked = causality.check_bars()
-    sides = (checked, checked.assign(**group.synthetic(checked, 1)))
+    sides = (checked, checked.assign(**group.synthetic(checked, 1)),
+             checked.assign(**dict.fromkeys(group.columns, float("nan"))))
     variants = [{}] + ([dict(params)] if params else [])
     with ThreadPoolExecutor(client.max_workers(cfg)) as pool:
         runs = [[pool.submit(client.fresh_run, cfg, src, "X", "1h", b, kw, EngineParams()) for b in sides]
                 for kw in variants]
-        for pair in runs:
+        for triple in runs:
             try:
-                a, b = (f.result().decisions for f in pair)
+                a, b, c = (f.result().decisions for f in triple)
             except PluginError as e:
                 if e.kind in MACHINE_KINDS:
                     raise
                 return True
-            if a.n_actions() == b.n_actions() == 0 or not a.same(b):
+            if a.n_actions() == b.n_actions() == 0 or not a.same(b) or not a.same(c):
                 return True
     return False
