@@ -231,12 +231,20 @@ def test_a_rare_btc_shock_rule_is_caught_by_the_runs_on_the_checks_stream(cfg):
     assert reads_columns(cfg, src, REF) is True
 
 
-@pytest.mark.xfail(strict=True, reason="the runs see a read only when it changes a decision on the check's bars: "
-                                       "this filter's one shock falls inside a held position")
+def hidden_shock_filter() -> PluginSource:
+    return shock(SHOCK_FILTER, f"bars[{BUILT_NAME}]")
+
+
+def test_the_hidden_shock_filter_names_no_column():
+    # the premise of the xfail below: only the runs could see this read
+    assert names_group(hidden_shock_filter(), REF) == []
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="the runs see a read only when it changes a decision on the check's bars: "
+                          "this filter's one shock falls inside a held position")
 def test_a_filter_that_changes_no_decision_on_the_checks_bars_is_seen_only_by_name(cfg):
-    src = shock(SHOCK_FILTER, f"bars[{BUILT_NAME}]")
-    assert names_group(src, REF) == []
-    assert reads_columns(cfg, src, REF) is True
+    assert reads_columns(cfg, hidden_shock_filter(), REF) is True
 
 
 # ------------------------------------------------------------------ the check's bars, built once
