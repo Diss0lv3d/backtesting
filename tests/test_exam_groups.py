@@ -272,6 +272,7 @@ def test_a_window_short_at_the_always_end_starts_nothing(cfg, plugins, monkeypat
     done = attempt_exam(cfg, j["id"], run=boom, end_fn=lambda *a: cfg.holdout_start + pd.Timedelta(days=100),
                         data_fn=boom, cost_fn=boom, groups_fn=boom)
     assert (done["holdout_status"], done["holdout_reason"]) == ("pending", "too_short")
+    assert "detail" not in done                                    # no `if_read` group to name
     assert budget.reads_used(cfg) == 0
 
 
@@ -287,6 +288,24 @@ def test_an_if_read_group_ending_early_is_too_short(cfg, plugins):
                         groups_fn=lambda *a: (REF, SPOT))
     assert (done["holdout_status"], done["holdout_reason"]) == ("pending", "too_short")
     assert ends == [["reference"], ["reference", "spot"]] and budget.read_log(budget.log_path(cfg)) == []
+
+
+def test_a_short_if_read_group_end_names_the_group_and_coin(tmp_path, plugins, monkeypatch):
+    import perp_lab.judge.judge as jm
+    cfg = market_config(tmp_path, judge={"min_holdout_days": 30})
+    budget.init_log(cfg)
+    j = promoted(cfg)
+    f = cfg.data_dir / "ETHUSDT" / "spot" / "4h" / "all.parquet"
+    df = pd.read_parquet(f)
+    df[df.open_time < ms("2026-07-20 16:00")].to_parquet(f)               # ETH's last spot 4h close: 16:00
+    monkeypatch.setattr(jm, "dated_lookahead_failures", boom)
+    done = attempt_exam(cfg, j["id"], run=boom, data_fn=boom, cost_fn=boom,   # the real window end
+                        groups_fn=lambda *a: (REF, SPOT))
+    assert (done["holdout_status"], done["holdout_reason"]) == ("pending", "too_short")
+    assert done["detail"] == [
+        "column group spot: ETHUSDT data ends 2026-07-20 16:00 UTC; the exam needs it to 2026-07-31 "
+        "(30 days from holdout_start)", jm.BACKFILL_HINT.format(tf="4h")]
+    assert budget.read_log(budget.log_path(cfg)) == []
 
 
 def test_the_always_groups_alone_need_no_second_end(cfg, plugins):

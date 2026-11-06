@@ -25,7 +25,8 @@ from perp_lab.engine.metrics import summarize
 from perp_lab import runlock
 from perp_lab.judge import budget, gates
 from perp_lab.judge.diagnostics import diagnostics
-from perp_lab.judge.exam import always_groups, cost_hours, exam_groups, run_exam, window_data_problems, window_end
+from perp_lab.judge.exam import (always_groups, cost_hours, exam_groups, group_ends, run_exam, window_data_problems,
+                                  window_end)
 from perp_lab.plugins import MACHINE_KINDS, PluginMetaError, PluginSource, UndeclaredTimeframe, require_timeframe
 from perp_lab.sandbox import client
 from perp_lab.sandbox.errors import TRANSIENT_KINDS, PluginError, SandboxUnavailable
@@ -496,7 +497,8 @@ def attempt_exam(cfg, jid: int, *, run: Callable = run_exam, end_fn: Callable = 
        exam covers (`exam.exam_groups`: the `always` ones, and each `if_read` one the plugin reads,
        which may run it in sandbox workers on the lookahead check's synthetic bars; a machine
        failure there is handled as SandboxUnavailable), then the window end over them all, too
-       short again if an `if_read` group's data ends earlier; 3b. where the window's candles came
+       short again if an `if_read` group's data ends earlier, with each such group, coin and end
+       under `detail`, and the backfill hint; 3b. where the window's candles came
        from, from the manifests only: a month not from exchange files (stitched from ccxt,
        incomplete, unknown) waits as pending / incomplete_data, with the months under `detail`, so
        no read is spent and no attempt used on candles a plugin may not be able to trade on; 4. the
@@ -549,6 +551,14 @@ def _attempt(cfg, j: dict, run: Callable, end_fn: Callable, cost_fn: Callable, d
     def short(end: pd.Timestamp) -> bool:
         return (end - cfg.holdout_start).days < jc["min_holdout_days"]
 
+    def early_group_ends(read: list) -> list[str]:
+        """One line per `if_read` group of `read` and exam coin whose data, floored to the day as
+        `window_end` floors it, ends the window short: the group, the coin and where its data stops."""
+        need = cfg.holdout_start + pd.Timedelta(days=jc["min_holdout_days"])
+        return [f"column group {g}: {s} data ends {e:%Y-%m-%d %H:%M} UTC; the exam needs it to {need:%Y-%m-%d} "
+                f"({jc['min_holdout_days']} days from holdout_start)"
+                for g, s, e in group_ends(cfg, syms, tf, read) if short(e.floor("D"))]
+
     def exam_error() -> None:
         db.update_holdout(cfg, jid, "pending", "exam_error")
         finish(cfg, jid)
@@ -577,13 +587,17 @@ def _attempt(cfg, j: dict, run: Callable, end_fn: Callable, cost_fn: Callable, d
         else:
             always = always_groups()
             end = end_fn(cfg, syms, tf, always)              # 3. the `always` groups' end first, so a
-            if not short(end):                               # short window starts no worker
+            why = []                                         # short window starts no worker
+            if not short(end):
                 groups = covered()                           # 3a. an `if_read` group may end earlier
                 if groups != always:
                     end = end_fn(cfg, syms, tf, groups)
+                    if short(end):                           # name the group and coin that end it
+                        why = early_group_ends([g for g in groups if g not in always])
             if short(end):                                   # too short: no exam worker started
                 db.update_holdout(cfg, jid, "pending", "too_short")       # (the mint checks again, locked)
-                return finish(cfg, jid)
+                done = finish(cfg, jid)
+                return {**done, "detail": [*why, BACKFILL_HINT.format(tf=tf)]} if why else done
         problems = data_fn(cfg, syms, tf, end, groups)       # 3b. manifests only: no candle is read
         if problems:
             log.warning("exam of judgement %s waits for exchange data:\n  %s", jid, "\n  ".join(problems))

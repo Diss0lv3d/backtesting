@@ -98,6 +98,21 @@ def window_end(cfg, symbols: list[str], tf: str, groups=None) -> pd.Timestamp:
     return pd.Timestamp(min(ends), unit="ms", tz="UTC").floor("D")
 
 
+def group_ends(cfg, symbols: list[str], tf: str, groups) -> list[tuple[str, str, pd.Timestamp]]:
+    """(group name, coin, end) for each of `groups` and each exam coin: where that group's data for that coin
+    alone stops, from its `exam_end` on the one coin. A group with no `exam_end`, or a coin it sets no end
+    for (an excluded coin), is left out. Timestamps only, as `window_end` reads them."""
+    out = []
+    for g in _covered(groups):
+        if g.exam_end is None:
+            continue
+        for s in symbols:
+            e = g.exam_end(cfg, [s], tf)
+            if e is not None:
+                out.append((g.name, s, pd.Timestamp(e, unit="ms", tz="UTC")))
+    return out
+
+
 def window_data_problems(cfg, symbols: list[str], tf: str, end: pd.Timestamp, groups=None) -> list[str]:
     """Where the exam window's candles didn't come from exchange files, as "SYMBOL tf YYYY-MM: why",
     from the klines manifests (`lab backfill` and `lab tail` write them); no candle is read.
