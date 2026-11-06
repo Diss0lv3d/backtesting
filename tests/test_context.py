@@ -196,7 +196,9 @@ def test_the_spot_paragraph_warns_of_the_promotion_and_the_falling_share(cfg):
     text = " ".join(context.static_context(cfg, load(cfg)).split())
     assert "BTC's spot volume and trade count are inflated from 2022-07 to 2023-03" in text
     assert "zero-fee BTC spot promotion" in text
-    assert "a change against its own recent level, not as a level" in text
+    assert ("Spot's share of volume differs by coin, was larger in the early years and has fallen since, so a rule "
+            "should read it as a change against its own recent level, not as a level.") in text
+    assert "ratio against its own recent history" not in text                  # one sentence says it, not two
 
 
 def test_plugin_columns_hold_spot():

@@ -157,11 +157,10 @@ def _spot_text(cfg) -> str:
         "0.05% (below); there, basis averaged over a funding interval tracks the next funding rate, and an idea "
         "built on that average is a funding idea. On thin coins `basis` carries a few bp of noise from last "
         "trades; smooth it or set thresholds well above that. The harness trades the perp only: a basis that "
-        "closes pays only through the perp's own move. Spot's share of volume differs by coin and changes over "
-        "the years; read it as a ratio against its own recent history. It was larger in the early years and has "
-        "fallen since, so a rule should read it as a change against its own recent level, not as a level. "
-        "BTC's spot volume and trade count are inflated from 2022-07 to 2023-03, during Binance's zero-fee BTC "
-        "spot promotion. A plugin that reads spot columns can't be paper traded yet.")
+        "closes pays only through the perp's own move. Spot's share of volume differs by coin, was larger in the "
+        "early years and has fallen since, so a rule should read it as a change against its own recent level, not "
+        "as a level. BTC's spot volume and trade count are inflated from 2022-07 to 2023-03, during Binance's "
+        "zero-fee BTC spot promotion. A plugin that reads spot columns can't be paper traded yet.")
 
 
 def _api(cfg) -> str:
