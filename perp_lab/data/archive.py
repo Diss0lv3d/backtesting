@@ -32,9 +32,10 @@ def files(d: Path) -> list[Path]:
 
 def stamps(cfg, symbol: str, dataset: str, traded: bool = False) -> np.ndarray:
     """Every row's time stamp in `symbol`'s `dataset` files as int64 ms: `open_time` for candles, `create_time`
-    for metrics (scaled from seconds where written so, as `store.load_metrics` does). With `traded`, the
-    candles with `trades` above 0 only (X6: a zero-trade candle, or one with NaN trades, is no traded bar),
-    reading that column too. Never a price. FileNotFoundError when there are no files."""
+    for metrics (scaled from seconds where written so, as `store.load_metrics` does). With `traded`, only the
+    candles with `trades` above 0, reading that column too: a zero-trade candle doesn't count, and nor does one
+    with NaN trades here, which is stricter than X6 (there a NaN `trades` is not zero). Never a price.
+    FileNotFoundError when there are no files."""
     col = "create_time" if dataset == "metrics" else "open_time"
     parts = []
     for f in files(cfg.data_dir / symbol / dataset):
