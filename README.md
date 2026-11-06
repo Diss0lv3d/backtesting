@@ -85,18 +85,20 @@ tests/                   lookahead (auto on every plugin), fees/funding, liquida
   research months are present and complete (and, for the reference, that BTC's own symbol check passes) and refuse
   with exit 2 listing every problem; `validate_strategy` refuses the same way. `config/lab.yaml`
   `column_groups.reference.known_gaps` is `[]`. `lab paper` refuses a plugin that reads, or can't be shown not to read,
-  the `btc_` columns, since paper can't feed them yet. Trials that read them count in the one store-wide N.
+  the columns of any group paper can't feed yet (`btc_` and spot today), and names every such group. Trials that read
+  the `btc_` columns count in the one store-wide N.
 - **Spot.** Every coin's bars also carry four `spot_` columns (`spot_close`, `spot_quote_volume`,
   `spot_taker_buy_quote_volume`, `spot_trades`) from that coin's own Binance spot candles, the row with the same open
   time (no publish lag), and `basis = close / spot_close - 1`. They are NaN where spot has no row or no trades, and
-  `basis` is NaN there too and where the perp bar has no trades; nothing is filled forward. The candles come from
-  `lab backfill --datasets spotKlines` into `data/<SYMBOL>/spot/<tf>/`. Readiness covers the full span of every
-  coin's spot months and adds a symbol check: on the last month with at least 100 bars traded on both sides, the
-  median basis must be within +/-1%. Exclusions are listed under `column_groups.spot` in `config/lab.yaml` (both
-  `exclusions` and `known_gaps` are empty today). `lab paper` refuses a plugin that reads, or can't be shown not to
-  read, the spot columns. Spot trading of BTC was zero-fee from 2022-07 to 2023-03, which inflates its spot volume
-  and trade count then; the proposer's builder is told. Synthetic bars carry a synthetic spot stream calibrated to the
-  real inventory (`docs/research/spot-inventory/`); `MARKET_VERSION` is 5.
+  `basis` is NaN there too and where the perp bar has no trades; nothing is filled forward. Exchange-wide spot
+  maintenance left zero-trade windows on 2020-12-21, 2021-02-11 and 2023-03-24 (about 3 bars per coin at 1h, none at
+  4h); they are NaN rows, in complete months. The candles come from `lab backfill --datasets spotKlines` into
+  `data/<SYMBOL>/spot/<tf>/`. Readiness covers the full span of every coin's spot months and adds a symbol check: on
+  the last month with at least 100 bars traded on both sides, the median basis must be within +/-1%. Exclusions are
+  listed under `column_groups.spot` in `config/lab.yaml` (both `exclusions` and `known_gaps` are empty today). Spot
+  trading of BTC was zero-fee from 2022-07 to 2023-03, which inflates its spot volume and trade count then; the
+  proposer's builder is told. Synthetic bars carry a synthetic spot stream calibrated to the real inventory
+  (`docs/research/spot-inventory/`); `MARKET_VERSION` is 5.
 - A verdict's `diagnostics.market` holds the OOS portfolio's daily `beta` and `corr` to BTC and the `hedged_sharpe`
   of the series with BTC hedged out. For information only: no gate reads it.
 - A plugin names its parent with a module-level `PARENT = "name"`; without one it starts a family.

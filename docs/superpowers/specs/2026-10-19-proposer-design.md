@@ -1169,9 +1169,9 @@ where spot has no row or no trades; `basis` is NaN then too and where the perp b
   that reads spot gets spot coverage, which means the window ends at the earliest spot end, spot months must come from
   exchange files, and every UTC day needs a spot candle with `trades > 0`. The attempt cap and too-short are checked
   before any check worker starts.
-- **Synthetic bars.** The spot stream draws from `default_rng((seed, 2))`, is NaN before the first cut only
-  (`causality.NAN_CUTS`) with halt stretches at rows `((0, 288), (432, 480))`, and is calibrated to the real inventory
-  (`docs/research/spot-inventory/`, "Calibration"). `MARKET_VERSION` is 5.
+- **Synthetic bars.** The spot stream draws from `default_rng((seed, 2))`, is NaN on the halt stretches (rows
+  `((0, 288), (432, 480))`) plus the row before the first cut (`causality.NAN_CUTS`), and is calibrated to the real
+  inventory (`docs/research/spot-inventory/`, "Calibration"). `MARKET_VERSION` is 5.
 - **Unchanged.** No gate, threshold, cost or benchmark rule; trials that read spot count in the one store-wide N. The
   proposer still cannot run exams, and `lab paper` refuses a plugin that reads, or can't be shown not to read, the
   spot columns (`paper_ready=False`).
