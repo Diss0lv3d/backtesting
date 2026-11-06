@@ -55,6 +55,20 @@ GROUPS: tuple[ColumnGroup, ...] = (
 )
 
 
+def check_source_fits(group: str, source_tf: str, source_end: pd.Timestamp, bars: pd.DataFrame, symbol: str,
+                      tf: str) -> None:
+    """Refuse (ValueError) a group's shared source that doesn't fit `bars`: one at another timeframe,
+    whose rows would join at the wrong open times, and one cut at or before the bars' last close, whose
+    columns past its cut would be wrong with no sign of it. Each group's `attach` calls this first."""
+    if source_tf != tf:
+        raise ValueError(f"a {source_tf} {group} source given to {symbol} {tf} bars")
+    if len(bars):
+        last_close = int(bars.close_time.max())
+        if int(source_end.value // 10**6) <= last_close:
+            raise ValueError(f"the {group} source was cut at {source_end}, before {symbol} {tf}'s last bar "
+                             f"closed at {pd.Timestamp(last_close, unit='ms', tz='UTC')}")
+
+
 def register(group: ColumnGroup) -> None:
     """Tests only: production code registers by literal in GROUPS above."""
     global GROUPS

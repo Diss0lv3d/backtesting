@@ -95,19 +95,12 @@ def attach(bars: pd.DataFrame, symbol: str, tf: str, source: ReferenceSource) ->
     Refuses (ValueError) a source at another timeframe, whose candles would join at the wrong open
     times, and one cut before the bars' last close, which would carry btc_funding_last and
     btc_oi_value forward past its cut with no NaN to show it."""
-    if source.tf != tf:
-        raise ValueError(f"a {source.tf} reference source given to {symbol} {tf} bars")
-    if len(bars):
-        last_close = int(bars.close_time.max())
-        if int(source.end.value // 10**6) <= last_close:
-            raise ValueError(f"the reference source was cut at {source.end}, before {symbol} {tf}'s last bar "
-                             f"closed at {pd.Timestamp(last_close, unit='ms', tz='UTC')}")
+    from perp_lab.data import columns          # not at module level: columns imports this module
+    columns.check_source_fits("reference", source.tf, source.end, bars, symbol, tf)
     out = bars.copy()
-    c = source.candles.drop_duplicates("open_time").set_index("open_time")
-    c = c[c.trades != 0]                      # X6; NaN trades (ccxt-stitched) are not zero
-    joined = c.reindex(out.open_time.to_numpy())
+    joined = store.exact_join(out, source.candles, BAR_COLUMNS)      # X6
     for col in BAR_COLUMNS:
-        out[PREFIX + col] = joined[col].to_numpy(dtype="float64")
+        out[PREFIX + col] = joined[col].to_numpy()
     close = out.close_time.to_numpy(dtype="int64")
     out[PREFIX + "funding_last"] = store.funding_last_at(close, source.funding)[0].astype("float64")
     out[PREFIX + "oi_value"] = store.metrics_at(close, source.metrics)[1].astype("float64")

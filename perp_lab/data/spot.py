@@ -49,14 +49,10 @@ def load_spot(cfg, symbol: str, tf: str, start=None, end=None, holdout=None) -> 
     FileNotFoundError when the folder holds no parquet."""
     from perp_lab.data.vision import CANDLE_SCHEMA     # not at module level: vision imports requests
 
-    end = store._resolve_end(cfg, end, holdout)
-    start = start or cfg.history_start
-    df = store._read_dir(cfg.data_dir / symbol / dataset(tf))
+    df = store._read_window(cfg, cfg.data_dir / symbol / dataset(tf), start, end, holdout)
     if df is None:
         raise FileNotFoundError(f"no spot candles for {symbol} {tf}; run `lab backfill --datasets spotKlines`")
-    s_ms, e_ms = int(start.value // 10**6), int(end.value // 10**6)
-    df = df.drop_duplicates("open_time").sort_values("open_time")
-    return df.loc[(df.open_time >= s_ms) & (df.open_time < e_ms), CANDLE_SCHEMA].reset_index(drop=True)
+    return df[CANDLE_SCHEMA]
 
 
 def attach_spot(bars: pd.DataFrame, spot: pd.DataFrame | None) -> pd.DataFrame:
@@ -68,11 +64,9 @@ def attach_spot(bars: pd.DataFrame, spot: pd.DataFrame | None) -> pd.DataFrame:
         for c in COLUMNS:
             out[c] = np.full(len(out), np.nan)
         return out
-    s = spot.drop_duplicates("open_time").set_index("open_time")
-    s = s[s.trades != 0]                      # X6: a zero-trade spot bar is no bar
-    joined = s.reindex(out.open_time.to_numpy())
+    joined = store.exact_join(out, spot, _FIELDS)                 # X6: a zero-trade spot bar is no bar
     for col, field in zip(COLUMNS, _FIELDS):
-        out[col] = joined[field].to_numpy(dtype="float64")
+        out[col] = joined[field].to_numpy()
     traded = out.trades.to_numpy(dtype="float64") != 0          # NaN perp trades (ccxt-stitched) are not zero
     basis = out.close.to_numpy(dtype="float64") / out.spot_close.to_numpy() - 1
     out["basis"] = np.where(traded, basis, np.nan)
@@ -103,13 +97,8 @@ def attach(bars: pd.DataFrame, symbol: str, tf: str, source: SpotSource) -> pd.D
     one cut at or before the bars' last close, whose missing tail would pass for a spot gap. An excluded
     coin gets all NaN without a read. A coin with no spot candles gets all NaN and one warning per process
     per (symbol, tf)."""
-    if source.tf != tf:
-        raise ValueError(f"a {source.tf} spot source given to {symbol} {tf} bars")
-    if len(bars):
-        last_close = int(bars.close_time.max())
-        if int(source.end.value // 10**6) <= last_close:
-            raise ValueError(f"the spot source was cut at {source.end}, before {symbol} {tf}'s last bar "
-                             f"closed at {pd.Timestamp(last_close, unit='ms', tz='UTC')}")
+    from perp_lab.data import columns          # not at module level: columns imports the groups' modules
+    columns.check_source_fits("spot", source.tf, source.end, bars, symbol, tf)
     if excluded(source.cfg, symbol) or not len(bars):
         return attach_spot(bars, None)
     first = pd.Timestamp(int(bars.open_time.min()), unit="ms", tz="UTC")

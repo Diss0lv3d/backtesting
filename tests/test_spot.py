@@ -11,7 +11,7 @@ import pyarrow
 import pytest
 
 from perp_lab.config import TF_MS
-from perp_lab.data import spot, vision
+from perp_lab.data import columns, reference, spot, vision
 from perp_lab.data.store import load_bars
 from perp_lab.holdout import HoldoutViolation, issue_holdout_token
 from tests.conftest import CANDLE_COLS, market_config, spot_candles, write_spot
@@ -392,6 +392,19 @@ def test_attach_refuses_other_tf_or_short_source(cfg):
     cfg.raw["column_groups"]["spot"]["exclusions"] = ["ETH"]               # excluded, still refused
     with pytest.raises(ValueError, match="a 1h spot source"):
         spot.attach(bars, "ETHUSDT", "4h", spot.load_source(cfg, "1h"))
+
+
+def test_both_groups_refuse_a_mismatched_tf_through_the_shared_check(cfg, monkeypatch):
+    monkeypatch.setattr(reference, "_missing_warned", set())             # BTC has no 1h candles here
+    real, seen = columns.check_source_fits, []
+    monkeypatch.setattr(columns, "check_source_fits", lambda group, *rest: seen.append(group) or real(group, *rest))
+    bars = research_bars(cfg)
+    for group in (reference, spot):
+        with pytest.raises(ValueError) as refused:
+            group.attach(bars, "ETHUSDT", "4h", group.load_source(cfg, "1h"))
+        name = "spot" if group is spot else "reference"
+        assert str(refused.value) == f"a 1h {name} source given to ETHUSDT 4h bars"
+    assert seen == ["reference", "spot"]
 
 
 def test_sources_name_spot_tf_dirs(cfg):
