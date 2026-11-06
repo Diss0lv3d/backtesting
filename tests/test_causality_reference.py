@@ -8,7 +8,7 @@ import pytest
 
 from perp_lab.data import reference
 from perp_lab.plugins import PluginSource
-from perp_lab.validate.causality import (EXTRAS_SEED, as_reference_coin, causality_failures, synthetic_bars,
+from perp_lab.validate.causality import (CUTS, EXTRAS_SEED, as_reference_coin, causality_failures, synthetic_bars,
                                          with_moving_columns)
 from tests.test_causality import peeker
 from tests.test_store import cfg  # noqa: F401
@@ -124,6 +124,27 @@ def test_a_peek_gated_on_a_grid_value_fails_those_params_as_btc(cfg):
     assert fails[0].startswith("k=2 as BTC: AssertionError: signals diverge before cut")
 
 
+# the momentum's signal taken from BTC's close after a fill over its NaN bars
+FILLED = ("        b = bars.btc_close.FILL()\n"
+          "        return bars[[]].assign(sig=np.sign(b - b.shift(1)), atr=atr(bars, 14))\n")
+OWN_SIG = "        return bars[[]].assign(sig=np.sign(bars.close - bars.close.shift(1)), atr=atr(bars, 14))\n"
+
+
+@pytest.mark.parametrize("fill", ["bfill", "interpolate"])
+def test_a_fill_from_later_btc_bars_is_reported(cfg, fill):
+    # the synthetic bar columns are NaN on the row before each cut: the cut run can't fill that row from
+    # the bar after it, the full run can
+    src = from_momentum(f"{fill}_btc", MOMENTUM.replace(OWN_SIG, FILLED.replace("FILL", fill)))
+    fails = causality_failures(cfg, src)
+    assert labels(fails) == ["defaults"]                         # as BTC, btc_close is its own close: no NaN
+    assert fails[0].startswith(f"defaults: AssertionError: features at cut {CUTS[0]}")
+
+
+def test_a_forward_fill_over_btc_columns_passes(cfg):
+    src = from_momentum("ffill_btc", MOMENTUM.replace(OWN_SIG, FILLED.replace("FILL", "ffill")))
+    assert causality_failures(cfg, src) == []
+
+
 def test_an_honest_rolling_beta_plugin_passes(cfg):
     # as BTC its beta is exactly 1 and its residual exactly 0, so it never trades: that is no failure
     src = PluginSource.from_text("honest_beta", BETA_FADE.replace("BETA_EXPR", "rolling_beta(r, rb, 100)"))
@@ -219,7 +240,7 @@ def test_the_group_is_kept_when_it_moves_and_redrawn_whole_when_any_column_is_de
         redrawn = reference.synthetic(bars, 8)
         for c in cols:                            # every column of the group, so OHLC stay consistent
             np.testing.assert_array_equal(out[c].to_numpy(), redrawn[c], err_msg=c)
-        assert not np.array_equal(out.btc_close, bars.btc_close)
+        assert not np.array_equal(out.btc_close, bars.btc_close, equal_nan=True)
 
 
 def test_as_reference_coin_carries_its_own_columns_as_btc():
@@ -240,7 +261,8 @@ def test_as_reference_coin_carries_its_own_columns_as_btc():
 def test_synthetic_btc_returns_correlate_with_the_coins(coin_seed, seed):
     bars = synthetic_bars(seed=coin_seed)
     btc = reference.synthetic(bars, seed)
-    rho = np.corrcoef(np.diff(np.log(bars.close.to_numpy())), np.diff(np.log(btc["btc_close"])))[0, 1]
+    r_x, r_b = (pd.Series(np.log(c)).diff() for c in (bars.close.to_numpy(), btc["btc_close"]))
+    rho = r_x.corr(r_b)                                       # over the bars where both are set
     assert 0.6 <= rho <= 0.8
 
 
@@ -250,11 +272,25 @@ def test_every_synthetic_btc_column_is_float64_and_moves():
     assert tuple(btc) == reference.COLUMNS
     for c, v in btc.items():
         assert v.dtype == np.float64 and len(v) == len(bars) and pd.Series(v).nunique() > 1, c
+    live = np.ones(len(bars), dtype=bool)
+    live[[k - 1 for k in CUTS]] = False                       # NaN bar rows, pinned below
     for c in reference.COLUMNS[:-1]:
-        assert np.isfinite(btc[c]).all(), c
-    o, h, low, cl = (btc[reference.PREFIX + c] for c in ("open", "high", "low", "close"))
+        assert np.isfinite(btc[c][live]).all(), c
+    o, h, low, cl = (btc[reference.PREFIX + c][live] for c in ("open", "high", "low", "close"))
     assert (h >= np.maximum(o, cl)).all() and (low <= np.minimum(o, cl)).all() and (low > 0).all()
-    assert (btc["btc_taker_buy_quote_volume"] < btc["btc_quote_volume"]).all()
+    assert (btc["btc_taker_buy_quote_volume"][live] < btc["btc_quote_volume"][live]).all()
+
+
+@pytest.mark.parametrize("n, gaps", [(3000, [399, 1099, 1776, 2499]), (1500, [399, 1099]), (401, [399]),
+                                     (400, [])])
+def test_synthetic_btc_bar_columns_are_nan_on_the_row_before_each_cut(n, gaps):
+    # as real BTC's are on a zero-trade bar (X6); the cut run then ends on a NaN its full run has a bar after
+    assert gaps == [k - 1 for k in CUTS if k < n]
+    btc = reference.synthetic(synthetic_bars(n=n), EXTRAS_SEED)
+    for c in reference.BAR_COLUMNS:
+        assert np.flatnonzero(np.isnan(btc[reference.PREFIX + c])).tolist() == gaps, c
+    assert np.isfinite(btc["btc_funding_last"]).all()          # the as-of two keep their own rule
+    assert np.isfinite(btc["btc_oi_value"][300:]).all()
 
 
 def test_synthetic_btc_oi_is_nan_on_exactly_the_first_300_rows():
@@ -266,7 +302,7 @@ def test_synthetic_btc_draws_from_its_own_seed():
     bars = synthetic_bars()
     a, b, c = (reference.synthetic(bars, s) for s in (7, 7, 8))
     assert all(np.array_equal(a[k], b[k], equal_nan=True) for k in reference.COLUMNS)
-    assert not np.array_equal(a["btc_close"], c["btc_close"])
+    assert not np.array_equal(a["btc_close"], c["btc_close"], equal_nan=True)
 
 
 @pytest.mark.parametrize("t", [0, 299, 300, 1777])
@@ -280,4 +316,4 @@ def test_btc_values_up_to_t_ignore_the_coins_rows_after_t(t):
     a, b = reference.synthetic(bars, EXTRAS_SEED), reference.synthetic(later, EXTRAS_SEED)
     for c in reference.COLUMNS:
         np.testing.assert_array_equal(a[c][:t + 1], b[c][:t + 1], err_msg=c)
-    assert not np.array_equal(a["btc_close"][t + 1:], b["btc_close"][t + 1:])     # the change reached BTC
+    assert not np.array_equal(a["btc_close"][t + 1:], b["btc_close"][t + 1:], equal_nan=True)   # it reached BTC

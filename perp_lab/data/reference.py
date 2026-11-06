@@ -122,7 +122,10 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
     deviation (floored), z standard normal and d a drift of ±0.3·σ held for 300-bar blocks, so BTC trends
     apart from the coin and trend filters switch. Quote volume is heavier on big moves, funding changes
     every 8 hours of bar time with the odd spike, and OI is NaN on the first 300 rows, as real BTC OI
-    is before 2020-09-01."""
+    is before 2020-09-01. The six bar columns are NaN on the row before each of the lookahead check's
+    cuts, as real BTC's are on a zero-trade bar (X6): the cut run ends on that NaN and the full run has
+    BTC's next bar after it, so a fill from later bars (`bfill`, `interpolate`) is caught."""
+    from perp_lab.validate.causality import CUTS      # causality imports this module
     rng = np.random.default_rng((seed, SYNTHETIC_ID))
     n = len(bars)
     log_close = np.log(bars["close"].to_numpy(dtype="float64"))
@@ -152,7 +155,11 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
     out = {"open": open_, "high": np.maximum(open_, close) * (1 + wick[0]),
            "low": np.minimum(open_, close) * (1 - wick[1]), "close": close, "quote_volume": quote,
            "taker_buy_quote_volume": quote * buy_share, "funding_last": rate[period], "oi_value": oi_value}
-    return {PREFIX + c: out[c].astype("float64") for c in BAR_COLUMNS + ASOF_COLUMNS}
+    out = {PREFIX + c: out[c].astype("float64") for c in BAR_COLUMNS + ASOF_COLUMNS}
+    gaps = [k - 1 for k in CUTS if k < n]     # after every draw, so no other value changes
+    for c in BAR_COLUMNS:
+        out[PREFIX + c][gaps] = np.nan
+    return out
 
 
 def sources(cfg, symbols: list[str], tf: str) -> list[tuple[str, str]]:

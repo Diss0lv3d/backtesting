@@ -258,7 +258,7 @@ def test_check_bars_are_the_lookahead_checks_bars(cfg, monkeypatch):
 def test_the_runs_compare_the_checked_stream_with_seed_1(cfg, monkeypatch):
     checked = check_bars()
     seed_1 = checked.assign(**REF.synthetic(checked, 1))
-    assert not np.array_equal(checked.btc_close, seed_1.btc_close)
+    assert not np.array_equal(checked.btc_close, seed_1.btc_close, equal_nan=True)
     real, seen = client.fresh_run, []
 
     def spy(cfg, src, symbol, tf, bars, *a, **kw):
