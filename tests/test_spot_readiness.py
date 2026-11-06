@@ -161,6 +161,50 @@ def test_excluded_coin_is_not_read(tmp_path):
     assert spot.symbol_check(cfg, "4h") == []
 
 
+def plant_trades(cfg, side, value, left=99):
+    """ETHUSDT's last research month (2026-06) keeps `left` bars traded on both sides: `value` (0 or NaN)
+    goes into the `side` ("perp" or "spot") `trades` of the rest."""
+    f = cfg.data_dir / "ETHUSDT" / ("4h" if side == PERP else "spot/4h") / "all.parquet"
+    df = pd.read_parquet(f)
+    june = (df.open_time >= int(pd.Timestamp("2026-06-01", tz="UTC").value // 10**6)).to_numpy()
+    df.loc[june & (df.groupby(june).cumcount() >= left).to_numpy(), "trades"] = value
+    df.to_parquet(f)
+
+
+@pytest.mark.parametrize("side, value", [(PERP, 0.0), (SPOT, 0.0), (PERP, float("nan")), (SPOT, float("nan"))])
+def test_bars_must_be_traded_on_both_sides(tmp_path, side, value):
+    # June holds 180 bars and a 1000x spot price, but fewer than 100 are traded on both sides: the check
+    # falls back to May (a good pair), so there is no problem; a filter on one side or one that counts
+    # NaN trades as traded would use June and name its -99.90% median
+    cfg = ready(tmp_path)
+    traded_market(cfg, coins=["ETHUSDT"], last_scale=1000.0)
+    assert len(spot.symbol_check(cfg, "4h")) == 1                           # all traded: June is used
+    plant_trades(cfg, side, value)
+    assert spot.symbol_check(cfg, "4h") == []
+    traded_market(cfg, coins=["ETHUSDT"], last_scale=1000.0)                # 100 traded on both: June again
+    plant_trades(cfg, side, value, left=100)
+    assert "2026-06: median basis -99.90%" in spot.symbol_check(cfg, "4h")[0]
+
+
+def test_perp_and_spot_with_no_open_time_in_common_is_a_problem(tmp_path):
+    cfg = ready(tmp_path)
+    f = cfg.data_dir / "ETHUSDT" / "spot" / "4h" / "all.parquet"
+    df = pd.read_parquet(f)
+    df["open_time"] += 3_600_000                                            # an hour off every perp bar
+    df.to_parquet(f)
+    assert spot.symbol_check(cfg, "4h") == [
+        "column group spot: ETHUSDT/spot/4h has no research month with 100 bars traded on both perp and spot; "
+        "exclude the coin in column_groups.spot.exclusions"]
+
+
+def test_missing_perp_folder_is_the_no_month_problem(tmp_path):
+    cfg = ready(tmp_path)
+    (cfg.data_dir / "ETHUSDT" / "4h" / "all.parquet").unlink()
+    assert spot.symbol_check(cfg, "4h") == [
+        "column group spot: ETHUSDT/spot/4h has no research month with 100 bars traded on both perp and spot; "
+        "exclude the coin in column_groups.spot.exclusions"]
+
+
 # ------------------------------------------------------------------ refusals
 
 PROBLEM = "column group spot: ETHUSDT/spot/4h 2026-06: median basis"
