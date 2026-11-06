@@ -104,3 +104,42 @@ The pooled median spot share is 0.213. These seven values are `calibration_targe
 - **`column_groups.spot.exclusions: []`.** Every coin has a same-symbol spot pair that passes the symbol check, with no long holes.
 - **`column_groups.spot.known_gaps: []`.** No research month is incomplete.
 - **Calibration (Task 11).** The spec's default synthetic basis is wider than these targets: a slow AR sd of 10 bp plus a fast AR plus 20–60 bp jumps, against a real p1/p99 about 17 and 32 bp from the median. Its spot share is also 0.3, against 0.21. Task 11 calibrates to these targets, as its own commit with a `MARKET_VERSION` bump, before the first spot trial.
+
+## Calibration (plan Task 11, 2026-11-07)
+
+**Readiness.** Before calibrating, `column_group_problems` on the real store returned `[]` at 15m, 1h and 4h, with the spot group and its symbol check registered.
+
+**Rule.** The spec's rule was applied once, with S measured on `causality.check_bars()` using the definitions above:
+1. `BASIS_C` = the midpoint of T's 24-bar-mean p1 and p99.
+2. `BASIS_SLOW_SD` scaled by the ratio of T's and S's 24-bar-mean p99−p1.
+3. S recomputed; `BASIS_FAST_SD` and both ends of `BASIS_JUMP` scaled by the same ratio for the level.
+4. `SPOT_SHARE` = T's share p50.
+
+Each tail must end within 25% of its distance from T's median (`tests/test_spot_calibration.py`). All four passed after one round, so no ruling was needed.
+
+| statistic | T (real) | S before | S after |
+|---|---|---|---|
+| level p1 | −0.204% | −0.398% | −0.203% |
+| level p50 | −0.037% | −0.061% | +0.010% |
+| level p99 | +0.283% | +0.401% | +0.308% |
+| 24-bar mean p1 | −0.147% | −0.302% | −0.148% |
+| 24-bar mean p50 | −0.044% | −0.060% | +0.011% |
+| 24-bar mean p99 | +0.249% | +0.284% | +0.235% |
+| spot share p50 | 0.213 | 0.320 | 0.227 |
+
+**Constants**
+
+| constant | before | after |
+|---|---|---|
+| `BASIS_C` | 0.0 | 0.000512 |
+| `BASIS_SLOW_SD` | 0.0010 | 0.000676 |
+| `BASIS_FAST_SD` | 0.0005 | 0.000315 |
+| `BASIS_JUMP` | (0.0020, 0.0060) | (0.00126, 0.00378) |
+| `SPOT_SHARE` | 0.3 | 0.213 |
+
+`MARKET_VERSION` is now 5. No other synthetic value changed.
+
+**Limits**
+- **Medians.** The stream is symmetric about `BASIS_C`, so its medians sit near +0.01% while the real ones are near −0.04%. The real basis is right-skewed. The rule and its acceptance test compare tails only.
+- **Share.** The share p50 lands at 0.227 rather than 0.213. That comes from the sample path of the φ 0.99 AR(1); the share is not part of the acceptance test.
+- **Gated peeks.** The lookahead's gated-peek tests derive their cuts from `check_bars()` and still pass. A peek gated on the ±2·`BASIS_SLOW_SD` band stays closed at every compared cut (ruling S4c), as it was before calibration.

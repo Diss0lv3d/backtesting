@@ -27,7 +27,7 @@ def test_15m_is_resampled_from_5m():
 
 
 def test_the_market_is_fixed():
-    assert (MARKET_VERSION, SYMBOLS, DAYS) == (4, ("BTCUSDT", "SYN2", "SYN3", "SYN4"), 180)
+    assert (MARKET_VERSION, SYMBOLS, DAYS) == (5, ("BTCUSDT", "SYN2", "SYN3", "SYN4"), 180)
     m = market("5m")
     assert tuple(m) == SYMBOLS and market("5m") is m                 # built once per timeframe
     groups = list(reference.COLUMNS + spot.COLUMNS)
@@ -145,8 +145,8 @@ FIVE = list(spot.COLUMNS)
 SPOT_SUMMED = ["spot_quote_volume", "spot_taker_buy_quote_volume", "spot_trades"]
 
 
-def test_market_version_is_4():
-    assert MARKET_VERSION == 4
+def test_market_version_is_5():
+    assert MARKET_VERSION == 5   # 5: spot calibrated (plan Task 11)
 
 
 @pytest.mark.parametrize("tf", ["15m", "1h", "4h"])

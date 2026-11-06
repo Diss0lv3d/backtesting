@@ -37,13 +37,13 @@ _missing_warned: set[tuple[str, str]] = set()   # (symbol, tf) warned about: one
 # the synthetic spot stream (spec "The lookahead check and the synthetic bars"); the calibration rule there
 # sets BASIS_C, BASIS_SLOW_SD, BASIS_FAST_SD, BASIS_JUMP and SPOT_SHARE from real 1h bars
 BASIS_SLOW_PHI = 0.995                 # basis = slow + fast; slow: half-life about 140 bars
-BASIS_SLOW_SD = 0.0010                 # its stationary sd
-BASIS_C = 0.0                          # its mean
+BASIS_SLOW_SD = 0.000676               # its stationary sd (calibrated, Task 11)
+BASIS_C = 0.000512                     # its mean (calibrated: the mid of the real 24-bar mean's p1/p99)
 BASIS_FAST_PHI = 0.9
-BASIS_FAST_SD = 0.0005                 # stationary sd, before jumps
+BASIS_FAST_SD = 0.000315               # stationary sd, before jumps (calibrated)
 BASIS_JUMP_P = 0.01                    # the share of rows a jump enters the fast state on
-BASIS_JUMP = (0.0020, 0.0060)          # its size range, either sign
-SPOT_SHARE = 0.3                       # spot's median share of perp quote volume, and of trades
+BASIS_JUMP = (0.00126, 0.00378)        # its size range, either sign (calibrated)
+SPOT_SHARE = 0.213                     # spot's median share of perp quote volume, and of trades (real p50)
 SHARE_PHI = 0.99                       # log share = log SPOT_SHARE + an AR(1) + iid noise
 SHARE_SD = 0.3                         # the AR(1)'s stationary sd
 SHARE_NOISE_SD = 0.3

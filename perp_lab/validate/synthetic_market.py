@@ -18,6 +18,9 @@ path with the path's seed, before the `btc_` columns. Resampled, spot's quote vo
 for a bucket with no spot bar), `spot_close` is the bucket's last and `basis` is recomputed from the bucket's
 `close` and `spot_close`, as a coarser kline's would be. Spot's NaN stretches lie on multiples of 48 rows, so
 they are whole buckets at 15m, 1h and 4h. No other column changed.
+
+Version 5: the spot stream's constants are calibrated to the real-data inventory (docs/research/spot-inventory,
+plan Task 11): its basis tails and spot share move; no other column changed.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from perp_lab.config import TF_MS
 from perp_lab.data import reference, spot
 from perp_lab.validate.causality import synthetic_bars, with_moving_columns
 
-MARKET_VERSION = 4
+MARKET_VERSION = 5
 SYMBOLS = (reference.SYMBOL, "SYN2", "SYN3", "SYN4")
 RHO = (None, 0.55, 0.7, 0.85)           # each coin's return correlation with the reference; None for itself
 DAYS = 180
