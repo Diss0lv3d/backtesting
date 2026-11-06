@@ -103,14 +103,15 @@ def _resample(bars: pd.DataFrame, ms: int) -> pd.DataFrame:
     """OHLC as candles combine; volumes, trade counts, taker flow and funding charged add up; the
     bar's own open time; every other column (funding rate and interval, open interest, regime, the
     close time, `spot_close`) is its state at the bar's close. Spot's volumes and trades add up too,
-    NaN where the bucket has no spot bar; `basis` is recomputed from the bar's `close` and `spot_close`."""
+    NaN where the bucket has no spot bar; `basis` is recomputed from the bar's `close` and `spot_close`, NaN
+    where the bucket's perp `trades` is 0 (X6)."""
     how = {c: "last" for c in bars.columns if c not in _SPOT_SUMMED}
     how.update({c: "sum" for c in _SUMMED})
     how.update(open_time="first", open="first", high="max", low="min", close="last")
     buckets = bars.resample(pd.Timedelta(milliseconds=ms), label="left", closed="left")
     out = buckets.agg(how)
     out[list(_SPOT_SUMMED)] = buckets[list(_SPOT_SUMMED)].sum(min_count=1)
-    out["basis"] = out["close"] / out["spot_close"] - 1
+    out["basis"] = (out["close"] / out["spot_close"] - 1).where(out["trades"] != 0)    # X6: NaN, perp untraded
     return out[bars.columns]
 
 

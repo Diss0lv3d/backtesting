@@ -194,3 +194,17 @@ def test_market_pre_existing_columns_unchanged(tf):
     m = market(tf)
     got = [int(pd.util.hash_pandas_object(df.drop(columns=FIVE)).sum()) for df in m.values()]
     assert got == PRE_SPOT_HASHES[tf]
+
+
+def test_resampled_basis_is_nan_where_the_perp_bucket_has_no_trades():
+    # X6: `basis` is NaN on a bar the perp didn't trade, spot set or not. The market's perp trades are never 0,
+    # so this plants a zero-trade 1h bucket, outside spot's NaN stretches.
+    from perp_lab.validate.synthetic_market import _path, _resample
+    k, j = TF_MS["1h"] // TF_MS["5m"], 30
+    bars = _path(1).copy()
+    bars.iloc[j * k:(j + 1) * k, bars.columns.get_loc("trades")] = 0.0
+    out = _resample(bars, TF_MS["1h"])
+    assert out.trades.iloc[j] == 0 and not np.isnan(out.spot_close.iloc[j])
+    assert np.isnan(out.basis.iloc[j])
+    rest = np.arange(len(out)) != j
+    np.testing.assert_array_equal(out.basis.to_numpy()[rest], (out.close / out.spot_close - 1).to_numpy()[rest])
