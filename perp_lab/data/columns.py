@@ -33,6 +33,8 @@ class ColumnGroup:
     attach: Callable                    # (bars, symbol, tf, source) -> DataFrame
     synthetic: Callable                 # (bars, seed) -> {column: float64 array}; rng (seed, synthetic_id)
     sources: Callable                   # (cfg, symbols, tf) -> [(symbol, dataset directory name)]
+    symbol_check: Callable | None = None    # (cfg, tf) -> [problem]: the source's own data, beyond its manifests
+
 
 
 GROUPS: tuple[ColumnGroup, ...] = (
@@ -40,7 +42,7 @@ GROUPS: tuple[ColumnGroup, ...] = (
                 synthetic_id=reference.SYNTHETIC_ID,
                 exam_required="always", helpers=("reference_frame",), paper_ready=False,
                 load_source=reference.load_source, attach=reference.attach, synthetic=reference.synthetic,
-                sources=reference.sources),
+                sources=reference.sources, symbol_check=reference.symbol_check),
 )
 
 
@@ -81,8 +83,9 @@ def _is_real(entry) -> bool:
 
 
 def column_group_problems(cfg, symbols: list[str], tf: str) -> list[str]:
-    """One string per research month a group's source data is missing or incomplete. Months at
-    or after holdout_start are never looked at."""
+    """One string per research month a group's source data is missing or incomplete, then the
+    group's `symbol_check` lines (once per group). Months at or after holdout_start are never
+    looked at."""
     from perp_lab.data.vision import Manifest
 
     months = _research_months(cfg)
@@ -114,4 +117,6 @@ def column_group_problems(cfg, symbols: list[str], tf: str) -> list[str]:
                     seen_real = True
             if not seen_real:
                 problems.append(f"column group {g.name}: {symbol}/{dataset} has no real month in the research span")
+        if g.symbol_check is not None:
+            problems += g.symbol_check(cfg, tf)
     return problems

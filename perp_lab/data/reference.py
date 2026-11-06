@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from perp_lab.config import TF_MS
 from perp_lab.data import store
 
 log = logging.getLogger(__name__)
@@ -157,3 +158,32 @@ def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
 def sources(cfg, symbols: list[str], tf: str) -> list[tuple[str, str]]:
     """The (symbol, dataset) directories the readiness check reads: BTC's, whatever the coins."""
     return [(SYMBOL, tf), (SYMBOL, "funding"), (SYMBOL, "metrics")]
+
+
+def symbol_check(cfg, tf: str) -> list[str]:
+    """X3's symbol check: BTC's candles in its `tf` folder over the last research month (the month
+    before holdout_start's), read for `open_time` only, must be exactly `tf` apart. That names a folder
+    holding another timeframe's candles, which the manifests can't show, and a gap inside the month.
+    Nothing at or after holdout_start is read."""
+    h = cfg.holdout_start
+    month = (h.tz_localize(None) if h.tzinfo else h).to_period("M") - 1
+    lo, hi = (int(m.start_time.tz_localize("UTC").value // 10**6) for m in (month, month + 1))
+    where = f"column group reference: {SYMBOL}/{tf} {month}"
+    inside = [("open_time", ">=", lo), ("open_time", "<", hi)]
+    t = [pd.read_parquet(f, columns=["open_time"], filters=inside).open_time.to_numpy("int64")
+         for f in sorted((cfg.data_dir / SYMBOL / tf).glob("*.parquet"))]
+    t = np.unique(np.concatenate(t)) if t else np.empty(0, "int64")   # monthly and daily files may overlap
+    if not len(t):
+        return [f"{where} has no candles"]
+    off = sorted(set(np.diff(t).tolist()) - {TF_MS[tf]})
+    if off:
+        return [f"{where} has open times {', '.join(_span(ms) for ms in off)} apart, not {tf}"]
+    return []
+
+
+def _span(ms: int) -> str:
+    """A step in the timeframes' own units: 8h, 15m, 2d."""
+    for unit, size in (("d", 86_400_000), ("h", 3_600_000), ("m", 60_000), ("s", 1000)):
+        if ms % size == 0:
+            return f"{ms // size}{unit}"
+    return f"{ms}ms"
