@@ -9,18 +9,24 @@ from perp_lab.config import load_config
 from perp_lab.paper.tracking import count_regime_changes, paper_regime_status, replay_divergence
 from perp_lab.runs import write_run
 from perp_lab.store import db
+from tests.conftest import write_ready_reference
 
 
 @pytest.fixture
 def cfg(tmp_path):
+    """lab.yaml with the store, runs and data under tmp_path. The data is only BTC's that passes the
+    readiness check (X3), which the judge runs before its stand-in walk-forwards."""
     raw = yaml.safe_load(open("config/lab.yaml"))
+    raw["data_dir"] = str(tmp_path / "data")
     raw["runs_dir"] = str(tmp_path / "runs")
     raw["store"] = {"url": f"sqlite:///{tmp_path}/lab.db"}
     raw["judge"] = {**raw["judge"], "holdout_log": str(tmp_path / "runs" / "holdout_log.jsonl"),
                     "verdicts_dir": str(tmp_path / "runs" / "verdicts")}
     p = tmp_path / "lab.yaml"
     p.write_text(yaml.safe_dump(raw))
-    return load_config(p)
+    c = load_config(p)
+    write_ready_reference(c, tfs=tuple(c["timeframes"]))
+    return c
 
 
 def fake_run(cfg, run_id, strategy="s1", tf="4h", verdict="noise", sharpe=0.3, parent=None, mode="walkforward",

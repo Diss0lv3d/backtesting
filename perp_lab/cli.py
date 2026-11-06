@@ -134,6 +134,7 @@ def walkforward(strategy: str, tf: str = "1h", symbols: Optional[str] = None,
                 parent_run: Optional[str] = typer.Option(None, help="parent run_id (lineage)"),
                 config: Optional[str] = CfgOpt):
     """Walk-forward + sensitivity + random-entry + MC + regime split. OOS headline only."""
+    from perp_lab.data.columns import ReadinessRefused
     from perp_lab.plugins import UndeclaredTimeframe
     from perp_lab.validate.pipeline import validate_strategy
     cfg = load_config(config)
@@ -141,7 +142,7 @@ def walkforward(strategy: str, tf: str = "1h", symbols: Optional[str] = None,
         with runlock.plugin_runs(cfg), _sandbox_required():
             rec, report = validate_strategy(cfg, strategy, tf, _syms(cfg, symbols), seeds, workers, notes,
                                             parent_run_id=parent_run)
-    except UndeclaredTimeframe as e:            # a trial at a timeframe it doesn't declare: nothing ran
+    except (UndeclaredTimeframe, ReadinessRefused) as e:   # an undeclared timeframe, or X3: nothing ran
         typer.secho(f"refused: {e}", fg="red")
         raise typer.Exit(2)
     o, i = rec["metrics"], rec["is_metrics"]
@@ -161,11 +162,12 @@ def paper(from_run: str = typer.Argument(..., help="walk-forward run_id approved
     """Forward-test an APPROVED walk-forward run on live closed candles (modal params)."""
     import sqlalchemy as sa
 
+    from perp_lab.data import columns
     from perp_lab.paper.runner import PaperRunner
     from perp_lab.sandbox import client
     from perp_lab.runs import data_id, data_identity, new_run_id, repo_commit
     from perp_lab.store.db import current_status, engine, record_run, runs
-    from perp_lab.plugins import PluginSource
+    from perp_lab.plugins import PluginSource, reads_columns
     cfg = load_config(config)
     with engine(cfg).connect() as c:
         r = c.execute(sa.select(runs).where(runs.c.run_id == from_run)).mappings().first()
@@ -186,6 +188,13 @@ def paper(from_run: str = typer.Argument(..., help="walk-forward run_id approved
         # One paper worker per coin. Which real fix to pick waits until a strategy first passes an exam.
         typer.secho(f"refused: {len(syms)} coins need {len(syms)} paper workers of {cfg['sandbox']['memory_mb']} MB; "
                     f"this machine holds {held}. Pass --symbols with at most {held} coins.", fg="red")
+        raise typer.Exit(2)
+    with _sandbox_required():                   # reads_columns runs the plugin to rule a group out
+        unfed = next((g for g in columns.GROUPS if not g.paper_ready and reads_columns(cfg, src, g, params)), None)
+    if unfed is not None:                       # the paper feed for its columns doesn't exist yet
+        # reads_columns is also true when its runs can't tell (neither acts, or the plugin fails one)
+        typer.secho(f"refused: {r['strategy']} reads, or can't be shown not to read, the {unfed.name} column "
+                    f"group ({unfed.prefix} columns), which paper trading can't feed yet", fg="red")
         raise typer.Exit(2)
     started = datetime.now(timezone.utc)
     record_run(cfg, {"run_id": rid, "strategy": r["strategy"], "strategy_hash": src.hash,
@@ -432,6 +441,7 @@ def propose(days: float = typer.Option(7, help="stop after this many days"),
             trials: Optional[int] = typer.Option(None, help="stop after this many trials (0: the start checks only)"),
             config: Optional[str] = CfgOpt):
     """Run a proposer session (the unattended strategy builder) until D days, N trials or a stop condition."""
+    from perp_lab.data import columns
     from perp_lab.proposer import context, loop, settings
     from perp_lab.proposer.record import Record
     if Path.cwd().resolve() != Path(context.ROOT).resolve():
@@ -440,8 +450,13 @@ def propose(days: float = typer.Option(7, help="stop after this many days"),
     try:
         cfg = load_config(config)
         pc = settings.load(cfg)
+        # X3 for each proposer timeframe, over the coins `lab judge` uses; here, so perp_lab/proposer/ never
+        # reads data/. Each problem once: a group's funding and metrics serve every timeframe.
+        problems = dict.fromkeys(p for t in pc.timeframes for p in columns.column_group_problems(cfg, cfg.symbols, t))
+        if problems:
+            raise columns.ReadinessRefused(", ".join(pc.timeframes), list(problems))
         reason = loop.run_session(cfg, pc, days=days, trials=trials, repo=context.ROOT)
-    except settings.StartRefused as e:
+    except (settings.StartRefused, columns.ReadinessRefused) as e:
         typer.secho(f"refused: {e}", fg="red", err=True)
         raise typer.Exit(2)
     typer.echo(f"stopped: {reason}")

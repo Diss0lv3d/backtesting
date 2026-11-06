@@ -67,8 +67,8 @@ def recorded_run(cfg, run_id, t=None, sign=1, drop=(), **over):
 def test_diagnostics_from_a_recorded_run(cfg):
     d = diagnostics(cfg, recorded_run(cfg, "r1", trades()), data="judged", earlier=[])
     assert set(d) == {"data", "gates", "before_costs", "per_trade_bp", "sides", "exits", "regimes", "breadth",
-                      "is_vs_oos", "selection", "overlap"}
-    assert d["data"] == "judged"
+                      "is_vs_oos", "selection", "overlap", "market"}
+    assert d["data"] == "judged" and d["market"] is None          # a run from before the market diagnostic
     assert d["gates"] == {"net_sharpe": 0.3, "random_mean": 0.1, "random_p95": 0.9, "pctile": 0.6,
                           "long_share": 0.75, "oos_trades": 4, "min_oos_trades": 8}
     assert d["before_costs"] == {"sharpe": 0.8, "random_mean": 0.2, "random_p95": 1.1, "pctile": 0.7}
@@ -159,6 +159,13 @@ def test_a_run_from_before_the_gross_pass(cfg):
                     data="judged", earlier=[])
     assert d["before_costs"] is None and d["gates"]["min_oos_trades"] is None
     assert d["gates"]["net_sharpe"] == 0.3
+
+
+def test_the_market_block_is_the_runs_btc_exposure(cfg):
+    m = {"beta": 1.2, "corr": float("nan"), "hedged_sharpe": -0.4}
+    d = diagnostics(cfg, recorded_run(cfg, "r1", trades(), btc_exposure=m), data="judged", earlier=[])
+    assert d["market"] == {"beta": 1.2, "corr": None, "hedged_sharpe": -0.4}
+    json.dumps(d, allow_nan=False)
 
 
 def test_diagnostics_name_where_their_data_came_from(cfg):

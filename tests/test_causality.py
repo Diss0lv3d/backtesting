@@ -27,13 +27,15 @@ def test_every_real_plugin_has_no_causality_failures(cfg, name, monkeypatch):
 
 def test_cheater_is_reported_not_raised(cfg):
     fails = causality_failures(cfg, CHEATER)
-    assert len(fails) == 1 and fails[0].startswith("defaults: AssertionError")
+    assert len(fails) == 2 and fails[0].startswith("defaults: AssertionError")
+    assert fails[1].startswith("defaults as BTC: AssertionError")
 
 
 def test_plugin_that_crashes_is_reported(cfg):
     text = CHEATER_TEXT.replace("return bars[[]].assign(nxt=bars.close.shift(-1), atr=atr(bars, 14))",
                                 'raise KeyError("no such column")')
-    assert causality_failures(cfg, PluginSource.from_text("broken", text)) == ["defaults: KeyError: 'no such column'"]
+    assert causality_failures(cfg, PluginSource.from_text("broken", text)) == [
+        "defaults: KeyError: 'no such column'", "defaults as BTC: KeyError: 'no such column'"]
 
 
 PEEKER = '''"""Goes long when the next bar's value of one column is higher (e.g. next OI)."""
@@ -141,7 +143,8 @@ class Memoiser(Strategy):
 @pytest.mark.sandbox
 def test_a_memoising_cheater_is_caught(cfg):
     fails = causality_failures(cfg, PluginSource.from_text("memoiser", MEMOISER))
-    assert len(fails) == 1 and fails[0].startswith("defaults: AssertionError: features at cut")
+    assert len(fails) == 2 and fails[0].startswith("defaults: AssertionError: features at cut")
+    assert fails[1].startswith("defaults as BTC: AssertionError: features at cut")
 
 
 def test_a_cut_run_that_dies_is_reported_for_its_variant(cfg, monkeypatch):
@@ -154,4 +157,5 @@ def test_a_cut_run_that_dies_is_reported_for_its_variant(cfg, monkeypatch):
 
     monkeypatch.setattr(client, "fresh_run", dying)
     honest = CHEATER_TEXT.replace("shift(-1)", "shift(1)")
-    assert causality_failures(cfg, PluginSource.from_text("honest", honest)) == ["defaults: plugin_error: died"]
+    assert causality_failures(cfg, PluginSource.from_text("honest", honest)) == [
+        "defaults: plugin_error: died", "defaults as BTC: plugin_error: died"]

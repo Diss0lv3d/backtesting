@@ -25,9 +25,10 @@ def per_coin_min(per_coin: float, n_coins: int) -> int:
 def data_identity(cfg, symbols: list[str]) -> dict:
     """What a run's numbers depend on besides the plugin: history, coins and costs."""
     from perp_lab.engine.slippage import COST_MODEL_VERSION
+    from perp_lab.data import columns
     return {"history_start": str(cfg.history_start.date()), "universe": list(symbols),
             "cost_model": COST_MODEL_VERSION, "costs": cfg["costs"],
-            "brackets": {s: cfg.bracket(s) for s in symbols}}
+            "brackets": {s: cfg.bracket(s) for s in symbols}, **columns.identity_block()}
 
 
 def _canon(x):

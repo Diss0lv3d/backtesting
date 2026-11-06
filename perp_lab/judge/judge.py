@@ -1,9 +1,9 @@
 """The judge: promote or kill a strategy plugin against its parent, with no human involved.
 
 Spec: docs/superpowers/specs/2026-10-16-judge-design.md. Flow: pre-checks -> idempotency ->
-lookahead (the child's, then the parent's) -> parent run -> child walk-forward -> gates -> decision ->
-judgement + lineage edge -> (a promotion supersedes its parent's pending exam) -> diagnostics ->
-public verdict.
+lookahead (the child's, then the parent's) -> column group readiness (X3) -> parent run -> child
+walk-forward -> gates -> decision -> judgement + lineage edge -> (a promotion supersedes its parent's
+pending exam) -> diagnostics -> public verdict.
 
 `judge` never runs an exam: a promotion waits as `pending` (`awaiting_exam`) for `lab exam`
 (`exam_pending` -> `attempt_exam`). The proposer runs `lab judge`, so it must not be able to time
@@ -20,6 +20,7 @@ from typing import Callable
 
 import pandas as pd
 
+from perp_lab.data import columns
 from perp_lab.engine.metrics import summarize
 from perp_lab import runlock
 from perp_lab.judge import budget, gates
@@ -268,6 +269,10 @@ def judge(cfg, name: str, tf: str, symbols: list[str] | None = None, workers: in
         return db.run_row(cfg, prec["run_id"])
 
     universe = symbols or cfg.symbols
+    try:                                 # X3: before the parent runs and before this trial counts
+        columns.require_ready(cfg, universe, tf)
+    except columns.ReadinessRefused as e:
+        raise JudgeRefused(str(e)) from e
     parent_row = None
     if parent is not None:
         parent_row = db.latest_wf_run(cfg, parent, tf, psrc.hash, universe,

@@ -129,6 +129,18 @@ def test_the_columns_a_plugin_may_read_are_the_bar_tables_but_slippage():
     assert context.PLUGIN_COLUMNS == (
         "open_time", "close_time", "open", "high", "low", "close", "volume", "quote_volume", "trades",
         "taker_buy_volume", "taker_buy_quote_volume", "funding_charge", "funding_last", "funding_interval_h", "oi",
-        "oi_value", "regime", "regime_adx")
+        "oi_value", "regime", "regime_adx", "btc_open", "btc_high", "btc_low", "btc_close", "btc_quote_volume",
+        "btc_taker_buy_quote_volume", "btc_funding_last", "btc_oi_value")
     from perp_lab.proposer.seed import load_seed
     assert {c for e in load_seed() for c in e["card"]["columns"]} <= set(context.PLUGIN_COLUMNS)
+
+
+def test_the_builder_is_told_about_the_btc_columns(cfg):
+    text = context.static_context(cfg, load(cfg))
+    for row in ("| btc_open, btc_high, btc_low, btc_close |", "| btc_quote_volume |",
+                "| btc_taker_buy_quote_volume |", "| btc_funding_last |", "| btc_oi_value |"):
+        assert row in text, row
+    for phrase in ("BTCUSDT", "nothing is filled forward", "diagnostics.market", "reference_frame", "rolling_beta",
+                   "as BTCUSDT"):
+        assert phrase in text, phrase
+    assert len(text.encode("utf-8")) < context.STATIC_MAX_BYTES

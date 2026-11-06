@@ -89,10 +89,10 @@ def plugins(tmp_path, monkeypatch):
 
 class StubValidate:
     """Stands in for validate_strategy: records a walk-forward run with a scripted verdict and OOS series, and
-    the same few OOS trades and summary figures every time."""
+    the same few OOS trades and summary figures every time, plus `extra` summary keys."""
 
-    def __init__(self, outcomes: dict):
-        self.outcomes, self.calls = outcomes, []
+    def __init__(self, outcomes: dict, extra: dict | None = None):
+        self.outcomes, self.calls, self.extra = outcomes, [], extra or {}
 
     def __call__(self, cfg, name, tf, symbols=None, seeds=None, workers=None, notes="",
                  parent_run_id=None, lineage_id=None, src=None):
@@ -115,6 +115,6 @@ class StubValidate:
                "sensitivity": {"base_params": dict((src or PluginSource.read(name)).meta.params),
                                "narrow_island": False},
                "parent_run_id": parent_run_id, "lineage_id": lineage_id,
-               "created_at": pd.Timestamp.now(tz="UTC").isoformat()}
+               "created_at": pd.Timestamp.now(tz="UTC").isoformat(), **self.extra}
         d = write_run(cfg, rec, {"oos_daily": pd.DataFrame({"PORTFOLIO": oos}), "oos_trades": stub_trades()})
         return {**rec, "run_dir": str(d)}, "report"

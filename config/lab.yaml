@@ -20,6 +20,12 @@ history_start: "2020-01-01"
 # promotion gate may obtain a HoldoutToken.
 holdout_start: "2026-07-01"
 
+# Extra columns attached to every coin's bars; see docs/superpowers/specs/2026-11-05-cross-coin-reference-design.md
+# (X3). `exclusions`: coins with no usable source. `known_gaps`: {symbol, dataset, month, why}
+# entries the readiness check accepts; fixed before any trial of the group, never edited after.
+column_groups:
+  reference: {known_gaps: []}
+
 backfill:
   datasets: [klines, fundingRate, metrics]   # aggTrades: not wired (optional, huge)
   workers: 8

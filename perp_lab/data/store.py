@@ -1,4 +1,4 @@
-"""Parquet readers + the holdout guard + bar assembly (candles + funding + OI + regime).
+"""Parquet readers + the holdout guard + bar assembly (candles, funding, OI, column groups, regime).
 
 Every research read goes through here. Reads at/after `holdout_start` raise
 unless a valid HoldoutToken is passed.
@@ -16,6 +16,7 @@ from perp_lab.config import TF_MS, Config
 from perp_lab.holdout import HoldoutViolation, check_token
 
 log = logging.getLogger(__name__)
+OI_PUBLISH_LAG_MS = 300_000            # a metrics snapshot stamped T is known at T + this
 _gap_warned: set[tuple[str, str]] = set()
 _tail_warned: set[tuple[str, str]] = set()
 
@@ -115,6 +116,41 @@ def load_metrics(cfg: Config, symbol: str) -> pd.DataFrame | None:
     return df.drop_duplicates("create_time").sort_values("create_time").reset_index(drop=True)
 
 
+def funding_last_at(close_times: np.ndarray, funding: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Last settled funding rate and its interval hours as of each close time.
+
+    A settlement is known once `funding_time <= close_time`. NaN before the first one
+    (and everywhere when `funding` is empty). Pure: the same rule for a coin's own
+    funding and for a reference coin's.
+    """
+    close_times = np.asarray(close_times)
+    if funding is None or funding.empty:
+        return np.full(len(close_times), np.nan), np.full(len(close_times), np.nan)
+    ft = funding.funding_time.values.astype("int64")
+    fr = funding.funding_rate.values.astype("float64")
+    ih = funding.interval_hours.values.astype("float64")
+    j = np.searchsorted(ft, close_times, side="right") - 1
+    jc = np.clip(j, 0, len(fr) - 1)
+    return np.where(j >= 0, fr[jc], np.nan), np.where(j >= 0, ih[jc], np.nan)
+
+
+def metrics_at(close_times: np.ndarray, metrics: pd.DataFrame | None,
+               publish_lag_ms: int = OI_PUBLISH_LAG_MS) -> tuple[np.ndarray, np.ndarray]:
+    """`oi` and `oi_value` as of each close time. A snapshot stamped T is known at T + lag.
+
+    NaN before the first known snapshot, and everywhere when `metrics` is None or empty.
+    """
+    close_times = np.asarray(close_times)
+    if metrics is None or metrics.empty:
+        return np.full(len(close_times), np.nan), np.full(len(close_times), np.nan)
+    known = metrics.create_time.values.astype("int64") + publish_lag_ms
+    j = np.searchsorted(known, close_times, side="right") - 1
+    valid = j >= 0
+    jj = np.clip(j, 0, len(known) - 1)
+    return (np.where(valid, metrics.oi.values[jj], np.nan),
+            np.where(valid, metrics.oi_value.values[jj], np.nan))
+
+
 def align_funding(candles: pd.DataFrame, funding: pd.DataFrame, tf: str) -> pd.DataFrame:
     """Attach funding to bars.
 
@@ -122,7 +158,7 @@ def align_funding(candles: pd.DataFrame, funding: pd.DataFrame, tf: str) -> pd.D
         charges it at that bar's open, to the position held *before* the open's fills.
         (Exit at the settlement open pays; entry at it does not.)
     funding_last:   last settled rate known by the bar's close — the only funding
-        value a strategy may look at on that bar.
+        value a strategy may look at on that bar (see `funding_last_at`).
     """
     out = candles.copy()
     n = len(out)
@@ -139,30 +175,15 @@ def align_funding(candles: pd.DataFrame, funding: pd.DataFrame, tf: str) -> pd.D
     charge = np.zeros(n)
     np.add.at(charge, idx[ok], fr[ok])
     out["funding_charge"] = charge
-    # Known at bar close: last settlement with time <= close_time.
-    ct = out.close_time.values
-    j = np.searchsorted(ft, ct, side="right") - 1
-    last = np.where(j >= 0, fr[np.clip(j, 0, len(fr) - 1)], np.nan)
-    out["funding_last"] = last
-    ih = funding.interval_hours.values.astype("float64")
-    out["funding_interval_h"] = np.where(j >= 0, ih[np.clip(j, 0, len(ih) - 1)], np.nan)
+    out["funding_last"], out["funding_interval_h"] = funding_last_at(out.close_time.values, funding)
     return out
 
 
 def align_metrics(candles: pd.DataFrame, metrics: pd.DataFrame | None,
-                  publish_lag_ms: int = 300_000) -> pd.DataFrame:
-    """As-of join OI onto bars. A snapshot stamped T is treated as known at T + lag."""
+                  publish_lag_ms: int = OI_PUBLISH_LAG_MS) -> pd.DataFrame:
+    """As-of join OI onto bars (see `metrics_at`)."""
     out = candles.copy()
-    if metrics is None or metrics.empty:
-        out["oi"] = np.nan
-        out["oi_value"] = np.nan
-        return out
-    known = metrics.create_time.values.astype("int64") + publish_lag_ms
-    j = np.searchsorted(known, out.close_time.values, side="right") - 1
-    valid = j >= 0
-    jj = np.clip(j, 0, len(known) - 1)
-    out["oi"] = np.where(valid, metrics.oi.values[jj], np.nan)
-    out["oi_value"] = np.where(valid, metrics.oi_value.values[jj], np.nan)
+    out["oi"], out["oi_value"] = metrics_at(out.close_time.values, metrics, publish_lag_ms)
     return out
 
 
@@ -180,8 +201,14 @@ def attach_slippage(cfg: Config, candles: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_bars(cfg: Config, symbol: str, tf: str, start=None, end=None, holdout=None,
-              with_regime: bool = True, with_metrics: bool = True) -> pd.DataFrame:
-    """Candles + funding + OI + regime label, all strictly causal."""
+              with_regime: bool = True, with_metrics: bool = True, groups: bool = True,
+              sources: dict[str, object] | None = None) -> pd.DataFrame:
+    """Candles + funding + OI + each column group's columns + regime label, all strictly causal.
+
+    `sources`: a group's shared source by group name; a group without one builds it here with the
+    same start, end and token.
+    """
+    from perp_lab.data import columns          # not at module level: columns -> reference -> store
     from perp_lab.validate.regime import attach_regime
 
     lead = (cfg["costs"]["slippage_model"]["adv_days"] + 1) * 86_400_000
@@ -193,6 +220,12 @@ def load_bars(cfg: Config, symbol: str, tf: str, start=None, end=None, holdout=N
     c = align_funding(c, load_funding(cfg, symbol), tf)
     if with_metrics:
         c = align_metrics(c, load_metrics(cfg, symbol))
+    if groups:
+        for g in columns.GROUPS:
+            src = (sources or {}).get(g.name)
+            if src is None and g.load_source is not None:
+                src = g.load_source(cfg, tf, start, end, holdout)
+            c = g.attach(c, symbol, tf, src)
     if with_regime:
         c = attach_regime(cfg, c, symbol, start, end, holdout)
     return c

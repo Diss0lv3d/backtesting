@@ -1,4 +1,5 @@
-"""Plugin source and metadata, read from the text with `ast`; no plugin code runs here.
+"""Plugin source and metadata, read from the text with `ast`; no plugin code runs here, except in
+sandbox workers for `reads_columns`'s dynamic half.
 
 The hash is the git blob SHA-1 of the bytes read, so it equals `git hash-object` for the file.
 """
@@ -7,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from perp_lab import strategy
@@ -143,3 +145,100 @@ def parse_meta(text: bytes, name: str) -> PluginMeta:
     doc = ast.get_docstring(tree, clean=False) or ""
     hypothesis = doc.strip().splitlines()[0].strip() if doc.strip() else ""
     return PluginMeta(parent, hypothesis, meta["params"], meta["grid"], meta["timeframes"], meta["session"])
+
+
+def names_group(src: PluginSource, group) -> list[str]:
+    """Where `src` names a column group (a `columns.ColumnGroup`), read from the text with `ast`; no
+    plugin code runs. Each name is listed once, in source order. It counts:
+    - a string constant or f-string part that holds one of the group's columns (listed); else its prefix
+      (`f"btc_{k}"` lists "btc_"); else, outside a docstring, the prefix's stem (`filter(like="btc")`
+      lists "btc");
+    - an attribute named like a column or a helper, or starting with the prefix (`bars.btc_close`,
+      `ind.reference_frame`), called or not;
+    - a name bound to a helper, called or not, listed as the helper: `reference_frame(bars)`, `rf(bars)`
+      after `import reference_frame as rf`, `f = reference_frame`. A bare import is not a read.
+    Comments aren't in the tree, so they never count. Docstrings count by column or prefix (a plugin can
+    read its own back, and a false positive only costs a refused paper run), not by the bare stem, which
+    prose uses for the coin."""
+    tree = ast.parse(src.text)
+    helper = {h: h for h in group.helpers} | {
+        a.asname or a.name: a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+        for a in n.names if a.name in group.helpers}
+    docs = {d for n in ast.walk(tree) if (d := _docstring(n)) is not None}
+    stem = group.prefix.rstrip("_")
+    hits = []                                       # (line, column, name)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names = _named_in(node.value, group, None if node in docs else stem)
+        elif isinstance(node, ast.Attribute) and (node.attr in group.columns or node.attr in group.helpers
+                                                  or node.attr.startswith(group.prefix)):
+            names = [node.attr]
+        elif isinstance(node, ast.Name) and node.id in helper:
+            names = [helper[node.id]]
+        else:
+            continue
+        hits += [(node.lineno, node.col_offset, n) for n in names]
+    return list(dict.fromkeys(n for *_, n in sorted(hits)))
+
+
+def _docstring(node: ast.AST) -> ast.Constant | None:
+    """The docstring's constant of a module, class or function; None for any other node or none there."""
+    if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+        first = node.body[0].value if isinstance(node.body[0], ast.Expr) else None
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first
+    return None
+
+
+def _named_in(s: str, group, stem: str | None) -> list[str]:
+    """The group's columns that `s` holds; else its prefix, if `s` holds it; else `stem`, if given and held."""
+    cols = [c for c in group.columns if c in s]
+    if cols:
+        return cols
+    for name in (group.prefix, stem):
+        if name and name in s:
+            return [name]
+    return []
+
+
+# A run's failure that is the machine's or the pipe's, not the plugin's: a worker lost twice (`fresh_run`
+# retries a WorkerLost once, then raises PluginError with its kind) or a protocol error.
+_NOT_THE_PLUGINS = ("died", "timeout", "protocol")
+
+
+def reads_columns(cfg, src: PluginSource, group, params: dict | None = None) -> bool:
+    """Whether `src` reads `group`: it names it (`names_group`), or the dynamic half can't rule it out.
+
+    That half runs the plugin as the lookahead check does: on the check's own bars (`causality.check_bars()`,
+    whose group stream the check verified), as coin "X" at 1h, each run in a fresh sandbox worker, at the
+    default params and at `params` when given. For each params, one run is on those bars and one has only
+    the group's stream replaced, by `group.synthetic(bars, 1)`. The plugin reads the group when, for either
+    params:
+    - the two runs' decisions differ: entries and exits with their stop and target levels. Features don't
+      count, so a plugin that passes every column through `prepare` and decides on close alone doesn't read it;
+    - neither run makes a decision, so the runs can't tell;
+    - the plugin fails a run (a PluginError). A worker lost twice and a protocol error are the machine's
+      failures, not the plugin's, and are raised, as is any other error."""
+    if names_group(src, group):
+        return True
+    from perp_lab.engine.backtest import EngineParams
+    from perp_lab.sandbox import client             # client imports this module
+    from perp_lab.sandbox.errors import PluginError
+    from perp_lab.validate import causality
+
+    checked = causality.check_bars()
+    sides = (checked, checked.assign(**group.synthetic(checked, 1)))
+    variants = [{}] + ([dict(params)] if params else [])
+    with ThreadPoolExecutor(client.max_workers(cfg)) as pool:
+        runs = [[pool.submit(client.fresh_run, cfg, src, "X", "1h", b, kw, EngineParams()) for b in sides]
+                for kw in variants]
+        for pair in runs:
+            try:
+                a, b = (f.result().decisions for f in pair)
+            except PluginError as e:
+                if e.kind in _NOT_THE_PLUGINS:
+                    raise
+                return True
+            if a.n_actions() == b.n_actions() == 0 or not a.same(b):
+                return True
+    return False

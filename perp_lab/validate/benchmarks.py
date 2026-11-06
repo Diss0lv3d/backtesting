@@ -1,4 +1,5 @@
-"""Benchmarks: buy-and-hold (with funding) and random-entry (same exits).
+"""Benchmarks: buy-and-hold (with funding) and random-entry (same exits), and the OOS portfolio's
+exposure to BTC (information only).
 
 A strategy that does not beat the random-entry distribution OOS is noise.
 """
@@ -8,15 +9,18 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from perp_lab.data.store import load_bars
+from perp_lab.data import reference
+from perp_lab.data.store import load_bars, load_candles
 from perp_lab.engine.metrics import portfolio_returns, sharpe, summarize
 from perp_lab.validate.walkforward import WFResult, _window, modal_params, run_many
+
+BTC_EXPOSURE_MIN_DAYS = 30      # fewer overlapping daily returns give no BTC exposure: too few to estimate a beta
 
 
 def buy_and_hold(cfg, symbols, tf, a, b) -> dict:
     per = {}
     for s in symbols:
-        bars = load_bars(cfg, s, tf, with_regime=False, with_metrics=False)
+        bars = load_bars(cfg, s, tf, with_regime=False, with_metrics=False, groups=False)
         d = pd.DataFrame({"close": bars.close, "f": bars.funding_charge}).resample("1D").agg(
             {"close": "last", "f": "sum"})
         r = d.close.pct_change() - d.f          # 1x long pays positive funding
@@ -24,6 +28,33 @@ def buy_and_hold(cfg, symbols, tf, a, b) -> dict:
     port = portfolio_returns(per)
     return {"portfolio": summarize(port), "per_symbol": {s: summarize(r) for s, r in per.items()},
             "daily": port}
+
+
+def btc_exposure(cfg, oos_portfolio: pd.Series, tf: str, a, b) -> dict | None:
+    """How much of an OOS result is just BTC (the market diagnostic; no gate reads it). Over [a, b),
+    the portfolio's daily returns against BTCUSDT's UTC-daily close-to-close returns from its research
+    candles at `tf`: `beta`, `corr`, and `hedged_sharpe`, the annualised Sharpe of r_p - beta * r_BTC
+    with beta from the same span. The random-entry benchmark draws entries uniformly over flat bars,
+    so it never shares a plugin's BTC timing; this shows a BTC-timed long for what it is.
+
+    None when BTC has no candles at `tf` or fewer than BTC_EXPOSURE_MIN_DAYS daily returns overlap the
+    portfolio's; `corr` is None for a flat portfolio (one that never traded), whose beta and hedged
+    Sharpe are 0."""
+    try:
+        close = load_candles(cfg, reference.SYMBOL, tf).close.resample("1D").last()
+    except FileNotFoundError:
+        return None
+    r_btc = close / close.shift(1) - 1
+    both = _window(pd.concat([oos_portfolio, r_btc], axis=1, join="inner").dropna(), a, b)
+    if len(both) < BTC_EXPOSURE_MIN_DAYS:
+        return None
+    rp, rb = both.iloc[:, 0], both.iloc[:, 1]
+    var = rb.var()
+    if not var > 0:
+        return None
+    beta = float(rp.cov(rb) / var)
+    corr = float(rp.corr(rb)) if rp.var() > 0 else None
+    return {"beta": beta, "corr": corr, "hedged_sharpe": sharpe(rp - beta * rb)}
 
 
 def random_entry(cfg, wf: WFResult, seeds: int | None = None, workers=None, *,

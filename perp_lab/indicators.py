@@ -151,3 +151,22 @@ def ny_session_day(t_ms: np.ndarray) -> np.ndarray:
     """Trading date (epoch days) of a 18:00->18:00 New York session; 18:00 starts the next date."""
     t = np.asarray(t_ms, dtype=np.int64)
     return (t + ny_offset_ms(t) + 6 * 3_600_000) // _DAY_MS
+
+
+_REFERENCE_BAR_COLUMNS = ("open", "high", "low", "close", "quote_volume", "taker_buy_quote_volume")
+
+
+def reference_frame(bars: pd.DataFrame, prefix: str = "btc_") -> pd.DataFrame:
+    """The reference coin's bar as a plain OHLC frame, so any indicator runs on it: `open_time`, `close_time`
+    and the six `<prefix>` bar columns renamed to open, high, low, close, quote_volume, taker_buy_quote_volume,
+    on the same index. E.g. `adx(reference_frame(bars))`."""
+    out = bars[["open_time", "close_time"] + [prefix + c for c in _REFERENCE_BAR_COLUMNS]]
+    return out.rename(columns={prefix + c: c for c in _REFERENCE_BAR_COLUMNS})
+
+
+def rolling_beta(y: pd.Series, x: pd.Series, n: int) -> pd.Series:
+    """Causal rolling beta of y on x over the last n bars: cov(y, x) / cov(x, x). The variance comes from the
+    same cov call, so rolling_beta(x, x, n) is exactly 1.0 (`.var()` differs by ~1e-14). NaN where the
+    variance is 0."""
+    var = x.rolling(n).cov(x)
+    return y.rolling(n).cov(x) / var.where(var != 0)

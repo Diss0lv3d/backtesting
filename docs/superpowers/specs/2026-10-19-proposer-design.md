@@ -1122,3 +1122,24 @@ carry data.
   as a change or a ratio rather than a level.
 - **Unchanged.** No past verdict read either column: no judged plugin references them. The long/short-ratio fields
   in the same archive are still not attached to bars.
+
+## Amended: BTC reference columns (2026-11-05)
+
+Spec: `docs/superpowers/specs/2026-11-05-cross-coin-reference-design.md`. Every coin's bars now carry eight `btc_`
+columns: BTCUSDT's open, high, low, close, quote volume and taker-buy quote volume on the bar with the same open
+time, its last funding rate settled by the bar's close and its open interest at the bar's close (the same 5-minute
+publish lag as `oi_value`). They are built only from BTC's candles, funding and metrics, never from BTC's full bar
+table.
+
+- **What the builder reads.** The bar table gains five rows for the `btc_` columns (`context.BAR_COLUMNS`), and the
+  paragraph under it says: BTC's bar closes when the coin's does, so a plugin may use it on bar t like the coin's own
+  columns; on BTC's own bars they equal BTC's own, so a rule about other coins should not trade BTC; the prices and
+  volumes are NaN where BTC's bar is missing, nothing filled forward; `btc_oi_value` is NaN before 2020-09-01; a coin's
+  bars start at its listing, so a long BTC lookback warms up from there; the engine still trades one coin at a time, so
+  a signal on the coin's move net of BTC must still predict the coin's own move. `reference_frame` and `rolling_beta`
+  in `perp_lab/indicators.py` work with the columns, and a verdict's `diagnostics.market` gives the OOS record's beta and
+  correlation to BTC and its Sharpe with BTC hedged out. The synthetic-bars sentence says the `btc_` columns there are
+  a synthetic BTC that moves with the coin, and that the lookahead check also runs each plugin as BTCUSDT.
+- **Unchanged.** No gate, threshold, cost or benchmark rule; trials that read `btc_` count in the one store-wide N. No
+  past verdict read the columns. The proposer still cannot run exams, and `lab paper` refuses a plugin that reads
+  them until paper can feed them.

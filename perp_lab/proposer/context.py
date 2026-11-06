@@ -96,6 +96,11 @@ BAR_COLUMNS = """\
 | slippage | not available to plugins: real bars carry it, but the checks' synthetic bars don't, so a plugin that reads it fails the lookahead check | none |
 | regime | the coin's 4h regime label (below) | text |
 | regime_adx | the 4h ADX behind the label | ADX points |
+| btc_open, btc_high, btc_low, btc_close | BTCUSDT perpetual trade prices on its bar with this bar's open time; NaN where that bar is missing or had no trades | USDT |
+| btc_quote_volume | BTC's volume traded on that bar (NaN as above) | USDT |
+| btc_taker_buy_quote_volume | BTC's volume bought by takers on that bar (NaN as above) | USDT |
+| btc_funding_last | BTC's last funding rate settled by this bar's close | fraction of notional per settlement |
+| btc_oi_value | BTC's open interest at this bar's close (5-minute publish lag, as `oi_value`); NaN before 2020-09-01 | USDT |
 
 `regime` is trending, ranging, high_vol, transition, or unknown during warm-up, from the coin's 4h bars; a 4h
 label is known only once its 4h bar closes. A value is NaN where nothing is known yet (before a coin's first
@@ -104,7 +109,17 @@ open-interest snapshots: a bar carries the last snapshot published by its close,
 minutes after its stamp. They start on 2021-12-01 for every coin but BTC, which starts on 2020-09-01, so they are
 NaN on every earlier bar. A plugin that needs them trades nothing before then, and those flat days still count in
 its OOS record, diluting its Sharpe. A plugin that reads them must handle NaN. Their level differs by coin and
-grows over the years, so read them as a change or a ratio rather than a level."""
+grows over the years, so read them as a change or a ratio rather than a level.
+
+The `btc_` columns put BTC on every coin's bars: BTC's bar with the same open time at the same timeframe, which
+closes when the coin's does, so a plugin may use them on bar t as it uses the coin's own. On BTC's own bars they
+equal BTC's own columns: a rule about other coins against BTC should not trade BTC (check `ctx.symbol ==
+"BTCUSDT"` in `entry`). The four prices and two volumes are NaN where BTC's bar is missing or had no trades;
+nothing is filled forward. A coin's bars start at its listing, so a long BTC lookback warms up from there. The
+engine still trades one coin at a time: a position in a coin carries that coin's full move with BTC, so a signal
+built on the coin's move net of BTC must still predict the coin's own move to pay. `reference_frame` and
+`rolling_beta` in perp_lab/indicators.py work with these columns. A verdict's `diagnostics.market` gives the OOS
+record's beta and correlation to BTC and its Sharpe with BTC hedged out."""
 
 
 def _plugin_columns(table: str) -> tuple[str, ...]:
@@ -289,7 +304,9 @@ def _piles(cfg, pc: ProposerConfig) -> str:
             f"{om}) of a judged plugin outside the proposal's port group is refused: a closed idea's outright, an "
             "open idea's with the advice to refine or port that idea instead. A mirror (the same overlap with one "
             "side flipped) of any judged plugin is refused. The synthetic bars' taker, open-interest and volume "
-            "columns are random walks, and they have no `slippage` column.",
+            "columns are random walks, their `btc_` columns a synthetic BTC that moves with the coin, and they have "
+            "no `slippage` column. The lookahead check also runs each plugin as BTCUSDT, its `btc_` columns equal "
+            "to its own.",
             f"- A refused reply comes back with the errors. A proposal gets {pc.fixups_per_proposal} fix-ups; then it "
             "is dropped, with no trial.",
         ]),

@@ -34,6 +34,8 @@ needed they come from env vars — never from config files.
 config/lab.yaml          universe, TFs, costs, account, holdout date, validation knobs
 perp_lab/data/vision.py  backfill (klines, fundingRate, metrics/OI) with checksum verification
 perp_lab/data/store.py   parquet readers, holdout guard, funding/OI/regime alignment
+perp_lab/data/columns.py column groups (the `btc_` reference): readiness check, data identity
+perp_lab/data/reference.py the eight `btc_` columns: BTCUSDT's bar, funding and OI on every coin's bars
 perp_lab/data/live.py    ccxt REST tail + ccxt.pro closed-candle stream
 perp_lab/engine/         event-driven backtest, liquidation math, metrics
 perp_lab/validate/       walk-forward, sensitivity, Monte Carlo, regime, benchmarks, pipeline
@@ -74,6 +76,15 @@ tests/                   lookahead (auto on every plugin), fees/funding, liquida
 - `--tf` must be one of the plugin's declared `timeframes` (and its parent's); anything else is refused (exit
   2) before the sandbox check, the lookahead check or anything is recorded, since the walk-forward would be a
   trial that can't be taken back. `lab walkforward` refuses the same way; `lab backtest` (in-sample, not a trial) doesn't.
+- **Readiness.** Every coin's bars carry eight `btc_` columns (BTCUSDT's open, high, low, close, quote volume, taker-buy
+  quote volume, last funding rate and open interest, `load_bars(..., groups=True)`), built only from BTC's candles,
+  funding and metrics files. Before any trial counts, `lab judge`, `lab walkforward` and `lab propose` check that BTC's
+  research months are present and complete (and, for the reference, that BTC's own symbol check passes) and refuse
+  with exit 2 listing every problem; `validate_strategy` refuses the same way. `config/lab.yaml`
+  `column_groups.reference.known_gaps` is `[]`. `lab paper` refuses a plugin that reads the `btc_` columns, since paper
+  can't feed them yet. Trials that read them count in the one store-wide N.
+- A verdict's `diagnostics.market` holds the OOS portfolio's daily `beta` and `corr` to BTC and the `hedged_sharpe`
+  of the series with BTC hedged out. For information only: no gate reads it.
 - A plugin names its parent with a module-level `PARENT = "name"`; without one it starts a family.
 - A family is `"family:<root plugin name>"`, found by walking PARENT links, so a whole PARENT chain
   (e.g. `donchian_atr` and `donchian_atr_wide`) shares one family and therefore one holdout read. A plugin
@@ -108,6 +119,10 @@ tests/                   lookahead (auto on every plugin), fees/funding, liquida
   window ends where those candles do, so no exam bar carries a stale regime label. And every UTC day of the
   window must hold at least one candle at both timeframes (timestamps only): that catches a day missing from
   the still-open month, while a short exchange outage doesn't hold an exam back.
+  BTC's candles, funding and metrics are held to the same standard whether or not BTC is an exam coin: BTC's months
+  at the timeframe must come from exchange files, every UTC day of the window must hold at least one BTC candle and
+  one BTC metrics snapshot (the problem is noted " (BTC reference)"), and the window ends where BTC's candles, funding
+  or metrics (plus 5 minutes) end, so no exam bar carries a stale `btc_oi_value`.
 - `lab exam` reports each failing exam with ` ERROR: ...`, continues with the rest, and exits 1 if any failed.
 - `lab withdraw PLUGIN --tf TF --reason "..."` withdraws a pending promotion before its read is minted (a
   human's decision on the walk-forward record, e.g. a pre-registered check that failed): status and code

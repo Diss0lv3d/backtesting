@@ -26,7 +26,8 @@ import numpy as np
 import pandas as pd
 
 from perp_lab.config import TF_MS
-from perp_lab.data.store import load_bars
+from perp_lab.data import columns, reference
+from perp_lab.data.store import OI_PUBLISH_LAG_MS, load_bars
 from perp_lab.engine.backtest import EngineParams
 from perp_lab.engine.metrics import daily_returns, portfolio_returns
 from perp_lab.holdout import check_token
@@ -54,22 +55,40 @@ def _files(d: Path) -> list[Path]:
     return files
 
 
+def _stamps(cfg, s: str, dataset: str) -> np.ndarray:
+    """Every row's time stamp in `s`'s `dataset` files as int64 ms: `open_time` for candles, `create_time`
+    for metrics (scaled from seconds where written so, as `store.load_metrics` does). That column only,
+    never a price. FileNotFoundError when there are no files."""
+    col = "create_time" if dataset == "metrics" else "open_time"
+    t = np.concatenate([pd.read_parquet(f, columns=[col])[col].to_numpy("int64")
+                        for f in _files(cfg.data_dir / s / dataset)])
+    return np.where(t >= 10**11, t, t * 1000) if dataset == "metrics" else t
+
+
+def _data_end(cfg, s: str, tfs) -> int:
+    """Where `s`'s data stops, in ms: its last candle's close at each of `tfs`, and its funding."""
+    closes = [int(_stamps(cfg, s, t).max()) + TF_MS[t] for t in tfs]
+    fund = (pd.concat([pd.read_parquet(f, columns=["funding_time", "interval_hours"])
+                       for f in _files(cfg.data_dir / s / "funding")])
+            .sort_values("funding_time").iloc[-1])
+    ih = fund.interval_hours if pd.notna(fund.interval_hours) else DEFAULT_FUNDING_H
+    return min(*closes, int(fund.funding_time) + int(ih * 3_600_000))
+
+
 def window_end(cfg, symbols: list[str], tf: str) -> pd.Timestamp:
     """The last 00:00 UTC up to which every symbol has closed candles, at `tf` and at the regime
     timeframe (`load_bars` builds `regime` from those: past their last one it would carry a single
     label forward), and funding.
 
-    Reads timestamps only (open_time, funding_time, interval_hours), never prices."""
-    ends = []
-    for s in symbols:
-        closes = [max(int(pd.read_parquet(f, columns=["open_time"]).open_time.max())
-                      for f in _files(cfg.data_dir / s / t)) + TF_MS[t]
-                  for t in dict.fromkeys((tf, cfg["regime"]["timeframe"]))]
-        fund = (pd.concat([pd.read_parquet(f, columns=["funding_time", "interval_hours"])
-                           for f in _files(cfg.data_dir / s / "funding")])
-                .sort_values("funding_time").iloc[-1])
-        ih = fund.interval_hours if pd.notna(fund.interval_hours) else DEFAULT_FUNDING_H
-        ends.append(min(*closes, int(fund.funding_time) + int(ih * 3_600_000)))
+    The reference coin (`reference.SYMBOL`) counts too, an exam coin or not, since every coin's bars
+    carry its `btc_` columns: its candles at `tf`, its funding, and its last metrics snapshot plus the
+    publish lag, past which `btc_oi_value` would carry that snapshot forward.
+
+    Reads timestamps only (open_time, funding_time, interval_hours, create_time), never prices."""
+    tfs = tuple(dict.fromkeys((tf, cfg["regime"]["timeframe"])))
+    ends = [_data_end(cfg, s, tfs) for s in symbols]
+    b = reference.SYMBOL
+    ends.append(min(_data_end(cfg, b, (tf,)), int(_stamps(cfg, b, "metrics").max()) + OI_PUBLISH_LAG_MS))
     return pd.Timestamp(min(ends), unit="ms", tz="UTC").floor("D")
 
 
@@ -97,7 +116,13 @@ def window_data_problems(cfg, symbols: list[str], tf: str, end: pd.Timestamp) ->
     Last, at both timeframes, every UTC day of the window must hold at least one candle (from
     `open_time` alone, as `window_end` reads it; never a price). That catches a day missing from
     the open month, which `complete` can't show, while a short exchange outage, which monthly files
-    carry too, doesn't hold an exam back for good."""
+    carry too, doesn't hold an exam back for good.
+
+    The reference coin's data is checked as well, an exam coin or not, each line ending in
+    " (BTC reference)": its months at `tf` with the exchange sources (its `btc_` volume and taker
+    columns would be NaN through a ccxt month), its days at `tf` with no candle, and its days with no
+    metrics snapshot (`btc_oi_value` would carry the last one over the whole day). When it is an exam
+    coin its candles were checked above, so only the metrics are."""
     start = cfg.holdout_start
     if end <= start:
         return []
@@ -111,7 +136,11 @@ def window_data_problems(cfg, symbols: list[str], tf: str, end: pd.Timestamp) ->
             out += _month_problems(cfg, s, rtf, months, end, REGIME_SOURCES, " (for the regime labels)")
         for t in dict.fromkeys((tf, rtf)):
             out += _missing_days(cfg, s, t, start, end)
-    return out
+    b, note = reference.SYMBOL, " (BTC reference)"
+    if b not in symbols:
+        out += _month_problems(cfg, b, tf, months, end, EXCHANGE_SOURCES, note)
+        out += _missing_days(cfg, b, tf, start, end, note=note)
+    return out + _missing_days(cfg, b, "metrics", start, end, "metrics snapshots", note)
 
 
 def _month_problems(cfg, s: str, tf: str, months, end: pd.Timestamp, sources: tuple, note: str) -> list[str]:
@@ -144,23 +173,23 @@ def _month_problems(cfg, s: str, tf: str, months, end: pd.Timestamp, sources: tu
 DAY_MS = 86_400_000
 
 
-def _missing_days(cfg, s: str, tf: str, start: pd.Timestamp, end: pd.Timestamp) -> list[str]:
-    """The UTC days in [start, end) without a single `tf` candle of `s`, as runs ("SYMBOL tf
-    2026-09-10 to 2026-09-12: no candles (3 days)"); reads open_time only, never a price."""
+def _missing_days(cfg, s: str, dataset: str, start: pd.Timestamp, end: pd.Timestamp, what: str = "candles",
+                  note: str = "") -> list[str]:
+    """The UTC days in [start, end) without a single row of `s`'s `dataset` (a timeframe's candles, or
+    "metrics"), as runs ("SYMBOL tf 2026-09-10 to 2026-09-12: no candles (3 days)"), each line ending in
+    `note`; reads the time stamps only (`_stamps`), never a price."""
     lo, hi = start.value // 10**6, end.value // 10**6
     try:
-        files = _files(cfg.data_dir / s / tf)
+        t = _stamps(cfg, s, dataset)
     except FileNotFoundError:
         t = np.empty(0, dtype="int64")
-    else:
-        t = np.concatenate([pd.read_parquet(f, columns=["open_time"]).open_time.to_numpy("int64") for f in files])
     t = t[(t >= lo) & (t < hi)]
     missing = np.setdiff1d(np.arange(lo // DAY_MS, -(-hi // DAY_MS)), t // DAY_MS)
     out = []
     for run in (np.split(missing, np.flatnonzero(np.diff(missing) != 1) + 1) if len(missing) else []):
         a, b = (pd.Timestamp(int(d) * DAY_MS, unit="ms").strftime("%Y-%m-%d") for d in (run[0], run[-1]))
-        out.append(f"{s} {tf} {a}: no candles" if len(run) == 1
-                   else f"{s} {tf} {a} to {b}: no candles ({len(run)} days)")
+        out.append(f"{s} {dataset} {a}: no {what}{note}" if len(run) == 1
+                   else f"{s} {dataset} {a} to {b}: no {what} ({len(run)} days){note}")
     return out
 
 
@@ -184,13 +213,20 @@ def run_exam(cfg, src: PluginSource, tf: str, symbols: list[str], params: dict, 
              stderr_dir: Path | None = None) -> ExamResult:
     """The streamed exam of `src` with frozen `params` on [holdout_start, end). A plugin failure is
     a PluginError; each worker's stderr goes to `stderr_dir` when it closes. After each batch,
-    whatever the outcome, the files its workers mapped are evicted from the page cache."""
+    whatever the outcome, the files its workers mapped are evicted from the page cache.
+
+    Each column group's source (BTC's, for the reference) is built once here, with the token, and
+    shared by every coin's bars: never the walk-forward's research cache, which is cut at
+    holdout_start. Its columns sit on the coin's own rows, so at step t a worker holds BTC's rows up
+    to t only, as BTC's own worker does."""
     check_token(token)
     start = cfg.holdout_start
     start_ms = start.value // 10**6
+    sources = {g.name: g.load_source(cfg, tf, end=end, holdout=token)
+               for g in columns.GROUPS if g.load_source is not None}
 
     def load(s: str):
-        bars = load_bars(cfg, s, tf, end=end, holdout=token)
+        bars = load_bars(cfg, s, tf, end=end, holdout=token, sources=sources)
         k0 = int(np.searchsorted(bars["open_time"].to_numpy(), start_ms))    # the first holdout bar
         return bars, k0, EngineParams.from_config(cfg, s)
 

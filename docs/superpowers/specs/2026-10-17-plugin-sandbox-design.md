@@ -137,7 +137,7 @@ Hence the seal (Confinement, step 8): once its modules are loaded, a worker reso
 | Who starts exams ★ | Only `lab exam`, run by a human or a scheduled job. `lab judge` leaves a promoted plugin `pending` and returns, so the proposer that runs it can't time an exam. |
 | Exam window on a retry | Fixed when the read is minted, stored in the holdout log, and reused on every retry of that read; at most `exam_max_attempts` attempts per read. |
 | Runs that are compared | Each in a fresh worker sent only its own bars, and never run alongside a worker holding later bars. |
-| Symbols | A worker is only ever sent one symbol's bars. |
+| Symbols | A worker is only ever sent one symbol's bars. (Amended 2026-11-05.) That frame may carry other coins' reference columns (the `btc_` columns), cut row by row with it and covered by the lookahead check, so no worker holds any series past its own frame's rows. In the exam stream, coin X's worker at step t holds BTC's rows up to t only. |
 | Plugin metadata ★ | `PARENT`, the docstring, `params`, `grid` and `timeframes` are read from the source with `ast`, never by running it, and must be literals. |
 | Plugin failures ★ | A failure caused by the plugin is a recorded kill (`plugin_error`); in the exam it is `failed`. Infrastructure failures stay errors with nothing recorded, as today. |
 | Paper | Streamed through a sandbox worker; a worker failure stops the paper run. |

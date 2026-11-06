@@ -7,13 +7,15 @@ from typer.testing import CliRunner
 from perp_lab.cli import app
 from perp_lab.proposer import context, human, piles
 from perp_lab.proposer.record import Record
-from tests.conftest import REPO
+from perp_lab.config import load_config
+from tests.conftest import REPO, write_ready_reference
 
 runner = CliRunner()
 
 
 def _config(tmp_path, **over):
     raw = yaml.safe_load(open(REPO / "config/lab.yaml"))
+    raw["data_dir"] = str(tmp_path / "data")
     raw["proposer"] = {**raw["proposer"], "state_dir": str(tmp_path / "proposer"), **over}
     p = tmp_path / "lab.yaml"
     p.write_text(yaml.safe_dump(raw))
@@ -37,6 +39,7 @@ def test_propose_outside_the_repo_root_exits_2(tmp_path, monkeypatch):
 def test_propose_prints_the_stop_reason_and_digest_path(tmp_path, monkeypatch):
     monkeypatch.chdir(context.ROOT)
     cfg = _config(tmp_path)
+    write_ready_reference(load_config(cfg), tfs=("15m", "1h", "4h"))     # readiness (X3) at each proposer timeframe
     state = tmp_path / "proposer"
 
     def fake(cfg_, pc, *, days, trials, repo):
