@@ -116,7 +116,11 @@ def attach(bars: pd.DataFrame, symbol: str, tf: str, source: ReferenceSource) ->
 
 def synthetic(bars: pd.DataFrame, seed: int) -> dict[str, np.ndarray]:
     """The synthetic reference for the lookahead check (X5): {column: float64 array} for COLUMNS on
-    bars' rows, drawn from `default_rng((seed, SYNTHETIC_ID))`. Row t uses bars' rows up to t only.
+    bars' rows, drawn from `default_rng((seed, SYNTHETIC_ID))`. Each value at row t depends on bars' rows
+    up to t, but the stream as a whole depends on the frame's length (how many drift blocks are drawn, which
+    rows are NaN) and its last `open_time` (how many funding periods are drawn), so drawn on bars[:k] it
+    isn't the full frame's stream cut at k. That is harmless: the lookahead check fills once, on the whole
+    frame, before cutting.
 
     BTC's log-return is r_b = 0.7·r_x + 0.71·σ·z + d: r_x the coin's, σ its trailing 100-bar standard
     deviation (floored), z standard normal and d a drift of ±0.3·σ held for 300-bar blocks, so BTC trends
