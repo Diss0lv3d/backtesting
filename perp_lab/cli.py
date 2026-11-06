@@ -192,8 +192,9 @@ def paper(from_run: str = typer.Argument(..., help="walk-forward run_id approved
     with _sandbox_required():                   # reads_columns runs the plugin to rule a group out
         unfed = next((g for g in columns.GROUPS if not g.paper_ready and reads_columns(cfg, src, g, params)), None)
     if unfed is not None:                       # the paper feed for its columns doesn't exist yet
-        typer.secho(f"refused: {r['strategy']} reads the {unfed.name} column group ({unfed.prefix} columns), "
-                    "which paper trading can't feed yet", fg="red")
+        # reads_columns is also true when its runs can't tell (neither acts, or the plugin fails one)
+        typer.secho(f"refused: {r['strategy']} reads, or can't be shown not to read, the {unfed.name} column "
+                    f"group ({unfed.prefix} columns), which paper trading can't feed yet", fg="red")
         raise typer.Exit(2)
     started = datetime.now(timezone.utc)
     record_run(cfg, {"run_id": rid, "strategy": r["strategy"], "strategy_hash": src.hash,
