@@ -8,6 +8,7 @@ The harness is the judge; nothing a strategy (or later, an LLM proposer) does ca
 ```bash
 pip install -e .[dev]
 lab backfill                          # data.binance.vision → ./data (idempotent, resumable)
+lab backfill --datasets spotKlines    # each coin's spot candles → data/<SYMBOL>/spot/<tf>/ (the `spot` column group)
 lab tail                              # ccxt: stitch parquet → now
 lab strategies                        # plugins + hypotheses
 lab walkforward donchian_atr --tf 4h  # OOS walk-forward + full validation → ./runs/<id>/report.md
@@ -34,8 +35,10 @@ needed they come from env vars — never from config files.
 config/lab.yaml          universe, TFs, costs, account, holdout date, validation knobs
 perp_lab/data/vision.py  backfill (klines, fundingRate, metrics/OI) with checksum verification
 perp_lab/data/store.py   parquet readers, holdout guard, funding/OI/regime alignment
-perp_lab/data/columns.py column groups (the `btc_` reference): readiness check, data identity
+perp_lab/data/columns.py column groups (the `btc_` reference, `spot`): readiness check, data identity, exam coverage
+perp_lab/data/archive.py manifest-based exam checks shared by the groups: months from exchange files, days with candles
 perp_lab/data/reference.py the eight `btc_` columns: BTCUSDT's bar, funding and OI on every coin's bars
+perp_lab/data/spot.py    the spot group: `spot_close`, `spot_quote_volume`, `spot_taker_buy_quote_volume`, `spot_trades` and `basis`
 perp_lab/data/live.py    ccxt REST tail + ccxt.pro closed-candle stream
 perp_lab/engine/         event-driven backtest, liquidation math, metrics
 perp_lab/validate/       walk-forward, sensitivity, Monte Carlo, regime, benchmarks, pipeline
@@ -81,8 +84,19 @@ tests/                   lookahead (auto on every plugin), fees/funding, liquida
   funding and metrics files. Before any trial counts, `lab judge`, `lab walkforward` and `lab propose` check that BTC's
   research months are present and complete (and, for the reference, that BTC's own symbol check passes) and refuse
   with exit 2 listing every problem; `validate_strategy` refuses the same way. `config/lab.yaml`
-  `column_groups.reference.known_gaps` is `[]`. `lab paper` refuses a plugin that reads the `btc_` columns, since paper
-  can't feed them yet. Trials that read them count in the one store-wide N.
+  `column_groups.reference.known_gaps` is `[]`. `lab paper` refuses a plugin that reads, or can't be shown not to read,
+  the `btc_` columns, since paper can't feed them yet. Trials that read them count in the one store-wide N.
+- **Spot.** Every coin's bars also carry four `spot_` columns (`spot_close`, `spot_quote_volume`,
+  `spot_taker_buy_quote_volume`, `spot_trades`) from that coin's own Binance spot candles, the row with the same open
+  time (no publish lag), and `basis = close / spot_close - 1`. They are NaN where spot has no row or no trades, and
+  `basis` is NaN there too and where the perp bar has no trades; nothing is filled forward. The candles come from
+  `lab backfill --datasets spotKlines` into `data/<SYMBOL>/spot/<tf>/`. Readiness covers the full span of every
+  coin's spot months and adds a symbol check: on the last month with at least 100 bars traded on both sides, the
+  median basis must be within +/-1%. Exclusions are listed under `column_groups.spot` in `config/lab.yaml` (both
+  `exclusions` and `known_gaps` are empty today). `lab paper` refuses a plugin that reads, or can't be shown not to
+  read, the spot columns. Spot trading of BTC was zero-fee from 2022-07 to 2023-03, which inflates its spot volume
+  and trade count then; the proposer's builder is told. Synthetic bars carry a synthetic spot stream calibrated to the
+  real inventory (`docs/research/spot-inventory/`); `MARKET_VERSION` is 5.
 - A verdict's `diagnostics.market` holds the OOS portfolio's daily `beta` and `corr` to BTC and the `hedged_sharpe`
   of the series with BTC hedged out. For information only: no gate reads it.
 - A plugin names its parent with a module-level `PARENT = "name"`; without one it starts a family.
@@ -123,6 +137,11 @@ tests/                   lookahead (auto on every plugin), fees/funding, liquida
   at the timeframe must come from exchange files, every UTC day of the window must hold at least one BTC candle and
   one BTC metrics snapshot (the problem is noted " (BTC reference)"), and the window ends where BTC's candles, funding
   or metrics (plus 5 minutes) end, so no exam bar carries a stale `btc_oi_value`.
+  Coverage runs through the column-group registry. The `btc_` group is checked for every exam; the spot group only for
+  a plugin that reads spot (`exam_required: if_read`). For one that does, the exam coins' spot months at the
+  timeframe must come from exchange files, every UTC day of the window must hold a spot candle with `trades > 0`,
+  and the window ends where the earliest coin's spot candles do. The attempt cap and a too-short window are checked
+  before any check worker starts.
 - `lab exam` reports each failing exam with ` ERROR: ...`, continues with the rest, and exits 1 if any failed.
 - `lab withdraw PLUGIN --tf TF --reason "..."` withdraws a pending promotion before its read is minted (a
   human's decision on the walk-forward record, e.g. a pre-registered check that failed): status and code

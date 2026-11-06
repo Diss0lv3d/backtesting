@@ -1143,3 +1143,35 @@ table.
 - **Unchanged.** No gate, threshold, cost or benchmark rule; trials that read `btc_` count in the one store-wide N. No
   past verdict read the columns. The proposer still cannot run exams, and `lab paper` refuses a plugin that reads
   them until paper can feed them.
+
+## Amended: spot and basis columns (2026-11-07)
+
+Spec: `docs/superpowers/specs/2026-11-05-spot-basis-design.md`. Every coin's bars now carry four spot columns from
+that coin's own Binance spot candles, `spot_close`, `spot_quote_volume`, `spot_taker_buy_quote_volume` and
+`spot_trades`, on the bar with the same open time (no publish lag), and `basis = close / spot_close - 1`. They are NaN
+where spot has no row or no trades; `basis` is NaN then too and where the perp bar has no trades.
+
+- **What the builder reads.** The bar table gains five rows (`context.BAR_COLUMNS`) and a fixed paragraph: the spot
+  columns are known at the bar's close like the perp's own; they are NaN before a coin's spot listing and in exchange
+  gaps, so a plugin must handle NaN; a bar in which spot stopped early carries its last, possibly stale, trade; `basis`
+  is the perp's premium over spot now, while `funding_last` is the settled rate, and the funding clamp ties the two
+  (outside the band, basis averaged over a funding interval tracks the next funding rate, so an idea built on that
+  average is a funding idea); `basis` carries a few bp of noise on thin coins; the harness trades the perp only; BTC's
+  spot volume and trades are inflated from 2022-07 to 2023-03 (Binance's zero-fee BTC period); spot's share of volume
+  has been falling; a plugin that reads spot can't be paper traded yet. Exclusions come from the config
+  (`column_groups.spot.exclusions`, empty today).
+- **Data and readiness.** `lab backfill --datasets spotKlines` fills `data/<SYMBOL>/spot/<tf>/`. Readiness covers the
+  full span and a symbol check: the median basis on the last month with at least 100 bars traded on both sides must be
+  within +/-1%. `store._read_window`, `store.exact_join` and `columns.check_source_fits` are shared with the BTC
+  reference.
+- **Exam.** Coverage goes through the registry (`ColumnGroup.exam_end` and `exam_problems`, `exam.exam_groups` and
+  `always_groups`, helpers in `perp_lab/data/archive.py`). The spot group is `exam_required: if_read`: only a plugin
+  that reads spot gets spot coverage, which means the window ends at the earliest spot end, spot months must come from
+  exchange files, and every UTC day needs a spot candle with `trades > 0`. The attempt cap and too-short are checked
+  before any check worker starts.
+- **Synthetic bars.** The spot stream draws from `default_rng((seed, 2))`, is NaN before the first cut only
+  (`causality.NAN_CUTS`) with halt stretches at rows `((0, 288), (432, 480))`, and is calibrated to the real inventory
+  (`docs/research/spot-inventory/`, "Calibration"). `MARKET_VERSION` is 5.
+- **Unchanged.** No gate, threshold, cost or benchmark rule; trials that read spot count in the one store-wide N. The
+  proposer still cannot run exams, and `lab paper` refuses a plugin that reads, or can't be shown not to read, the
+  spot columns (`paper_ready=False`).

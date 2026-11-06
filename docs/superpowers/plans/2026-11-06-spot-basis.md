@@ -215,7 +215,7 @@ The lead does this task itself, in the main checkout, where `data/` lives. No la
   - Under `with_spot`:
     - `test_peek_at_each_spot_column_is_reported` (parametrized over the five; `fails[0].startswith("defaults: AssertionError")`);
     - `test_int_spot_trades_is_reported` (a line holds `ValueError`);
-    - `test_basis_mean_threshold_peek_is_caught`: the plugin enters only when the 24-bar mean of `basis` lies beyond `BASIS_C ± 2·BASIS_SLOW_SD`, and peeks at `close.shift(-1)` in that branch only;
+    - `test_basis_mean_threshold_peek_is_caught`: the plugin enters only when the 24-bar mean of `basis` lies beyond `BASIS_C ± 2·BASIS_SLOW_SD`, and in that branch only reads the series' last close (a peek gated on the ±20 bp band can't be seen at seed 7, ruling S4c);
     - `test_bfill_of_spot_is_caught` (Review Focus 4);
     - `test_honest_basis_plugin_passes` (`[]`).
   - `test_real_plugins_unchanged_by_spot_columns`, parametrized over `REAL_PLUGINS`:
