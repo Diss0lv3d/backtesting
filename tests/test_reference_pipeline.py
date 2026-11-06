@@ -77,7 +77,7 @@ def test_validate_refuses_before_register_trial_on_problem(tmp_path, monkeypatch
     cfg = market_config(tmp_path)
     break_it(cfg)
     monkeypatch.setattr(pipeline, "walkforward", lambda *a, **k: pytest.fail("the walk-forward ran"))
-    with pytest.raises(ValueError, match=problem):
+    with pytest.raises(columns.ReadinessRefused, match=problem):
         pipeline.validate_strategy(cfg, "donchian_atr", "4h", src=DONCHIAN)
     assert db.trial_stats(cfg)[0] == 0 and db.read_table(cfg, db.trials).empty      # N unchanged
 

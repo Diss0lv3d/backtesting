@@ -36,6 +36,15 @@ class ColumnGroup:
     symbol_check: Callable | None = None    # (cfg, tf) -> [problem]: the source's own data, beyond its manifests
 
 
+class ReadinessRefused(ValueError):
+    """X3 refused a run: a column group's research data is missing or incomplete, so nothing ran and no
+    trial counts. `tf` names the timeframe checked (for `lab propose`, its timeframes), `problems` holds
+    `column_group_problems`' lines."""
+
+    def __init__(self, tf: str, problems: list[str]):
+        self.tf, self.problems = tf, list(problems)
+        super().__init__(f"column group data not ready at {tf}; nothing ran:\n" + "\n".join(self.problems))
+
 
 GROUPS: tuple[ColumnGroup, ...] = (
     ColumnGroup(name="reference", columns=reference.COLUMNS, prefix=reference.PREFIX, rule=1,
@@ -120,3 +129,10 @@ def column_group_problems(cfg, symbols: list[str], tf: str) -> list[str]:
         if g.symbol_check is not None:
             problems += g.symbol_check(cfg, tf)
     return problems
+
+
+def require_ready(cfg, symbols: list[str], tf: str) -> None:
+    """X3 before a run: ReadinessRefused with every problem, or nothing."""
+    problems = column_group_problems(cfg, symbols, tf)
+    if problems:
+        raise ReadinessRefused(tf, problems)

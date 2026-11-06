@@ -118,6 +118,23 @@ def write_market(data_dir, symbols, candles_until="2026-10-15", funding_until="2
         _write_manifest(md, metrics_manifest)
 
 
+def write_ready_reference(cfg, tfs=("4h",)):
+    """The least BTCUSDT data under cfg.data_dir that passes the readiness check (X3) at each of `tfs`:
+    a complete manifest entry for every research month of its candles, funding and metrics, and
+    candles in the symbol check's month (the last research month) only. For tests whose runs are
+    stand-ins and read no bars."""
+    from perp_lab.data import columns
+    months = columns._research_months(cfg)
+    for dataset in (*tfs, "funding", "metrics"):
+        _write_manifest(Path(cfg.data_dir) / "BTCUSDT" / dataset,
+                        {m: {"complete": True, "source": "monthly", "rows": 0} for m in months})
+    last = pd.Period(months[-1], "M")
+    for tf in tfs:
+        b = make_bars(n=last.days_in_month * 86_400_000 // TF_MS[tf], start=str(last.start_time.date()),
+                      tf_ms=TF_MS[tf])
+        b[CANDLE_COLS].reset_index(drop=True).to_parquet(Path(cfg.data_dir) / "BTCUSDT" / tf / f"{last}.parquet")
+
+
 def market_config(tmp_path, **sections):
     """lab.yaml copy on disk over a synthetic 2-symbol market: research 2025-01-01..2026-07-01,
     holdout from 2026-07-01, store and judge files under tmp_path. Dict values update sections."""

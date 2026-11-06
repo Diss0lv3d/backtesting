@@ -92,9 +92,7 @@ def validate_strategy(cfg, name: str, tf: str, symbols=None, seeds=None, workers
         raise ValueError(f"source of {src.name} given to validate {name}")
     require_timeframe(src, tf)                  # a trial at a timeframe it doesn't declare: nothing runs
     rule = cfg["universe_rule"]                 # the report states the survivor bias: no rule, nothing runs
-    problems = columns.column_group_problems(cfg, symbols or cfg.symbols, tf)
-    if problems:                                # X3: no trial counts on data a column group can't fill
-        raise ValueError(f"column group data not ready at {tf}; nothing ran:\n" + "\n".join(problems))
+    columns.require_ready(cfg, symbols or cfg.symbols, tf)   # X3: no trial counts on data a group can't fill
     rid = new_run_id()
     db.register_trial(cfg, name, src.hash, tf)   # before plugin code sees real bars: a crash still counts
     wf = walkforward(cfg, src, tf, symbols, workers, cfg.runs_dir / rid / "sandbox_stderr")
