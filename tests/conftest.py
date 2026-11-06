@@ -118,6 +118,28 @@ def write_market(data_dir, symbols, candles_until="2026-10-15", funding_until="2
         _write_manifest(md, metrics_manifest)
 
 
+def spot_candles(candles, basis=0.0003):
+    """Spot candles made from perp `candles`: prices ÷ (1 + basis), so close / spot close − 1 is `basis`
+    up to rounding; volumes × 0.3, taker buys half of that; trades halved and rounded."""
+    s = candles[CANDLE_COLS].reset_index(drop=True).copy()
+    for c in ("open", "high", "low", "close"):
+        s[c] = s[c] / (1 + basis)
+    for c in ("volume", "quote_volume"):
+        s[c] = s[c] * 0.3
+        s["taker_buy_" + c] = s[c] / 2
+    s["trades"] = np.round(0.5 * s["trades"].astype("float64"))
+    return s
+
+
+def write_spot(data_dir, symbol, tf, candles, manifest, basis=0.0003):
+    """`spot_candles(candles, basis)` as data/<symbol>/spot/<tf>/all.parquet, with `manifest` as the
+    folder's _manifest.json, laid out like `lab backfill`'s spotKlines output."""
+    d = Path(data_dir) / symbol / "spot" / tf
+    d.mkdir(parents=True, exist_ok=True)
+    spot_candles(candles, basis).to_parquet(d / "all.parquet")
+    _write_manifest(d, manifest)
+
+
 def write_ready_reference(cfg, tfs=("4h",)):
     """The least BTCUSDT data under cfg.data_dir that passes the readiness check (X3) at each of `tfs`:
     a complete manifest entry for every research month of its candles, funding and metrics, and
